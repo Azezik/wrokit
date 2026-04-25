@@ -1,13 +1,16 @@
-import { useMemo, useRef, useState, type ChangeEvent } from 'react';
+import { useMemo, useRef, useState, useSyncExternalStore, type ChangeEvent } from 'react';
 
-import { isWizardFile, type WizardFieldType } from '../../contracts/wizard';
+import type { WizardFieldType } from '../../../core/contracts/wizard';
 import {
-  createWizardBuilderStore,
-  type WizardBuilderState
-} from '../../storage/wizard-builder-store';
-import { Button } from '../components/Button';
-import { Input } from '../components/Input';
-import { Panel } from '../components/Panel';
+  downloadWizardFile,
+  parseWizardFile,
+  serializeWizardFile,
+  WizardFileParseError
+} from '../../../core/io/wizard-file-io';
+import { createWizardBuilderStore } from '../../../core/storage/wizard-builder-store';
+import { Button } from '../../../core/ui/components/Button';
+import { Input } from '../../../core/ui/components/Input';
+import { Panel } from '../../../core/ui/components/Panel';
 
 import './wizard-builder.css';
 
@@ -15,30 +18,14 @@ const fieldTypes: WizardFieldType[] = ['text', 'numeric', 'any'];
 
 export function WizardBuilder() {
   const storeRef = useRef(createWizardBuilderStore());
-  const [state, setState] = useState<WizardBuilderState>(storeRef.current.getState());
+  const store = storeRef.current;
+  const state = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const [importError, setImportError] = useState<string | null>(null);
 
-  const wizardFilePreview = useMemo(
-    () => JSON.stringify(storeRef.current.toWizardFile(), null, 2),
-    [state]
-  );
-
-  const applyState = (nextState: WizardBuilderState) => {
-    setState(nextState);
-  };
+  const wizardFilePreview = useMemo(() => serializeWizardFile(store.toWizardFile()), [state, store]);
 
   const handleDownload = () => {
-    const wizardFile = storeRef.current.toWizardFile();
-    const blob = new Blob([JSON.stringify(wizardFile, null, 2)], { type: 'application/json' });
-    const downloadUrl = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    const safeName = (wizardFile.wizardName || 'wizard').replace(/\s+/g, '-').toLowerCase();
-
-    link.href = downloadUrl;
-    link.download = `${safeName}.wizard.json`;
-    link.click();
-
-    URL.revokeObjectURL(downloadUrl);
+    downloadWizardFile(store.toWizardFile());
   };
 
   const handleImport = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -51,17 +38,13 @@ export function WizardBuilder() {
 
     try {
       const text = await file.text();
-      const parsed: unknown = JSON.parse(text);
-
-      if (!isWizardFile(parsed)) {
-        setImportError('Invalid WizardFile JSON schema.');
-        return;
-      }
-
+      const wizardFile = parseWizardFile(text);
       setImportError(null);
-      applyState(storeRef.current.replaceFromWizardFile(parsed));
-    } catch {
-      setImportError('Could not parse JSON file.');
+      await store.replaceFromWizardFile(wizardFile);
+    } catch (error) {
+      setImportError(
+        error instanceof WizardFileParseError ? error.message : 'Could not import WizardFile.'
+      );
     }
   };
 
@@ -73,7 +56,9 @@ export function WizardBuilder() {
           <Input
             type="text"
             value={state.wizardName}
-            onChange={(event) => applyState(storeRef.current.setWizardName(event.target.value))}
+            onChange={(event) => {
+              void store.setWizardName(event.target.value);
+            }}
             placeholder="Example: Vendor Invoice"
           />
         </label>
@@ -86,16 +71,28 @@ export function WizardBuilder() {
             state.fields.map((field, index) => (
               <Panel key={`${field.fieldId}-${index}`} className="wizard-builder-field-card">
                 <div className="wizard-builder-actions">
-                  <Button type="button" onClick={() => applyState(storeRef.current.moveField(index, -1))}>
+                  <Button
+                    type="button"
+                    onClick={() => {
+                      void store.moveField(index, -1);
+                    }}
+                  >
                     Move Up
                   </Button>
-                  <Button type="button" onClick={() => applyState(storeRef.current.moveField(index, 1))}>
+                  <Button
+                    type="button"
+                    onClick={() => {
+                      void store.moveField(index, 1);
+                    }}
+                  >
                     Move Down
                   </Button>
                   <Button
                     type="button"
                     variant="danger"
-                    onClick={() => applyState(storeRef.current.removeField(index))}
+                    onClick={() => {
+                      void store.removeField(index);
+                    }}
                   >
                     Remove
                   </Button>
@@ -106,13 +103,9 @@ export function WizardBuilder() {
                   <Input
                     type="text"
                     value={field.fieldId}
-                    onChange={(event) =>
-                      applyState(
-                        storeRef.current.updateField(index, {
-                          fieldId: event.target.value
-                        })
-                      )
-                    }
+                    onChange={(event) => {
+                      void store.updateField(index, { fieldId: event.target.value });
+                    }}
                   />
                 </label>
 
@@ -121,13 +114,9 @@ export function WizardBuilder() {
                   <Input
                     type="text"
                     value={field.label}
-                    onChange={(event) =>
-                      applyState(
-                        storeRef.current.updateField(index, {
-                          label: event.target.value
-                        })
-                      )
-                    }
+                    onChange={(event) => {
+                      void store.updateField(index, { label: event.target.value });
+                    }}
                   />
                 </label>
 
@@ -136,13 +125,11 @@ export function WizardBuilder() {
                   <select
                     className="ui-select"
                     value={field.type}
-                    onChange={(event) =>
-                      applyState(
-                        storeRef.current.updateField(index, {
-                          type: event.target.value as WizardFieldType
-                        })
-                      )
-                    }
+                    onChange={(event) => {
+                      void store.updateField(index, {
+                        type: event.target.value as WizardFieldType
+                      });
+                    }}
                   >
                     {fieldTypes.map((fieldType) => (
                       <option key={fieldType} value={fieldType}>
@@ -156,13 +143,9 @@ export function WizardBuilder() {
                   <input
                     type="checkbox"
                     checked={field.required}
-                    onChange={(event) =>
-                      applyState(
-                        storeRef.current.updateField(index, {
-                          required: event.target.checked
-                        })
-                      )
-                    }
+                    onChange={(event) => {
+                      void store.updateField(index, { required: event.target.checked });
+                    }}
                   />{' '}
                   Required
                 </label>
@@ -172,7 +155,13 @@ export function WizardBuilder() {
         </div>
 
         <div className="wizard-builder-actions">
-          <Button type="button" variant="primary" onClick={() => applyState(storeRef.current.addField())}>
+          <Button
+            type="button"
+            variant="primary"
+            onClick={() => {
+              void store.addField();
+            }}
+          >
             Add Field
           </Button>
           <Button type="button" onClick={handleDownload}>
