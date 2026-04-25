@@ -1,5 +1,6 @@
 export const routes = {
   home: '/',
+  dashboard: '/dashboard',
   wizardBuilder: '/wizard-builder'
 } as const;
 

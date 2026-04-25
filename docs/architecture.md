@@ -13,8 +13,18 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
 - `src/core/contracts`: shared typed contracts.
 - `src/core/storage`: UI-agnostic state and persistence abstractions.
 - `src/core/runtime`: orchestration boundaries (not fully implemented).
-- `src/core/ui/wizard-builder`: Wizard Builder UI module only.
-- `src/app`: app shell/page composition.
+- `src/core/ui/components`: reusable visual primitives (`Button`, `Input`, `Panel`, `Section`).
+- `src/core/ui/layout`: app-wide layout wrappers (`AppShell`).
+- `src/core/ui/styles`: centralized visual tokens + global base styles.
+- `src/core/ui/wizard-builder`: feature-specific Wizard Builder UI module.
+- `src/app`: page composition and shell wiring.
+
+## UI Organization Rules
+- Visual tokens (colors, spacing, borders, shadows, radii, font sizes) are defined in `src/core/ui/styles/tokens.css`.
+- Global element defaults and shared classes live in `src/core/ui/styles/global.css`.
+- Reusable UI primitives are imported by feature UIs; feature UIs do not redefine core styling systems.
+- Feature-specific UI styling lives beside each feature (e.g., `src/core/ui/wizard-builder/wizard-builder.css`).
+- Business logic remains in stores/contracts and is consumed by UI through typed interfaces.
 
 ## Data Contracts
 - `WizardFile` (`src/core/contracts/wizard.ts`):
@@ -28,30 +38,19 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
   - `type: 'text' | 'numeric' | 'any'`
   - `required: boolean`
 
-## Current Repo Structure
-- `src/app`: app root + page wiring.
-- `src/core/contracts`: wizard, geometry, normalized page, structural model, extraction result.
-- `src/core/storage`: wizard storage and wizard-builder state store.
-- `src/core/ui/wizard-builder`: Wizard Builder component.
-- `src/core/runtime`: placeholders.
-- `docs`: architecture + implementation history.
+## App Shell and Static Hosting
+- The app now mounts into a visible `AppShell` with explicit header/content regions.
+- `main.tsx` validates `#root` mount existence early and throws a clear error if missing.
+- Vite `base` resolves from `GITHUB_REPOSITORY` when available (`/<repo>/`) and falls back to `./`, improving GitHub Pages path reliability while preserving static hosting.
 
 ## Current Implementation Status
 Implemented:
-- First real module: Wizard Builder.
-- Add/remove/reorder fields.
-- Live `WizardFile` JSON preview.
-- Import/export JSON support.
+- Visible app shell + dashboard module status page.
+- Wizard Builder feature wired through reusable UI components.
+- Shared tokenized styling system.
 
 Not yet implemented:
 - Document intake.
 - Geometry capture.
 - Structural model generation.
 - Runtime localization and OCR readout.
-
-## Future Planned Layers
-1. Normalized page intake.
-2. Geometry capture and persistence.
-3. Structural model generation (separate from geometry truth).
-4. Runtime localization.
-5. OCR readout and confidence model.

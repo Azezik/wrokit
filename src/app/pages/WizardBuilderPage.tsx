@@ -1,10 +1,13 @@
+import { Section } from '../../core/ui/components/Section';
 import { WizardBuilder } from '../../core/ui/wizard-builder/WizardBuilder';
 
 export function WizardBuilderPage() {
   return (
-    <main style={{ fontFamily: 'Arial, sans-serif', padding: '1.5rem', lineHeight: 1.5 }}>
-      <h1>Wrokit V2</h1>
+    <Section
+      title="Wizard Builder"
+      description="Define wizard fields and export/import WizardFile JSON without coupling to extraction runtime."
+    >
       <WizardBuilder />
-    </main>
+    </Section>
   );
 }
