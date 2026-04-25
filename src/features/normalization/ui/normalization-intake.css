@@ -1,0 +1,40 @@
+.normalization-intake {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.normalization-intake__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.normalization-intake__meta {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.normalization-intake__viewport {
+  border: var(--border-default);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  background: #f8fafc;
+  min-height: 300px;
+  display: grid;
+  place-items: center;
+}
+
+.normalization-intake__image {
+  max-width: 100%;
+  max-height: 72vh;
+  object-fit: contain;
+  border: var(--border-default);
+  border-radius: var(--radius-sm);
+  background: white;
+}
+
+.normalization-intake__error {
+  color: var(--color-danger);
+  margin: 0;
+}

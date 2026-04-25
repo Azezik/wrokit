@@ -1,5 +1,57 @@
 # Wrokit Development Log
 
+## 2026-04-25 — Step: Normalization Engine Intake Boundary
+
+### Why this step
+- Wrokit required a hard intake boundary so all uploads become one canonical raster contract before any downstream module access.
+- The goal was to eliminate format-awareness downstream (PDF vs image) and enforce `NormalizedPage` as the only post-intake page shape.
+
+### What changed
+- Added normalization engine modules under `src/core/engines/normalization/`:
+  - `image-rasterizer.ts`: decodes image uploads and emits one raster page surface.
+  - `pdf-rasterizer.ts`: renders PDF pages to canvas raster surfaces (only location where PDF.js is referenced).
+  - `normalization-engine.ts`: intake orchestrator that validates supported types and returns `NormalizationResult` with `NormalizedPage[]`.
+  - `types.ts` + `index.ts` for strict contracts and module export boundaries.
+- Upgraded `NormalizedPage` contract to version `2.0` with explicit raster-focused fields:
+  - `pageIndex`, `width`, `height`, `aspectRatio`, image URL surface (`imageDataUrl` or `imageBlobUrl`), `sourceName` (display-only), and `normalization` metadata.
+- Added upload + normalized page viewport UI:
+  - `src/features/normalization/ui/NormalizationIntake.tsx`
+  - `src/features/normalization/ui/normalization-intake.css`
+  - Supports PDF/PNG/JPG/JPEG/WebP upload, page count display, and multi-page switching.
+- Wired dashboard page to render the new normalization intake module.
+- Updated runtime runner interfaces (`localization`, `ocr`, `extraction`) to accept `pages: NormalizedPage[]`, strengthening downstream type boundaries.
+- Updated architecture docs and contract tests for the new normalization contract and boundary rules.
+
+### Boundaries preserved
+- No OCR implementation added.
+- No structure detection added.
+- No runtime extraction implementation added.
+- No PDF text extraction, token extraction, annotation parsing, form parsing, or metadata-based extraction logic added.
+
+### Files created
+- `src/core/engines/normalization/types.ts`
+- `src/core/engines/normalization/image-rasterizer.ts`
+- `src/core/engines/normalization/pdf-rasterizer.ts`
+- `src/core/engines/normalization/normalization-engine.ts`
+- `src/core/engines/normalization/index.ts`
+- `src/features/normalization/ui/NormalizationIntake.tsx`
+- `src/features/normalization/ui/normalization-intake.css`
+
+### Files modified
+- `src/core/contracts/normalized-page.ts`
+- `src/core/runtime/localization-runner.ts`
+- `src/core/runtime/ocr-runner.ts`
+- `src/core/runtime/extraction-runner.ts`
+- `src/app/pages/HomeDashboardPage.tsx`
+- `tests/unit/contracts.test.ts`
+- `docs/architecture.md`
+- `docs/dev-log.md`
+
+### Recommended next step
+- Add a dedicated `NormalizationStore` so normalized page sessions can be reused by the upcoming Geometry module without coupling UI state to engine state.
+
+---
+
 ## 2026-04-25 — Step: Foundation Audit 001 — Now-Risk Fixes
 
 ### Why this step
