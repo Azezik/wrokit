@@ -1,5 +1,5 @@
 import { Section } from '../../core/ui/components/Section';
-import { WizardBuilder } from '../../core/ui/wizard-builder/WizardBuilder';
+import { WizardBuilder } from '../../features/wizard-builder/ui/WizardBuilder';
 
 export function WizardBuilderPage() {
   return (

@@ -1,19 +1,19 @@
 import type { WizardField, WizardFieldType, WizardFile } from '../contracts/wizard';
+import type { ObservableStore, StoreListener } from './observable-store';
 
 export interface WizardBuilderState {
   wizardName: string;
   fields: WizardField[];
 }
 
-export interface WizardBuilderStore {
-  setWizardName(name: string): WizardBuilderState;
-  addField(): WizardBuilderState;
-  removeField(index: number): WizardBuilderState;
-  moveField(index: number, direction: -1 | 1): WizardBuilderState;
-  updateField(index: number, field: Partial<WizardField>): WizardBuilderState;
-  replaceFromWizardFile(wizardFile: WizardFile): WizardBuilderState;
+export interface WizardBuilderStore extends ObservableStore<WizardBuilderState> {
+  setWizardName(name: string): Promise<void>;
+  addField(): Promise<void>;
+  removeField(index: number): Promise<void>;
+  moveField(index: number, direction: -1 | 1): Promise<void>;
+  updateField(index: number, field: Partial<WizardField>): Promise<void>;
+  replaceFromWizardFile(wizardFile: WizardFile): Promise<void>;
   toWizardFile(): WizardFile;
-  getState(): WizardBuilderState;
 }
 
 const createField = (index: number): WizardField => ({
@@ -45,48 +45,56 @@ export const createWizardBuilderStore = (
     fields: initial.fields.map((field, index) => normalizeField(field, index))
   };
 
-  const setState = (next: WizardBuilderState): WizardBuilderState => {
+  const listeners = new Set<StoreListener>();
+
+  const commit = (next: WizardBuilderState) => {
     state = next;
-    return state;
+    listeners.forEach((listener) => listener());
   };
 
   return {
-    setWizardName: (name) =>
-      setState({
-        ...state,
-        wizardName: name
-      }),
+    getSnapshot: () => state,
 
-    addField: () =>
-      setState({
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+
+    setWizardName: async (name) => {
+      commit({ ...state, wizardName: name });
+    },
+
+    addField: async () => {
+      commit({
         ...state,
         fields: [...state.fields, createField(state.fields.length)]
-      }),
+      });
+    },
 
-    removeField: (index) =>
-      setState({
+    removeField: async (index) => {
+      commit({
         ...state,
         fields: state.fields.filter((_, fieldIndex) => fieldIndex !== index)
-      }),
+      });
+    },
 
-    moveField: (index, direction) => {
+    moveField: async (index, direction) => {
       const nextIndex = index + direction;
       if (nextIndex < 0 || nextIndex >= state.fields.length) {
-        return state;
+        return;
       }
 
       const reordered = [...state.fields];
       const [field] = reordered.splice(index, 1);
       reordered.splice(nextIndex, 0, field);
 
-      return setState({
-        ...state,
-        fields: reordered
-      });
+      commit({ ...state, fields: reordered });
     },
 
-    updateField: (index, field) =>
-      setState({
+    updateField: async (index, field) => {
+      commit({
         ...state,
         fields: state.fields.map((currentField, fieldIndex) =>
           fieldIndex === index
@@ -100,21 +108,21 @@ export const createWizardBuilderStore = (
               )
             : currentField
         )
-      }),
+      });
+    },
 
-    replaceFromWizardFile: (wizardFile) =>
-      setState({
+    replaceFromWizardFile: async (wizardFile) => {
+      commit({
         wizardName: wizardFile.wizardName,
         fields: wizardFile.fields.map((field, index) => normalizeField(field, index))
-      }),
+      });
+    },
 
     toWizardFile: () => ({
       schema: 'wrokit/wizard-file',
       version: '1.0',
       wizardName: state.wizardName.trim(),
       fields: state.fields.map((field, index) => normalizeField(field, index))
-    }),
-
-    getState: () => state
+    })
   };
 };
