@@ -40,13 +40,18 @@ describe('isNormalizedPage', () => {
     expect(
       isNormalizedPage({
         schema: 'wrokit/normalized-page',
-        version: '1.0',
+        version: '2.0',
         pageIndex: 0,
         width: 1000,
         height: 1400,
+        aspectRatio: 1000 / 1400,
         imageDataUrl: 'data:image/png;base64,xxx',
-        dpi: 300,
-        colorMode: 'rgb'
+        sourceName: 'upload.pdf',
+        normalization: {
+          normalizedAtIso: '2026-01-01T00:00:00Z',
+          boundary: 'intake-raster-only',
+          pipelineVersion: '1.0'
+        }
       })
     ).toBe(true);
   });
@@ -56,13 +61,18 @@ describe('isNormalizedPage', () => {
     expect(
       isNormalizedPage({
         schema: 'wrokit/normalized-page',
-        version: '1.0',
+        version: '2.0',
         pageIndex: 0,
         width: 1,
         height: 1,
+        aspectRatio: 1,
         imageDataUrl: '',
-        dpi: 1,
-        colorMode: 'cmyk'
+        sourceName: 'upload.png',
+        normalization: {
+          normalizedAtIso: '2026-01-01T00:00:00Z',
+          boundary: 'wrong',
+          pipelineVersion: '1.0'
+        }
       })
     ).toBe(false);
   });

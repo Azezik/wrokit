@@ -8,17 +8,22 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
 - Modules stay isolated and communicate via typed contracts.
 - UI does not own engine logic.
 - Static-hosting compatible, browser-first, no backend required.
+- Intake is a one-way normalization boundary: downstream modules only consume `NormalizedPage` raster surfaces.
 
 ## Module Boundaries
 - `src/core/contracts`: shared typed contracts. Each persisted contract carries `schema` + `version` and exports a runtime `is<Type>` guard.
 - `src/core/io`: pure serialization / parsing / file-IO helpers (e.g. `wizard-file-io`). UI calls these; UI does not embed IO.
 - `src/core/storage`: UI-agnostic stores. All store mutators are async. All stores expose `subscribe(listener)` and `getSnapshot()` so React can attach via `useSyncExternalStore` and a future persistence adapter is a drop-in.
 - `src/core/engines`: pure transforms. Every engine implements the canonical `Engine<TInput, TOutput>` from `src/core/engines/engine.ts`. Engines never compose other engines and never reach into UI or storage.
+- `src/core/engines/normalization`: hard intake boundary. Accepts upload files and emits only `NormalizedPage[]`.
+  - `image-rasterizer.ts`: image decode/raster path.
+  - `pdf-rasterizer.ts`: **only allowed PDF.js usage**, and only for PDF page raster rendering.
+  - `normalization-engine.ts`: routes input files to raster adapters and returns normalized contract output.
 - `src/core/runtime`: the only place engines are composed. Runners exist as boundaries: `config-runner`, `extraction-runner`, `localization-runner`, `ocr-runner`, `confidence-runner`. Most are stubs that throw `not implemented in foundation phase`.
 - `src/core/ui/components`: reusable visual primitives (`Button`, `Input`, `Panel`, `Section`).
 - `src/core/ui/layout`: app-wide layout wrappers (`AppShell`).
 - `src/core/ui/styles`: centralized visual tokens + global base styles.
-- `src/features/<feature>/ui`: feature-owned UI modules (`wizard-builder`, reserved `extraction-preview`, reserved `config-viewport`). Features import from `core/*`. `core/*` never imports from `features/*`.
+- `src/features/<feature>/ui`: feature-owned UI modules (`wizard-builder`, `normalization`). Features import from `core/*`. `core/*` never imports from `features/*`.
 - `src/app`: page composition and shell wiring only.
 
 ## Engines vs Runtime Rule
@@ -26,10 +31,21 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
 - A runner is the *only* place engines are composed. If logic spans more than one engine, it lives in `src/core/runtime/`, not inside an engine module.
 - This rule is what allows two agents to develop two engines in parallel without collision.
 
+## Intake Normalization Boundary Rule
+- Accepted intake types: PDF, PNG, JPG/JPEG, WebP.
+- Intake conversion is one-way. Once normalized, downstream modules receive only `NormalizedPage[]`.
+- Downstream modules must not inspect or branch on original MIME type, upload internals, PDF dimensions, PDF coordinates, text tokens, annotations, or metadata.
+- `sourceName` in `NormalizedPage` is display-only and must not drive extraction logic.
+
 ## Contract Versioning Rule
-- Every persisted contract declares a literal `schema: 'wrokit/<name>'` and `version: '1.x'`.
+- Every persisted contract declares a literal `schema: 'wrokit/<name>'` and a semantic `version`.
 - Every persisted contract exports an `is<Type>(value: unknown): value is <Type>` runtime guard.
-- The current version for every contract is `1.0`.
+- Current versions:
+  - `WizardFile`: `1.0`
+  - `NormalizedPage`: `2.0`
+  - `GeometryFile`: `1.0`
+  - `StructuralModel`: `1.0`
+  - `ExtractionResult`: `1.0`
 
 ## Store Pattern
 - Stores are observable. Public surface: async mutators returning `Promise<void>`, `getSnapshot(): TSnapshot`, `subscribe(listener): () => void`.
@@ -41,12 +57,12 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
 - Visual tokens (colors, spacing, borders, shadows, radii, font sizes) are defined in `src/core/ui/styles/tokens.css`.
 - Global element defaults and shared classes live in `src/core/ui/styles/global.css`.
 - Reusable UI primitives are imported by feature UIs; feature UIs do not redefine core styling systems.
-- Feature-specific UI styling lives beside each feature (e.g., `src/features/wizard-builder/ui/wizard-builder.css`).
-- Business logic stays in stores/contracts/io and is consumed by UI through typed interfaces.
+- Feature-specific UI styling lives beside each feature (e.g., `src/features/wizard-builder/ui/wizard-builder.css`, `src/features/normalization/ui/normalization-intake.css`).
+- Business logic stays in stores/contracts/io/engines and is consumed by UI through typed interfaces.
 
 ## Data Contracts
-- `WizardFile` (`src/core/contracts/wizard.ts`): `schema: 'wrokit/wizard-file'`, `version: '1.0'`, `wizardName`, `fields: WizardField[]`. Guard: `isWizardFile`.
-- `NormalizedPage` (`src/core/contracts/normalized-page.ts`): `schema: 'wrokit/normalized-page'`, `version: '1.0'`. Guard: `isNormalizedPage`.
+- `WizardFile` (`src/core/contracts/wizard.ts`): `schema: 'wrokit/wizard-file'`, `version: '1.0'`. Guard: `isWizardFile`.
+- `NormalizedPage` (`src/core/contracts/normalized-page.ts`): `schema: 'wrokit/normalized-page'`, `version: '2.0'`, includes pixel width/height/aspect ratio and raster image URL surface data, plus display-only `sourceName`. Guard: `isNormalizedPage`.
 - `GeometryFile` (`src/core/contracts/geometry.ts`): `schema: 'wrokit/geometry-file'`, `version: '1.0'`. Guard: `isGeometryFile`.
 - `StructuralModel` (`src/core/contracts/structural-model.ts`): `schema: 'wrokit/structural-model'`, `version: '1.0'`. Guard: `isStructuralModel`.
 - `ExtractionResult` (`src/core/contracts/extraction-result.ts`): `schema: 'wrokit/extraction-result'`, `version: '1.0'`. Guard: `isExtractionResult`.
@@ -65,6 +81,8 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
 Implemented:
 - Visible app shell + dashboard module status page.
 - Wizard Builder feature wired through reusable UI components and the IO module.
+- Normalization intake engine with isolated PDF/image raster adapters.
+- Upload UI for PDF/PNG/JPG/JPEG/WebP with normalized page viewport and page switching.
 - Shared tokenized styling system.
 - Versioned + guarded contracts for all five persisted shapes.
 - Async observable stores with subscribe/snapshot.
@@ -72,9 +90,8 @@ Implemented:
 - Runtime stubs for extraction, config, localization, OCR, confidence.
 
 Not yet implemented:
-- Document intake.
 - Geometry capture.
 - Structural model generation.
-- Real engines.
+- Real OCR.
 - Runtime localization and OCR readout.
 - Persistence adapter.

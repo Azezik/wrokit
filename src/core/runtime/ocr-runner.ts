@@ -1,5 +1,11 @@
+import type { NormalizedPage } from '../contracts/normalized-page';
+
+export interface OcrRunnerInput {
+  pages: NormalizedPage[];
+}
+
 export interface OcrRunner {
-  run(): Promise<void>;
+  run(input: OcrRunnerInput): Promise<void>;
 }
 
 export const createOcrRunner = (): OcrRunner => ({
