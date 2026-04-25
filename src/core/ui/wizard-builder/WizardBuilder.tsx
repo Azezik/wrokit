@@ -1,32 +1,17 @@
-import { useMemo, useRef, useState, type CSSProperties, type ChangeEvent } from 'react';
+import { useMemo, useRef, useState, type ChangeEvent } from 'react';
 
 import { isWizardFile, type WizardFieldType } from '../../contracts/wizard';
 import {
   createWizardBuilderStore,
   type WizardBuilderState
 } from '../../storage/wizard-builder-store';
+import { Button } from '../components/Button';
+import { Input } from '../components/Input';
+import { Panel } from '../components/Panel';
+
+import './wizard-builder.css';
 
 const fieldTypes: WizardFieldType[] = ['text', 'numeric', 'any'];
-
-const containerStyle: CSSProperties = {
-  display: 'grid',
-  gridTemplateColumns: '1.4fr 1fr',
-  gap: '1rem',
-  alignItems: 'start'
-};
-
-const cardStyle: CSSProperties = {
-  border: '1px solid #d6d6d6',
-  borderRadius: '8px',
-  padding: '1rem',
-  background: '#fff'
-};
-
-const buttonGroupStyle: CSSProperties = {
-  display: 'flex',
-  gap: '0.5rem',
-  flexWrap: 'wrap'
-};
 
 export function WizardBuilder() {
   const storeRef = useRef(createWizardBuilderStore());
@@ -81,155 +66,134 @@ export function WizardBuilder() {
   };
 
   return (
-    <section aria-label="Wizard Builder">
-      <h2>Wizard Builder</h2>
-      <p>Define a wizard file by naming fields and selecting field types.</p>
+    <div className="wizard-builder-grid" aria-label="Wizard Builder">
+      <Panel>
+        <label className="wizard-builder-label">
+          <strong>Wizard Name</strong>
+          <Input
+            type="text"
+            value={state.wizardName}
+            onChange={(event) => applyState(storeRef.current.setWizardName(event.target.value))}
+            placeholder="Example: Vendor Invoice"
+          />
+        </label>
 
-      <div style={containerStyle}>
-        <div style={cardStyle}>
-          <label style={{ display: 'block', marginBottom: '0.75rem' }}>
-            <strong>Wizard Name</strong>
-            <input
-              type="text"
-              value={state.wizardName}
-              onChange={(event) => applyState(storeRef.current.setWizardName(event.target.value))}
-              placeholder="Example: Vendor Invoice"
-              style={{ display: 'block', width: '100%', marginTop: '0.35rem' }}
-            />
-          </label>
-
-          <div style={{ marginBottom: '1rem' }}>
-            <strong>Fields</strong>
-            <div style={{ marginTop: '0.5rem' }}>
-              {state.fields.length === 0 ? (
-                <p>No fields yet. Add your first field.</p>
-              ) : (
-                state.fields.map((field, index) => (
-                  <div
-                    key={`${field.fieldId}-${index}`}
-                    style={{ ...cardStyle, marginTop: '0.75rem', background: '#fafafa' }}
+        <strong>Fields</strong>
+        <div className="wizard-builder-field-list">
+          {state.fields.length === 0 ? (
+            <p>No fields yet. Add your first field.</p>
+          ) : (
+            state.fields.map((field, index) => (
+              <Panel key={`${field.fieldId}-${index}`} className="wizard-builder-field-card">
+                <div className="wizard-builder-actions">
+                  <Button type="button" onClick={() => applyState(storeRef.current.moveField(index, -1))}>
+                    Move Up
+                  </Button>
+                  <Button type="button" onClick={() => applyState(storeRef.current.moveField(index, 1))}>
+                    Move Down
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="danger"
+                    onClick={() => applyState(storeRef.current.removeField(index))}
                   >
-                    <div style={buttonGroupStyle}>
-                      <button type="button" onClick={() => applyState(storeRef.current.moveField(index, -1))}>
-                        Move Up
-                      </button>
-                      <button type="button" onClick={() => applyState(storeRef.current.moveField(index, 1))}>
-                        Move Down
-                      </button>
-                      <button type="button" onClick={() => applyState(storeRef.current.removeField(index))}>
-                        Remove
-                      </button>
-                    </div>
+                    Remove
+                  </Button>
+                </div>
 
-                    <label style={{ display: 'block', marginTop: '0.75rem' }}>
-                      Field ID
-                      <input
-                        type="text"
-                        value={field.fieldId}
-                        onChange={(event) =>
-                          applyState(
-                            storeRef.current.updateField(index, {
-                              fieldId: event.target.value
-                            })
-                          )
-                        }
-                        style={{ display: 'block', width: '100%' }}
-                      />
-                    </label>
+                <label className="wizard-builder-label">
+                  Field ID
+                  <Input
+                    type="text"
+                    value={field.fieldId}
+                    onChange={(event) =>
+                      applyState(
+                        storeRef.current.updateField(index, {
+                          fieldId: event.target.value
+                        })
+                      )
+                    }
+                  />
+                </label>
 
-                    <label style={{ display: 'block', marginTop: '0.5rem' }}>
-                      Label
-                      <input
-                        type="text"
-                        value={field.label}
-                        onChange={(event) =>
-                          applyState(
-                            storeRef.current.updateField(index, {
-                              label: event.target.value
-                            })
-                          )
-                        }
-                        style={{ display: 'block', width: '100%' }}
-                      />
-                    </label>
+                <label className="wizard-builder-label">
+                  Label
+                  <Input
+                    type="text"
+                    value={field.label}
+                    onChange={(event) =>
+                      applyState(
+                        storeRef.current.updateField(index, {
+                          label: event.target.value
+                        })
+                      )
+                    }
+                  />
+                </label>
 
-                    <label style={{ display: 'block', marginTop: '0.5rem' }}>
-                      Type
-                      <select
-                        value={field.type}
-                        onChange={(event) =>
-                          applyState(
-                            storeRef.current.updateField(index, {
-                              type: event.target.value as WizardFieldType
-                            })
-                          )
-                        }
-                        style={{ display: 'block', width: '100%' }}
-                      >
-                        {fieldTypes.map((fieldType) => (
-                          <option key={fieldType} value={fieldType}>
-                            {fieldType}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
+                <label className="wizard-builder-label">
+                  Type
+                  <select
+                    className="ui-select"
+                    value={field.type}
+                    onChange={(event) =>
+                      applyState(
+                        storeRef.current.updateField(index, {
+                          type: event.target.value as WizardFieldType
+                        })
+                      )
+                    }
+                  >
+                    {fieldTypes.map((fieldType) => (
+                      <option key={fieldType} value={fieldType}>
+                        {fieldType}
+                      </option>
+                    ))}
+                  </select>
+                </label>
 
-                    <label style={{ display: 'block', marginTop: '0.5rem' }}>
-                      <input
-                        type="checkbox"
-                        checked={field.required}
-                        onChange={(event) =>
-                          applyState(
-                            storeRef.current.updateField(index, {
-                              required: event.target.checked
-                            })
-                          )
-                        }
-                      />{' '}
-                      Required
-                    </label>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-
-          <div style={buttonGroupStyle}>
-            <button type="button" onClick={() => applyState(storeRef.current.addField())}>
-              Add Field
-            </button>
-            <button type="button" onClick={handleDownload}>
-              Download WizardFile JSON
-            </button>
-            <label style={{ display: 'inline-flex', alignItems: 'center' }}>
-              <input type="file" accept="application/json" onChange={handleImport} />
-            </label>
-          </div>
-
-          {importError ? (
-            <p role="alert" style={{ color: '#a80000', marginTop: '0.75rem' }}>
-              {importError}
-            </p>
-          ) : null}
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={field.required}
+                    onChange={(event) =>
+                      applyState(
+                        storeRef.current.updateField(index, {
+                          required: event.target.checked
+                        })
+                      )
+                    }
+                  />{' '}
+                  Required
+                </label>
+              </Panel>
+            ))
+          )}
         </div>
 
-        <aside style={cardStyle}>
-          <h3 style={{ marginTop: 0 }}>Live WizardFile JSON</h3>
-          <pre
-            style={{
-              margin: 0,
-              overflow: 'auto',
-              maxHeight: '70vh',
-              background: '#101727',
-              color: '#ebf0ff',
-              padding: '0.75rem',
-              borderRadius: '6px'
-            }}
-          >
-            {wizardFilePreview}
-          </pre>
-        </aside>
-      </div>
-    </section>
+        <div className="wizard-builder-actions">
+          <Button type="button" variant="primary" onClick={() => applyState(storeRef.current.addField())}>
+            Add Field
+          </Button>
+          <Button type="button" onClick={handleDownload}>
+            Download WizardFile JSON
+          </Button>
+          <label>
+            <Input type="file" accept="application/json" onChange={handleImport} />
+          </label>
+        </div>
+
+        {importError ? (
+          <p role="alert" className="wizard-builder-error">
+            {importError}
+          </p>
+        ) : null}
+      </Panel>
+
+      <Panel as="aside">
+        <h3 style={{ marginTop: 0 }}>Live WizardFile JSON</h3>
+        <pre className="wizard-builder-json">{wizardFilePreview}</pre>
+      </Panel>
+    </div>
   );
 }

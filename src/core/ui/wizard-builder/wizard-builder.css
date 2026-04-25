@@ -1,0 +1,50 @@
+.wizard-builder-grid {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.wizard-builder-field-list {
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+
+.wizard-builder-field-card {
+  background: var(--color-surface-muted);
+}
+
+.wizard-builder-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.wizard-builder-label {
+  display: grid;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.wizard-builder-json {
+  margin: 0;
+  overflow: auto;
+  max-height: 70vh;
+  background: var(--color-json-bg);
+  color: var(--color-json-text);
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
+}
+
+.wizard-builder-error {
+  color: var(--color-danger);
+  margin-top: var(--space-3);
+}
+
+@media (max-width: 960px) {
+  .wizard-builder-grid {
+    grid-template-columns: 1fr;
+  }
+}
