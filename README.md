@@ -1,12 +1,6 @@
-# Wrokit V2 (Foundation)
+# Wrokit V2
 
-Wrokit V2 is starting as a browser-based, static-hosting-friendly TypeScript application.
-
-This repository currently provides only the architectural foundation:
-- modular folder structure
-- typed contracts across layers
-- placeholder engine/runtime/storage boundaries
-- no backend or server dependencies
+Wrokit V2 is a browser-based, static-hosting-friendly TypeScript application for modular human-in-the-loop file ingestion.
 
 ## Tech Stack
 
@@ -27,55 +21,45 @@ The project is split into isolated modules under `src/core`.
 
 ### Contracts (`src/core/contracts`)
 Defines shared typed boundaries:
-- `wizard.ts` → `WizardFile`, `WizardField`
+- `wizard.ts` → `WizardFile`, `WizardField`, `isWizardFile`
 - `normalized-page.ts` → `NormalizedPage`
 - `geometry.ts` → `GeometryFile`, `FieldGeometry`
 - `structural-model.ts` → `StructuralModel`
 - `extraction-result.ts` → `ExtractionResult`
 
-### Engines (`src/core/engines`)
-Placeholder directories for future implementation:
-- normalization
-- geometry
-- structure
-- localization
-- ocr
-- confidence
-
 ### Runtime (`src/core/runtime`)
 - `config-runner.ts` (wizard config loading boundary)
 - `extraction-runner.ts` (future extraction orchestration boundary)
 
-Extraction runtime is intentionally not implemented in this foundation phase.
+Extraction runtime is intentionally not implemented in this phase.
 
 ### Storage (`src/core/storage`)
-In-memory placeholder stores for:
-- wizard definitions
-- geometry files
-- structural models
-
-These provide simple interfaces and can later be replaced by browser persistence or remote adapters.
+- `wizard-store.ts` in-memory wizard registry
+- `wizard-builder-store.ts` UI-agnostic state operations for builder actions
+- `geometry-store.ts` and `structural-store.ts` placeholders
 
 ### UI (`src/core/ui`)
-Reserved folders for future modular UI components:
-- shared components
-- wizard builder
-- config viewport
-- extraction preview
+- `wizard-builder/WizardBuilder.tsx` first real module
+- other UI areas remain reserved for future modules
 
-### Demo (`src/demo`)
-`sample-wizard.ts` provides a minimal typed wizard example for early development.
+## Wizard Builder (Implemented)
 
-## Current App
+The current app renders the Wizard Builder module:
+- set wizard name
+- add/remove/reorder fields
+- edit `fieldId`, `label`, `type` (`text | numeric | any`), `required`
+- generate live `WizardFile` JSON preview
+- download `WizardFile` JSON
+- import existing `WizardFile` JSON with contract validation
 
-`src/app/App.tsx` renders a minimal foundation screen only.
+## Project Docs
 
-No OCR, OpenCV, PDF.js text extraction, runtime extraction, or structural detection is implemented.
+- `docs/architecture.md` → concise source-of-truth architecture snapshot
+- `docs/dev-log.md` → append-only chronological implementation log
 
 ## Suggested Next Steps
 
-1. Add Wizard Builder UI using `WizardFile` contracts.
-2. Add normalized page intake contract flow.
-3. Add geometry capture UI with explicit save semantics.
-4. Add structural model generation placeholders that remain separate from geometry truth.
-5. Add tests per module as each feature lands.
+1. Add local persistence adapter for wizard definitions.
+2. Add wizard load/list UI flow.
+3. Add normalized page intake contract flow.
+4. Add geometry capture UI with explicit save semantics.

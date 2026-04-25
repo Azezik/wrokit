@@ -2,7 +2,8 @@ import type { WizardFile } from '../contracts/wizard';
 
 export interface WizardStore {
   save(wizard: WizardFile): void;
-  getById(id: string): WizardFile | undefined;
+  getByName(name: string): WizardFile | undefined;
+  list(): WizardFile[];
 }
 
 export const createWizardStore = (): WizardStore => {
@@ -10,8 +11,9 @@ export const createWizardStore = (): WizardStore => {
 
   return {
     save: (wizard) => {
-      memory.set(wizard.id, wizard);
+      memory.set(wizard.wizardName, wizard);
     },
-    getById: (id) => memory.get(id)
+    getByName: (name) => memory.get(name),
+    list: () => Array.from(memory.values())
   };
 };
