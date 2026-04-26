@@ -1,5 +1,95 @@
 # Wrokit Development Log
 
+## 2026-04-26 — Step: Geometry Module + Surface Authority Layer
+
+### Why this step
+- Wrokit needed a coherent Geometry module that turns a `WizardFile` and a `NormalizedPage` into a human-confirmed `GeometryFile` (Config Mode BBOX capture, save/load, validate, edit).
+- V1 suffered from canvas/viewport mismatches caused by separate fake canvas spaces, drifting overlay coordinate systems, and CSS-only coordinate assumptions. V2 must enforce a single page authority — the NormalizedPage raster surface — that Geometry today and the Structural Engine / OCR / Localization tomorrow all consume identically.
+
+### What changed
+- Added `src/core/page-surface/` — a thin infrastructural orchestration layer that owns canonical NormalizedPage surface authority. It is the only module allowed to convert between screen pixels, NormalizedPage surface pixels, and normalized `[0, 1]` coordinates. Every page-aware module (Geometry today, Structural Engine / OpenCV / Localization / OCR / runtime overlays tomorrow) is required to flow coordinates through this layer.
+  - `getPageSurface(page)` derives the canonical `PageSurface` from a `NormalizedPage`.
+  - `buildSurfaceTransform(surface, displayRect)` builds the screen↔surface transform from the *actual* displayed image rect.
+  - `screenToSurface`, `surfaceToScreen`, `surfaceRectToNormalized`, `normalizedRectToSurface`, `normalizedRectToScreen` cover every conversion.
+  - `isNormalizedRectInBounds`, `assertSurfaceMatches`, `normalizeRectFromCorners` are the invariant checks and clipping primitives.
+- Extended the `GeometryFile` contract (`src/core/contracts/geometry.ts`) to v1.1 with `geometryFileVersion: 'wrokit/geometry/v1'`. Each `FieldGeometry` now carries:
+  - `bbox: { xNorm, yNorm, wNorm, hNorm }` — canonical normalized authority.
+  - `pixelBbox: { x, y, width, height }` — surface-pixel snapshot, derived deterministically from `bbox + pageSurface`.
+  - `pageSurface: { pageIndex, surfaceWidth, surfaceHeight }` — the NormalizedPage dimensions geometry was captured against, so a future engine can detect drift.
+  - `BoundingBox` (the old pixel-only type) was removed from `geometry.ts` and inlined into `structural-model.ts`, which was its only remaining consumer. Geometry no longer leaks pixel-only assumptions into other contracts.
+- Added the Geometry engine `src/core/engines/geometry/`:
+  - `geometry-engine.ts` implements the canonical `Engine<I, O>` interface and pure-functionally builds a `GeometryFile` from drafts.
+  - `validation.ts` is the single source of truth for validation. It enforces: all required wizard fields present; no unknown fieldIds (unless `tolerateUnknownFieldIds`); referenced `pageIndex` exists; coordinates finite and within `[0, 1]` (and `x + w <= 1`, `y + h <= 1`); `pageSurface` matches the loaded NormalizedPage authority within 1px tolerance; `wizardId` matches `WizardFile.wizardName`. Validation lives in core, not UI.
+- Added `src/core/io/geometry-file-io.ts` with `serializeGeometryFile`, `parseGeometryFile`, `downloadGeometryFile`, mirroring the WizardFile IO module shape.
+- Added `src/core/storage/geometry-builder-store.ts` — an async observable store that owns the in-progress capture session (wizardId, documentFingerprint, fields, metadata) and produces a `GeometryFile` snapshot on demand.
+- Rewrote `src/core/runtime/config-runner.ts` from a placeholder into a real composer: `buildAndValidate(...)` runs the geometry engine then the validator; `validateExisting(...)` validates an imported GeometryFile against the loaded WizardFile + pages. Composition lives only in the runner; engines stay pure.
+- Added the Config Mode UI feature `src/features/config-capture/ui/ConfigCapture.tsx` (+ `config-capture.css`):
+  - Loads a WizardFile via JSON import.
+  - Loads a document through the existing normalization intake engine — geometry never sees raw uploads, only NormalizedPages.
+  - Walks fields in wizard order with the prompt **"Where is [field label]?"**.
+  - Draws BBOX directly on the displayed NormalizedPage image. Pointer events resolve through `page-surface`: `screen → surface → normalized`. The displayed image's actual `getBoundingClientRect()` is the only source for the display transform; a `ResizeObserver` keeps it in sync as the viewport reflows.
+  - Save Field is required before moving on. Saved boxes overlay the same image and are themselves rendered by transforming canonical normalized coordinates back to screen space through the same transform — no second coordinate universe.
+  - Each saved field is tied to `fieldId + pageIndex`, with `pixelBbox` and `pageSurface` snapshot included.
+  - Editing: select any saved field, redraw, save — the upsert replaces the prior bbox.
+  - Live `GeometryFile` JSON preview, Download, and Import are wired to the IO module.
+  - Validation panel renders the `ConfigRunner.validateExisting` result; UI never decides validity itself.
+- Added the page route + dashboard wiring (`src/app/pages/ConfigCapturePage.tsx`, `routes.ts`, `App.tsx`, `HomeDashboardPage.tsx` Geometry status flipped from `planned` to `active`).
+- Added unit tests:
+  - `tests/unit/page-surface.test.ts` — surface derivation, transform round-trip, in-bounds checks, corner-clipping.
+  - `tests/unit/geometry-validation.test.ts` — every validation rule.
+  - `tests/unit/geometry-file-io.test.ts` — serialize/parse round-trip and error cases.
+  - Existing `tests/unit/contracts.test.ts` updated to the new GeometryFile shape.
+
+### Surface authority enforcement
+- The drawing surface is the displayed `<img>` of the canonical `NormalizedPage.imageDataUrl`. There is no separate canvas, no fake page space, and no CSS-only positioning of saved boxes. Saved boxes are positioned by transforming the persisted normalized coordinates through the live display transform, so they cannot drift out of alignment with the page they were drawn on.
+- Every coordinate conversion (capture and render) flows through `src/core/page-surface/`. Validation re-checks that the persisted `pageSurface` matches the loaded NormalizedPage dimensions within 1px tolerance; mismatches raise the `page-surface-mismatch` validation issue.
+- Persisted geometry is normalized `[0, 1]` over the canonical NormalizedPage surface — the same surface a future OpenCV / Structural Engine pass will consume — so user-drawn BBOX geometry maps directly into the same coordinate universe used by future structural modelling.
+
+### Boundaries preserved
+- No OCR, OpenCV, or structure detection added.
+- No runtime extraction added.
+- No new coordinate system that future engines cannot directly consume.
+- `pdfjs-dist` still used only inside `pdf-rasterizer.ts`.
+- Geometry has no awareness of source MIME type; it consumes only `NormalizedPage`s produced by the normalization engine.
+- GeometryFile is human-confirmed truth; it is not merged with `StructuralModel`.
+
+### Files added
+- `src/core/page-surface/page-surface.ts`
+- `src/core/page-surface/index.ts`
+- `src/core/engines/geometry/geometry-engine.ts`
+- `src/core/engines/geometry/validation.ts`
+- `src/core/engines/geometry/types.ts`
+- `src/core/engines/geometry/index.ts`
+- `src/core/io/geometry-file-io.ts`
+- `src/core/storage/geometry-builder-store.ts`
+- `src/features/config-capture/ui/ConfigCapture.tsx`
+- `src/features/config-capture/ui/config-capture.css`
+- `src/app/pages/ConfigCapturePage.tsx`
+- `tests/unit/page-surface.test.ts`
+- `tests/unit/geometry-validation.test.ts`
+- `tests/unit/geometry-file-io.test.ts`
+
+### Files modified
+- `src/core/contracts/geometry.ts` (extended to v1.1 with normalized bbox + pageSurface ref)
+- `src/core/contracts/structural-model.ts` (inlined `BoundingBox` since it's the only remaining consumer of the old shape)
+- `src/core/runtime/config-runner.ts` (now composes geometry engine + validation)
+- `src/app/App.tsx` (mounts `ConfigCapturePage`)
+- `src/app/routes.ts` (registers `configCapture` route)
+- `src/app/pages/HomeDashboardPage.tsx` (Geometry module status → active)
+- `tests/unit/contracts.test.ts` (updated to v1.1 GeometryFile shape)
+- `docs/architecture.md`
+- `docs/dev-log.md`
+
+### Checks run
+- `npm run check` (`tsc --noEmit`): passed.
+- `npm run build` (`tsc -b && vite build`): passed; bundle emitted.
+- `npm test` (vitest): all 27 tests pass (10 contracts + 6 page-surface + 7 geometry-validation + 4 geometry-file-io).
+
+### Recommended next step
+- Persist completed `GeometryFile` snapshots into the existing `GeometryStore` from the Config Mode UI (Save → store) so the dashboard can list saved geometries via `useSyncExternalStore`, mirroring the upcoming Wizard save flow.
+
+---
+
 ## 2026-04-26 — Step: Normalization Engine Intake Fix (PDF Worker + Image Audit)
 
 ### Why this step

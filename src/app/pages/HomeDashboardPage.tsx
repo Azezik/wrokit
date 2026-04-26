@@ -9,7 +9,11 @@ const moduleStatus = [
     status: 'active',
     note: 'All supported upload formats now terminate into NormalizedPage raster surfaces.'
   },
-  { name: 'Geometry File', status: 'planned', note: 'Human-confirmed BBOX layer reserved.' },
+  {
+    name: 'Geometry File',
+    status: 'active',
+    note: 'Config Mode BBOX capture, validation, and import/export now wired.'
+  },
   { name: 'Structural Model', status: 'planned', note: 'Machine structure map remains separate.' },
   { name: 'Runtime Localization', status: 'planned', note: 'Not yet connected by design.' }
 ] as const;
