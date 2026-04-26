@@ -162,3 +162,36 @@
 
 ### Recommended next step
 - Add simple shell navigation tabs (Dashboard / Wizard Builder / future modules) as a UI-only enhancement using existing shared components.
+
+---
+
+## 2026-04-25 — Step: GitHub Pages Deployment Pipeline Fix
+
+### Why this step
+- Production GitHub Pages was serving from the repository project path, but deployment/build wiring was incomplete for Vite static output, causing a missing built asset (`main.tsx` 404 symptom in browser console).
+- Goal: enforce a deterministic Pages build-and-deploy flow and keep Vite asset URLs aligned with the repository path.
+
+### What changed
+- Added a dedicated GitHub Actions workflow at `.github/workflows/deploy-pages.yml`.
+  - Triggers on push to `main` and manual dispatch.
+  - Runs `npm ci` then `npm run build`.
+  - Uploads `dist/` as Pages artifact.
+  - Deploys artifact using GitHub Pages official deploy action.
+- Updated `vite.config.ts` base configuration.
+  - `base` is now always generated as `/<repo-name>/`.
+  - Repository name resolves from `GITHUB_REPOSITORY` and falls back to `wrokit`.
+
+### Boundaries preserved
+- No product feature changes.
+- No runtime/engine architecture changes.
+- No extraction flow changes.
+
+### Files created
+- `.github/workflows/deploy-pages.yml`
+
+### Files modified
+- `vite.config.ts`
+- `docs/dev-log.md`
+
+### Recommended next step
+- In repository settings, ensure GitHub Pages source is set to **GitHub Actions** so this workflow is authoritative for deployment.
