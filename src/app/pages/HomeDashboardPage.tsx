@@ -1,4 +1,3 @@
-import { NormalizationIntake } from '../../features/normalization/ui/NormalizationIntake';
 import { Panel } from '../../core/ui/components/Panel';
 import { Section } from '../../core/ui/components/Section';
 
@@ -7,7 +6,7 @@ const moduleStatus = [
   {
     name: 'Normalized Page Intake',
     status: 'active',
-    note: 'All supported upload formats now terminate into NormalizedPage raster surfaces.'
+    note: 'Intake is unified into Config Capture — upload, normalization, and BBOX drawing happen in one flow.'
   },
   {
     name: 'Geometry File',
@@ -20,23 +19,19 @@ const moduleStatus = [
 
 export function HomeDashboardPage() {
   return (
-    <>
-      <Section
-        title="Dashboard"
-        description="Current module visibility and implementation status for this static-hosted shell."
-      >
-        <Panel>
-          <ul style={{ margin: 0, paddingLeft: '1.25rem', display: 'grid', gap: '0.5rem' }}>
-            {moduleStatus.map((module) => (
-              <li key={module.name}>
-                <strong>{module.name}</strong> — <em>{module.status}</em>: {module.note}
-              </li>
-            ))}
-          </ul>
-        </Panel>
-      </Section>
-
-      <NormalizationIntake />
-    </>
+    <Section
+      title="Dashboard"
+      description="Current module visibility and implementation status for this static-hosted shell."
+    >
+      <Panel>
+        <ul style={{ margin: 0, paddingLeft: '1.25rem', display: 'grid', gap: '0.5rem' }}>
+          {moduleStatus.map((module) => (
+            <li key={module.name}>
+              <strong>{module.name}</strong> — <em>{module.status}</em>: {module.note}
+            </li>
+          ))}
+        </ul>
+      </Panel>
+    </Section>
   );
 }

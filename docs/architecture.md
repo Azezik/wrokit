@@ -28,7 +28,7 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
 - `src/core/ui/components`: reusable visual primitives (`Button`, `Input`, `Panel`, `Section`).
 - `src/core/ui/layout`: app-wide layout wrappers (`AppShell`).
 - `src/core/ui/styles`: centralized visual tokens + global base styles.
-- `src/features/<feature>/ui`: feature-owned UI modules (`wizard-builder`, `normalization`, `config-capture`). Features import from `core/*`. `core/*` never imports from `features/*`.
+- `src/features/<feature>/ui`: feature-owned UI modules (`wizard-builder`, `config-capture`). Features import from `core/*`. `core/*` never imports from `features/*`. The `normalization` feature UI exists as a library component but is not mounted in the app; normalization is surfaced exclusively through Config Capture.
 - `src/app`: page composition and shell wiring only.
 
 ## Engines vs Runtime Rule
@@ -103,14 +103,14 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
 - `src/core/io/geometry-file-io.ts` serializes/parses/downloads GeometryFile JSON.
 - `src/core/storage/geometry-builder-store.ts` is the in-progress capture session store.
 - `src/core/runtime/config-runner.ts` orchestrates geometry build + validation.
-- `src/features/config-capture/ui/ConfigCapture.tsx` is the Config Mode UI: walk wizard fields in order, draw a BBOX on the NormalizedPage viewport, save per field, edit via redraw/clear, live JSON preview, validation panel, download/import GeometryFile JSON.
+- `src/features/config-capture/ui/ConfigCapture.tsx` is the **primary and only upload entry point** in the app. It handles the full intake flow: upload file → normalize via the normalization engine → display the canonical `NormalizedPage` raster surface → draw BBOX. Walk wizard fields in order, draw a BBOX on the NormalizedPage viewport, save per field, edit via redraw/clear, live JSON preview, validation panel, download/import GeometryFile JSON. There is no separate standalone normalization UI in the app.
 
 ## Current Implementation Status
 Implemented:
 - Visible app shell + dashboard module status page.
 - Wizard Builder feature wired through reusable UI components and the IO module.
 - Normalization intake engine with isolated PDF/image raster adapters.
-- Upload UI for PDF/PNG/JPG/JPEG/WebP with normalized page viewport and page switching.
+- **Unified Config Capture intake flow**: upload (PDF/PNG/JPG/JPEG/WebP), normalization, and BBOX drawing are a single workflow in `ConfigCapture`. There is no separate standalone normalization UI mounted in the app.
 - Surface authority layer (`page-surface`) used by the Geometry module today and reserved for all future page-aware engines.
 - Geometry module: BBOX capture (Config Mode), validation, save/load/import/export, edit/redraw, live JSON preview.
 - Shared tokenized styling system.

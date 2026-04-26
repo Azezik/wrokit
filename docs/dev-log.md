@@ -1,5 +1,47 @@
 # Wrokit Development Log
 
+## 2026-04-26 — Step: Unify Normalization Flow into Config Capture
+
+### Why this step
+- The website previously exposed two separate upload/normalization entry points: a standalone "Normalized Page Intake" section on the dashboard and a document upload inside Config Capture.
+- This created a confusing UX where a user could normalize a file in one place and then have to upload it again in another place to draw BBOXes.
+- The two paths maintained independent local state with no coordination between them, so normalized pages from the dashboard were never reachable by Config Capture.
+- Goal: one canonical intake path. Config Capture is now the only place where the user uploads, normalizes, and draws geometry.
+
+### What changed
+- **Removed** the standalone `<NormalizationIntake />` section from `HomeDashboardPage`. The dashboard now renders only the module status panel.
+- **Removed** the `NormalizationIntake` import from `HomeDashboardPage.tsx`.
+- **Updated** the "Normalized Page Intake" module status entry on the dashboard to note that intake is unified into Config Capture.
+- No UI was added. No engine code was changed. No contracts were changed. No stores were changed.
+- The `NormalizationIntake` component file (`src/features/normalization/ui/NormalizationIntake.tsx`) is retained as an unmounted library component; the normalization engine it wraps remains fully intact and continues to be used by Config Capture.
+
+### Normalization boundary preserved
+- All uploads still flow through `createNormalizationEngine()` inside `ConfigCapture`.
+- `pdfjs-dist` is still used only inside `pdf-rasterizer.ts`.
+- Every uploaded file is still converted to `NormalizedPage[]` before any geometry operation.
+- No downstream module can distinguish a PDF-sourced page from an image-sourced page.
+
+### How Config Capture gets NormalizedPage data
+- `ConfigCapture` calls `normalizationEngineRef.current.normalize(file)` on document upload and stores the resulting `NormalizedPage[]` in local component state (`pages`, `sourceName`).
+- The displayed `<img>` is `selectedPage.imageDataUrl` — the canonical raster surface, not the raw upload.
+- This was already the case before this change; removing the standalone intake section does not alter this data path.
+
+### BBOX coordinate authority preserved
+- All pointer events still resolve through `src/core/page-surface/`: screen → surface → normalized.
+- Saved overlays are rendered by transforming canonical normalized coordinates back to screen space through the same live display transform.
+- No coordinate system changes were made.
+
+### Files modified
+- `src/app/pages/HomeDashboardPage.tsx` (removed NormalizationIntake import and render; updated module status note)
+- `docs/architecture.md` (updated feature UI section, Geometry Module section, and Implementation Status)
+- `docs/dev-log.md`
+
+### Checks run
+- `npm run check` (`tsc --noEmit`): passed.
+- `npm test` (vitest): all tests pass (no test changes required — no engine, contract, store, or IO changes).
+
+---
+
 ## 2026-04-26 — Step: Geometry Module + Surface Authority Layer
 
 ### Why this step
