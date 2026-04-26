@@ -1,5 +1,62 @@
 # Wrokit Development Log
 
+## 2026-04-26 — Step: Normalization Engine Intake Fix (PDF Worker + Image Audit)
+
+### Why this step
+- PDF upload failed at runtime with `No "GlobalWorkerOptions.workerSrc" specified.`
+- The previous `pdf-rasterizer.ts` loaded `pdfjs-dist` from a CDN via runtime `import()`, set `GlobalWorkerOptions.workerSrc = ''`, and passed `disableWorker: true`. The `disableWorker` flag does not bypass PDF.js's worker-source validation in v4 — `getDocument` still requires a real `workerSrc` URL, so it threw immediately.
+- The image upload path needed an audit to confirm it produced canonical `NormalizedPage` raster surfaces rather than passing the original upload through to the UI.
+
+### Cause of the PDF worker error
+- The CDN-loaded build of `pdfjs-dist@4.10.38` requires `GlobalWorkerOptions.workerSrc` to point at a worker script that the browser can fetch and instantiate.
+- Setting `workerSrc = ''` and trying to disable the worker is not a supported configuration in this version; PDF.js validates the source string before falling back to any in-process fake worker, so loading any document fails with the reported error.
+
+### Image normalization audit result
+- `image-rasterizer.ts` decodes the upload via `createImageBitmap`, draws onto a fresh `HTMLCanvasElement`, and re-encodes via `canvas.toDataURL('image/png')`.
+- The resulting `NormalizedPage.imageDataUrl` is a brand new PNG buffer; the source MIME type, source bytes, and any source-format identity are dropped at the rasterizer boundary.
+- The intake UI (`NormalizationIntake.tsx`) only renders `selectedPage.imageDataUrl`. It never references the raw upload `File` or a `URL.createObjectURL` from the original blob. Image normalization was already happening; no leak of the raw upload existed.
+- Cleanup hygiene was tightened so the decoded `ImageBitmap` is closed via `try/finally`, matching the PDF rasterizer cleanup pattern.
+
+### What changed
+- Added `pdfjs-dist@^4.10.38` as a real dependency in `package.json` (and refreshed `package-lock.json`) so the library is bundled by Vite instead of fetched from a CDN at runtime.
+- Rewrote `src/core/engines/normalization/pdf-rasterizer.ts`:
+  - Imports `pdfjs-dist` statically.
+  - Imports the worker file via Vite's `?url` suffix:
+    `import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';`
+  - Sets `pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl` exactly once on first use.
+  - Uses standard `getDocument({ data })` (no `disableWorker` hack).
+  - Adds page/document `cleanup()` + `destroy()` in a `try/finally` so each rasterize call releases PDF.js resources.
+- Tightened `src/core/engines/normalization/image-rasterizer.ts` so the decoded bitmap is always released via `try/finally`.
+- Added `src/vite-env.d.ts` with `/// <reference types="vite/client" />` so the `?url` import is properly typed under `tsc --noEmit`.
+
+### Boundary preserved
+- All PDF.js usage stays inside `pdf-rasterizer.ts`. No other module imports `pdfjs-dist`.
+- All image-specific decode/draw/encode logic stays inside `image-rasterizer.ts`.
+- `normalization-engine.ts` still routes only on MIME type at the intake boundary and immediately wraps both adapter outputs into a uniform `NormalizedPage` via `toNormalizedPage`. No downstream consumer can detect whether a page came from a PDF or an image.
+- `NormalizedPage.sourceName` remains display-only.
+- No OCR, OpenCV, structure detection, text-layer extraction, or extraction logic was added.
+
+### Files modified
+- `package.json` (added `pdfjs-dist` to `dependencies`)
+- `package-lock.json` (refreshed)
+- `src/core/engines/normalization/pdf-rasterizer.ts`
+- `src/core/engines/normalization/image-rasterizer.ts`
+- `docs/architecture.md`
+- `docs/dev-log.md`
+
+### Files added
+- `src/vite-env.d.ts`
+
+### Checks run
+- `npm run check` (`tsc --noEmit`): passed.
+- `npm run build` (`tsc -b && vite build`): passed. Vite emits the worker as `dist/assets/pdf.worker.min-<hash>.mjs` and references it under the GitHub Pages base path `/<repo>/assets/...`, confirmed by inspecting the built `index` chunk.
+- `npm test` (vitest): all 10 contract tests pass.
+
+### Recommended next step
+- Add a `NormalizationStore` so normalized page sessions survive page changes and can be consumed by the upcoming Geometry module without coupling UI state to engine state.
+
+---
+
 ## 2026-04-25 — Step: Normalization Engine Intake Boundary
 
 ### Why this step
