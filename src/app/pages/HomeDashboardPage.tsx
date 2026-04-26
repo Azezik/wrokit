@@ -13,7 +13,11 @@ const moduleStatus = [
     status: 'active',
     note: 'Config Mode BBOX capture, validation, and import/export now wired.'
   },
-  { name: 'Structural Model', status: 'planned', note: 'Machine structure map remains separate.' },
+  {
+    name: 'Structural Model',
+    status: 'active',
+    note: 'Border + Refined Border auto-compute on NormalizedPage upload via the OpenCV.js CV adapter; debug overlay toggle in Config Capture.'
+  },
   { name: 'Runtime Localization', status: 'planned', note: 'Not yet connected by design.' }
 ] as const;
 
