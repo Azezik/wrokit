@@ -69,7 +69,7 @@ export function WizardBuilder() {
             <p>No fields yet. Add your first field.</p>
           ) : (
             state.fields.map((field, index) => (
-              <Panel key={`${field.fieldId}-${index}`} className="wizard-builder-field-card">
+              <Panel key={field.internalId} className="wizard-builder-field-card">
                 <div className="wizard-builder-actions">
                   <Button
                     type="button"

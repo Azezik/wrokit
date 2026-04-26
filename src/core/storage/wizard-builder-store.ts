@@ -1,9 +1,13 @@
 import type { WizardField, WizardFieldType, WizardFile } from '../contracts/wizard';
 import type { ObservableStore, StoreListener } from './observable-store';
 
+export interface WizardBuilderField extends WizardField {
+  internalId: string;
+}
+
 export interface WizardBuilderState {
   wizardName: string;
-  fields: WizardField[];
+  fields: WizardBuilderField[];
 }
 
 export interface WizardBuilderStore extends ObservableStore<WizardBuilderState> {
@@ -16,7 +20,15 @@ export interface WizardBuilderStore extends ObservableStore<WizardBuilderState> 
   toWizardFile(): WizardFile;
 }
 
-const createField = (index: number): WizardField => ({
+let fieldInternalIdCounter = 0;
+
+const createInternalId = (): string => {
+  fieldInternalIdCounter += 1;
+  return `wb_field_${fieldInternalIdCounter}`;
+};
+
+const createField = (index: number): WizardBuilderField => ({
+  internalId: createInternalId(),
   fieldId: `field_${index + 1}`,
   label: `Field ${index + 1}`,
   type: 'text',
@@ -30,7 +42,10 @@ const normalizeFieldForFile = (field: WizardField, index: number): WizardField =
   required: field.required
 });
 
-const cloneField = (field: WizardField): WizardField => ({ ...field });
+const cloneField = (field: WizardField): WizardBuilderField => ({
+  internalId: createInternalId(),
+  ...field
+});
 
 export const createEmptyWizardFile = (): WizardFile => ({
   schema: 'wrokit/wizard-file',
@@ -121,7 +136,9 @@ export const createWizardBuilderStore = (
       schema: 'wrokit/wizard-file',
       version: '1.0',
       wizardName: state.wizardName.trim(),
-      fields: state.fields.map((field, index) => normalizeFieldForFile(field, index))
+      fields: state.fields.map(({ internalId: _internalId, ...field }, index) =>
+        normalizeFieldForFile(field, index)
+      )
     })
   };
 };
