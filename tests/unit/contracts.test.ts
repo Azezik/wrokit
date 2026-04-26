@@ -83,7 +83,8 @@ describe('isGeometryFile', () => {
     expect(
       isGeometryFile({
         schema: 'wrokit/geometry-file',
-        version: '1.0',
+        version: '1.1',
+        geometryFileVersion: 'wrokit/geometry/v1',
         id: 'g1',
         wizardId: 'w1',
         documentFingerprint: 'sha256:abc',
@@ -91,7 +92,9 @@ describe('isGeometryFile', () => {
           {
             fieldId: 'f1',
             pageIndex: 0,
-            bbox: { x: 0, y: 0, width: 10, height: 10 },
+            bbox: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.2, hNorm: 0.2 },
+            pixelBbox: { x: 100, y: 100, width: 200, height: 200 },
+            pageSurface: { pageIndex: 0, surfaceWidth: 1000, surfaceHeight: 1000 },
             confirmedAtIso: '2026-01-01T00:00:00Z',
             confirmedBy: 'user'
           }
@@ -100,12 +103,13 @@ describe('isGeometryFile', () => {
     ).toBe(true);
   });
 
-  it('rejects malformed bbox', () => {
+  it('rejects malformed bbox or missing geometryFileVersion', () => {
     expect(isGeometryFile(null)).toBe(false);
     expect(
       isGeometryFile({
         schema: 'wrokit/geometry-file',
-        version: '1.0',
+        version: '1.1',
+        geometryFileVersion: 'wrokit/geometry/v1',
         id: 'g1',
         wizardId: 'w1',
         documentFingerprint: 'sha256:abc',
@@ -113,11 +117,23 @@ describe('isGeometryFile', () => {
           {
             fieldId: 'f1',
             pageIndex: 0,
-            bbox: { x: 0, y: 0, width: 'wide', height: 10 },
+            bbox: { xNorm: 0.1, yNorm: 0.1, wNorm: 'wide', hNorm: 0.2 },
+            pixelBbox: { x: 100, y: 100, width: 200, height: 200 },
+            pageSurface: { pageIndex: 0, surfaceWidth: 1000, surfaceHeight: 1000 },
             confirmedAtIso: '2026-01-01T00:00:00Z',
             confirmedBy: 'user'
           }
         ]
+      })
+    ).toBe(false);
+    expect(
+      isGeometryFile({
+        schema: 'wrokit/geometry-file',
+        version: '1.1',
+        id: 'g1',
+        wizardId: 'w1',
+        documentFingerprint: 'sha256:abc',
+        fields: []
       })
     ).toBe(false);
   });

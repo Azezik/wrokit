@@ -1,0 +1,163 @@
+.config-capture {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.config-capture__column {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.config-capture__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.config-capture__meta {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  margin: 0;
+}
+
+.config-capture__prompt {
+  font-size: var(--font-size-lg);
+  margin: 0;
+}
+
+.config-capture__field-list {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.config-capture__field-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-muted);
+  align-items: center;
+}
+
+.config-capture__field-row[data-active='true'] {
+  outline: 2px solid var(--color-primary);
+  background: var(--color-surface);
+}
+
+.config-capture__field-row[data-saved='true'] .config-capture__field-status {
+  color: var(--color-primary);
+}
+
+.config-capture__field-status {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.config-capture__viewport-frame {
+  position: relative;
+  display: inline-block;
+  border: var(--border-default);
+  border-radius: var(--radius-sm);
+  background: white;
+  user-select: none;
+  touch-action: none;
+  max-width: 100%;
+}
+
+.config-capture__viewport-image {
+  display: block;
+  max-width: 100%;
+  max-height: 72vh;
+  width: auto;
+  height: auto;
+  pointer-events: none;
+}
+
+.config-capture__overlay {
+  position: absolute;
+  inset: 0;
+  cursor: crosshair;
+}
+
+.config-capture__overlay-box {
+  position: absolute;
+  border: 2px solid var(--color-primary);
+  background: rgb(42 95 255 / 0.12);
+  pointer-events: none;
+}
+
+.config-capture__overlay-box[data-saved='true'] {
+  border-color: #10b981;
+  background: rgb(16 185 129 / 0.12);
+}
+
+.config-capture__overlay-box[data-active='true'] {
+  border-color: var(--color-primary);
+  background: rgb(42 95 255 / 0.18);
+}
+
+.config-capture__overlay-label {
+  position: absolute;
+  top: -1.5rem;
+  left: 0;
+  background: rgb(15 23 40 / 0.8);
+  color: #fff;
+  padding: 0 var(--space-2);
+  font-size: var(--font-size-xs);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+.config-capture__draft {
+  position: absolute;
+  border: 2px dashed var(--color-primary);
+  background: rgb(42 95 255 / 0.16);
+  pointer-events: none;
+}
+
+.config-capture__validation-list {
+  list-style: disc;
+  padding-left: var(--space-5);
+  margin: 0;
+  display: grid;
+  gap: var(--space-1);
+}
+
+.config-capture__validation-list li {
+  font-size: var(--font-size-sm);
+}
+
+.config-capture__validation--ok {
+  color: var(--color-primary);
+}
+
+.config-capture__validation--error {
+  color: var(--color-danger);
+}
+
+.config-capture__json {
+  margin: 0;
+  overflow: auto;
+  max-height: 60vh;
+  background: var(--color-json-bg);
+  color: var(--color-json-text);
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
+}
+
+.config-capture__error {
+  color: var(--color-danger);
+  margin: 0;
+}
+
+@media (max-width: 1100px) {
+  .config-capture {
+    grid-template-columns: 1fr;
+  }
+}

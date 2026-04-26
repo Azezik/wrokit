@@ -1,4 +1,5 @@
 import { AppShell } from '../core/ui/layout/AppShell';
+import { ConfigCapturePage } from './pages/ConfigCapturePage';
 import { HomeDashboardPage } from './pages/HomeDashboardPage';
 import { WizardBuilderPage } from './pages/WizardBuilderPage';
 
@@ -10,6 +11,7 @@ function App() {
     >
       <HomeDashboardPage />
       <WizardBuilderPage />
+      <ConfigCapturePage />
     </AppShell>
   );
 }

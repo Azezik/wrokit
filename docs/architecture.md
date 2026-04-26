@@ -12,18 +12,23 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
 
 ## Module Boundaries
 - `src/core/contracts`: shared typed contracts. Each persisted contract carries `schema` + `version` and exports a runtime `is<Type>` guard.
-- `src/core/io`: pure serialization / parsing / file-IO helpers (e.g. `wizard-file-io`). UI calls these; UI does not embed IO.
+- `src/core/io`: pure serialization / parsing / file-IO helpers (e.g. `wizard-file-io`, `geometry-file-io`). UI calls these; UI does not embed IO.
+- `src/core/page-surface`: thin infrastructural orchestration layer that owns canonical NormalizedPage surface authority — page dimensions, display transforms, screen↔surface coordinate mapping, normalized↔surface conversions, and invariant checks. Every module that touches page geometry (Geometry capture, future Structural Engine, Localization, OCR readout, runtime overlays) consumes coordinates through this layer. It is infrastructure, not business logic.
 - `src/core/storage`: UI-agnostic stores. All store mutators are async. All stores expose `subscribe(listener)` and `getSnapshot()` so React can attach via `useSyncExternalStore` and a future persistence adapter is a drop-in.
 - `src/core/engines`: pure transforms. Every engine implements the canonical `Engine<TInput, TOutput>` from `src/core/engines/engine.ts`. Engines never compose other engines and never reach into UI or storage.
 - `src/core/engines/normalization`: hard intake boundary. Accepts upload files and emits only `NormalizedPage[]`.
   - `image-rasterizer.ts`: image decode/raster path. Decodes via `createImageBitmap`, draws onto a fresh `HTMLCanvasElement`, and re-encodes via `canvas.toDataURL('image/png')`. The output PNG carries no source-format identity.
   - `pdf-rasterizer.ts`: **only allowed PDF.js usage**, and only for PDF page raster rendering. Imports `pdfjs-dist` directly from the bundled npm dependency, and resolves the PDF.js worker through Vite's `?url` import (`pdfjs-dist/build/pdf.worker.min.mjs?url`). The worker is emitted by Vite as a hashed asset under the configured `base` path, which keeps it working under GitHub Pages project-page routing. `GlobalWorkerOptions.workerSrc` is set once on first use and never mutated by callers.
   - `normalization-engine.ts`: routes input files to raster adapters by MIME type at the boundary, then immediately wraps each `RasterizedPageSurface` into a `NormalizedPage` via `toNormalizedPage`. Downstream modules cannot distinguish a PDF-sourced page from an image-sourced page.
-- `src/core/runtime`: the only place engines are composed. Runners exist as boundaries: `config-runner`, `extraction-runner`, `localization-runner`, `ocr-runner`, `confidence-runner`. Most are stubs that throw `not implemented in foundation phase`.
+- `src/core/engines/geometry`: pure Geometry module.
+  - `geometry-engine.ts`: builds a `GeometryFile` from human-confirmed BBOX drafts. Implements `Engine<GeometryEngineInput, GeometryFile>`.
+  - `validation.ts`: validates a `GeometryFile` against a `WizardFile` and `NormalizedPage[]`. All validation lives here — UI only renders the result.
+  - Geometry stores normalized BBOX (`xNorm/yNorm/wNorm/hNorm`) as the canonical authority, plus a derived `pixelBbox` and a `pageSurface` reference (page dimensions and index) used to verify that geometry is interpreted on the same NormalizedPage surface a future engine will consume.
+- `src/core/runtime`: the only place engines are composed. Runners exist as boundaries: `config-runner`, `extraction-runner`, `localization-runner`, `ocr-runner`, `confidence-runner`. Of these, only `config-runner` composes engines today (Geometry build + validation); the others are still stubs that throw `not implemented in foundation phase`.
 - `src/core/ui/components`: reusable visual primitives (`Button`, `Input`, `Panel`, `Section`).
 - `src/core/ui/layout`: app-wide layout wrappers (`AppShell`).
 - `src/core/ui/styles`: centralized visual tokens + global base styles.
-- `src/features/<feature>/ui`: feature-owned UI modules (`wizard-builder`, `normalization`). Features import from `core/*`. `core/*` never imports from `features/*`.
+- `src/features/<feature>/ui`: feature-owned UI modules (`wizard-builder`, `normalization`, `config-capture`). Features import from `core/*`. `core/*` never imports from `features/*`.
 - `src/app`: page composition and shell wiring only.
 
 ## Engines vs Runtime Rule
@@ -45,7 +50,7 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
 - Current versions:
   - `WizardFile`: `1.0`
   - `NormalizedPage`: `2.0`
-  - `GeometryFile`: `1.0`
+  - `GeometryFile`: `1.1` (also carries `geometryFileVersion: 'wrokit/geometry/v1'` for human-readable schema identity)
   - `StructuralModel`: `1.0`
   - `ExtractionResult`: `1.0`
 
@@ -65,7 +70,7 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
 ## Data Contracts
 - `WizardFile` (`src/core/contracts/wizard.ts`): `schema: 'wrokit/wizard-file'`, `version: '1.0'`. Guard: `isWizardFile`.
 - `NormalizedPage` (`src/core/contracts/normalized-page.ts`): `schema: 'wrokit/normalized-page'`, `version: '2.0'`, includes pixel width/height/aspect ratio and raster image URL surface data, plus display-only `sourceName`. Guard: `isNormalizedPage`.
-- `GeometryFile` (`src/core/contracts/geometry.ts`): `schema: 'wrokit/geometry-file'`, `version: '1.0'`. Guard: `isGeometryFile`.
+- `GeometryFile` (`src/core/contracts/geometry.ts`): `schema: 'wrokit/geometry-file'`, `version: '1.1'`, `geometryFileVersion: 'wrokit/geometry/v1'`. Each `FieldGeometry` carries a normalized `bbox` (`xNorm/yNorm/wNorm/hNorm`) as canonical authority, a derived `pixelBbox` in NormalizedPage surface pixels, and a `pageSurface` reference so validation can detect drift against the loaded NormalizedPage. Guard: `isGeometryFile`.
 - `StructuralModel` (`src/core/contracts/structural-model.ts`): `schema: 'wrokit/structural-model'`, `version: '1.0'`. Guard: `isStructuralModel`.
 - `ExtractionResult` (`src/core/contracts/extraction-result.ts`): `schema: 'wrokit/extraction-result'`, `version: '1.0'`. Guard: `isExtractionResult`.
 
@@ -79,20 +84,42 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
 - One test per `is<Type>` contract guard lives in `tests/unit/contracts.test.ts`.
 - `tests/unit/`, `tests/integration/`, and `tests/fixtures/` are reserved for future expansion.
 
+## Surface Authority Rule
+- The NormalizedPage raster surface is the single canonical page authority used by every downstream module: Geometry capture today; Structural Engine / OpenCV, Localization, OCR crop readout, and runtime overlays in the future.
+- `src/core/page-surface/` is the *only* place that converts between screen pixels, NormalizedPage surface pixels, and normalized [0, 1] coordinates. UI must build its display transform from the displayed image's actual `getBoundingClientRect()` and feed every pointer event through `screenToSurface` to obtain authoritative surface coordinates.
+- Normalized BBOX (`xNorm/yNorm/wNorm/hNorm`) on the NormalizedPage surface is the authoritative form persisted to disk. The pixel-space `pixelBbox` and the `pageSurface` reference are stored alongside it as derived snapshots so a future engine can verify the geometry was captured against the exact NormalizedPage dimensions it is now consuming.
+- There is no separate canvas space, no CSS-only coordinate assumption, and no alternate page-vs-image space. Display scaling is allowed; geometry must always resolve back to canonical NormalizedPage surface coordinates exactly.
+
+## Geometry Module
+- `src/core/contracts/geometry.ts` defines the persisted `GeometryFile` shape.
+- `src/core/engines/geometry/` builds and validates GeometryFiles. Validation rules:
+  - all required wizard fields present;
+  - no unknown fieldIds (toggleable via `tolerateUnknownFieldIds`);
+  - referenced `pageIndex` exists in the loaded NormalizedPages;
+  - normalized coordinates are finite;
+  - normalized coordinates are in `[0, 1]` and `xNorm + wNorm <= 1`, `yNorm + hNorm <= 1`;
+  - `pageSurface` (pageIndex + dimensions) matches the loaded NormalizedPage authority within 1px tolerance;
+  - `wizardId` matches the loaded `WizardFile.wizardName`.
+- `src/core/io/geometry-file-io.ts` serializes/parses/downloads GeometryFile JSON.
+- `src/core/storage/geometry-builder-store.ts` is the in-progress capture session store.
+- `src/core/runtime/config-runner.ts` orchestrates geometry build + validation.
+- `src/features/config-capture/ui/ConfigCapture.tsx` is the Config Mode UI: walk wizard fields in order, draw a BBOX on the NormalizedPage viewport, save per field, edit via redraw/clear, live JSON preview, validation panel, download/import GeometryFile JSON.
+
 ## Current Implementation Status
 Implemented:
 - Visible app shell + dashboard module status page.
 - Wizard Builder feature wired through reusable UI components and the IO module.
 - Normalization intake engine with isolated PDF/image raster adapters.
 - Upload UI for PDF/PNG/JPG/JPEG/WebP with normalized page viewport and page switching.
+- Surface authority layer (`page-surface`) used by the Geometry module today and reserved for all future page-aware engines.
+- Geometry module: BBOX capture (Config Mode), validation, save/load/import/export, edit/redraw, live JSON preview.
 - Shared tokenized styling system.
 - Versioned + guarded contracts for all five persisted shapes.
 - Async observable stores with subscribe/snapshot.
 - Canonical `Engine<I, O>` interface.
-- Runtime stubs for extraction, config, localization, OCR, confidence.
+- Runtime stubs for extraction, localization, OCR, confidence.
 
 Not yet implemented:
-- Geometry capture.
 - Structural model generation.
 - Real OCR.
 - Runtime localization and OCR readout.

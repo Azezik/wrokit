@@ -1,4 +1,9 @@
-import type { BoundingBox } from './geometry';
+export interface BoundingBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
 
 export type StructuralRegionKind =
   | 'text-block'
