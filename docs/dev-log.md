@@ -520,3 +520,50 @@
 
 ### Recommended next step
 - In repository settings, ensure GitHub Pages source is set to **GitHub Actions** so this workflow is authoritative for deployment.
+
+## 2026-04-26 — Step: Basic Run Mode Transform Matching
+
+### Why this step
+- Runtime localization needed a first concrete flow: load saved config artifacts, normalize a new runtime document, build runtime structure, and redraw predicted field boxes.
+- The goal of this step is relocation only (not discovery): move human-confirmed GeometryFile boxes onto the runtime page using structural comparison in canonical normalized coordinates.
+
+### What changed
+- Implemented `src/core/runtime/localization-runner.ts`.
+  - Replaced the previous stub.
+  - Added a `PredictedGeometryFile` output contract (runtime-local module type) and `PredictedFieldGeometry` records.
+  - Added transform solve based on **config refined border → runtime refined border** comparison per page.
+  - Solved transform metadata: `scaleX`, `scaleY`, `translateX`, `translateY`, plus transform basis and source rects.
+  - Applied transforms to each saved `FieldGeometry.bbox` and emitted predicted normalized + pixel bboxes on the runtime page surface.
+- Added Run Mode UI (`src/features/run-mode/ui/RunMode.tsx`, `run-mode.css`) and page wiring (`src/app/pages/RunModePage.tsx`, `src/app/App.tsx`).
+  - Upload/import controls for WizardFile, GeometryFile, Config StructuralModel, and runtime document.
+  - Runtime document is normalized through the existing normalization engine.
+  - Runtime structural build uses existing `structural-runner` (no duplicated border/refined-border logic).
+  - Predicted overlays are drawn on the runtime `NormalizedPage` image using the shared `page-surface` transform utilities.
+  - Predicted JSON live preview + download added.
+- Updated dashboard runtime status to active (`src/app/pages/HomeDashboardPage.tsx`).
+- Added unit tests for localization runner (`tests/unit/localization-runner.test.ts`).
+
+### Authority + anti-drift behavior
+- Geometry remains primary truth: runtime matching consumes saved boxes and relocates them; it does not discover fields and does not reinterpret field meaning.
+- StructuralModel remains relocation basis: refined-border comparison drives transform solve.
+- Output predicted geometry is stored in canonical normalized coordinates with runtime page surface references.
+- Overlay placement uses the same canonical conversion path (`normalizedRectToScreen`) used elsewhere, keeping UI and stored geometry in the same coordinate universe.
+- OCR is still not used for finding fields.
+
+### Files added
+- `src/features/run-mode/ui/RunMode.tsx`
+- `src/features/run-mode/ui/run-mode.css`
+- `src/app/pages/RunModePage.tsx`
+- `tests/unit/localization-runner.test.ts`
+
+### Files modified
+- `src/core/runtime/localization-runner.ts`
+- `src/app/App.tsx`
+- `src/app/pages/HomeDashboardPage.tsx`
+- `src/app/routes.ts`
+- `docs/architecture.md`
+- `docs/dev-log.md`
+
+### Checks run
+- `npm run check`
+- `npm test`

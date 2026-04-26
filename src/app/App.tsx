@@ -2,6 +2,7 @@ import { AppShell } from '../core/ui/layout/AppShell';
 import { ConfigCapturePage } from './pages/ConfigCapturePage';
 import { HomeDashboardPage } from './pages/HomeDashboardPage';
 import { WizardBuilderPage } from './pages/WizardBuilderPage';
+import { RunModePage } from './pages/RunModePage';
 
 function App() {
   return (
@@ -12,6 +13,7 @@ function App() {
       <HomeDashboardPage />
       <WizardBuilderPage />
       <ConfigCapturePage />
+      <RunModePage />
     </AppShell>
   );
 }

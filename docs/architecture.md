@@ -24,11 +24,11 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
   - `geometry-engine.ts`: builds a `GeometryFile` from human-confirmed BBOX drafts. Implements `Engine<GeometryEngineInput, GeometryFile>`.
   - `validation.ts`: validates a `GeometryFile` against a `WizardFile` and `NormalizedPage[]`. All validation lives here — UI only renders the result.
   - Geometry stores normalized BBOX (`xNorm/yNorm/wNorm/hNorm`) as the canonical authority, plus a derived `pixelBbox` and a `pageSurface` reference (page dimensions and index) used to verify that geometry is interpreted on the same NormalizedPage surface a future engine will consume.
-- `src/core/runtime`: the only place engines are composed. Runners exist as boundaries: `config-runner`, `structural-runner`, `extraction-runner`, `localization-runner`, `ocr-runner`, `confidence-runner`. `config-runner` composes Geometry build + validation; `structural-runner` owns the CV adapter selection (OpenCV.js by default) and runs the Structural Engine to produce a `StructuralModel` from `NormalizedPage[]` (+ optional `GeometryFile` for ground-truth-aware refined border). The remaining runners are still stubs that throw `not implemented in foundation phase`.
+- `src/core/runtime`: the only place engines are composed. Runners exist as boundaries: `config-runner`, `structural-runner`, `extraction-runner`, `localization-runner`, `ocr-runner`, `confidence-runner`. `config-runner` composes Geometry build + validation; `structural-runner` owns the CV adapter selection (OpenCV.js by default) and runs the Structural Engine to produce a `StructuralModel` from `NormalizedPage[]` (+ optional `GeometryFile` for ground-truth-aware refined border). `localization-runner` now performs basic Run Mode relocation by solving a per-page affine-lite transform (`scaleX/scaleY/translateX/translateY`) from config refined border to runtime refined border, then applying it to saved GeometryFile boxes in canonical normalized coordinates. Extraction/OCR/confidence runners remain stubs.
 - `src/core/ui/components`: reusable visual primitives (`Button`, `Input`, `Panel`, `Section`).
 - `src/core/ui/layout`: app-wide layout wrappers (`AppShell`).
 - `src/core/ui/styles`: centralized visual tokens + global base styles.
-- `src/features/<feature>/ui`: feature-owned UI modules (`wizard-builder`, `config-capture`). Features import from `core/*`. `core/*` never imports from `features/*`. The `normalization` feature UI exists as a library component but is not mounted in the app; normalization is surfaced exclusively through Config Capture.
+- `src/features/<feature>/ui`: feature-owned UI modules (`wizard-builder`, `config-capture`, `run-mode`). Features import from `core/*`. `core/*` never imports from `features/*`. The `normalization` feature UI exists as a library component but is not mounted in the app; normalization is surfaced through Config Capture and Run Mode upload flows.
 - `src/app`: page composition and shell wiring only.
 
 ## Engines vs Runtime Rule
@@ -142,9 +142,21 @@ Implemented:
 - Versioned + guarded contracts for all five persisted shapes.
 - Async observable stores with subscribe/snapshot.
 - Canonical `Engine<I, O>` interface.
-- Runtime stubs for extraction, localization, OCR, confidence.
+- Runtime localization baseline (Run Mode): config artifact load + runtime normalization + runtime structural build + transform-based predicted box redraw + predicted geometry JSON export.
+- Runtime stubs for extraction, OCR, confidence.
 
 Not yet implemented:
 - Real OCR.
-- Runtime localization and OCR readout.
+- OCR readout and confidence scoring in runtime pipeline.
+- Advanced localization (multi-stage/semantic/object hierarchy).
 - Persistence adapter.
+
+
+## Run Mode (Basic Transform Matching)
+- Run Mode UI lives in `src/features/run-mode/ui/RunMode.tsx` and is mounted via `src/app/pages/RunModePage.tsx`.
+- Inputs: WizardFile, GeometryFile, Config StructuralModel, runtime document upload. Runtime upload always flows through the normalization engine (`NormalizedPage[]` authority preserved).
+- Runtime structure is computed by reusing `structural-runner`; no border/refined-border logic is duplicated in UI.
+- Structural comparison basis: config `refinedBorder.rectNorm` vs runtime `refinedBorder.rectNorm` per page.
+- Transform solve: `scaleX = runtime.w/config.w`, `scaleY = runtime.h/config.h`, `translateX = runtime.x - config.x*scaleX`, `translateY = runtime.y - config.y*scaleY`.
+- Transform apply: each saved GeometryFile normalized bbox is transformed in normalized space and clamped to `[0,1]`, then rendered as predicted overlay and emitted in a predicted-geometry JSON artifact with transform metadata.
+- Ground truth remains primary: Run Mode does not discover fields or reinterpret meaning; it relocates existing field geometry by `fieldId`/`pageIndex`.

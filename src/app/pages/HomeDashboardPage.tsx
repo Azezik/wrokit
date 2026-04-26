@@ -18,7 +18,11 @@ const moduleStatus = [
     status: 'active',
     note: 'Border + Refined Border auto-compute on NormalizedPage upload via the OpenCV.js CV adapter; debug overlay toggle in Config Capture.'
   },
-  { name: 'Runtime Localization', status: 'planned', note: 'Not yet connected by design.' }
+  {
+    name: 'Runtime Localization',
+    status: 'active',
+    note: 'Run Mode now computes runtime structure and redraws predicted field BBOXes from saved Geometry + StructuralModel.'
+  }
 ] as const;
 
 export function HomeDashboardPage() {
