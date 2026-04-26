@@ -229,18 +229,83 @@ export function ConfigCapture() {
     setDraft({ startScreen: point, currentScreen: point });
   };
 
+  const persistDraft = useCallback(
+    async (draftToSave: DraftBox) => {
+      if (!surfaceTransform || !activeFieldId || !selectedPage) {
+        return;
+      }
+      const startSurface = screenToSurface(surfaceTransform, draftToSave.startScreen);
+      const endSurface = screenToSurface(surfaceTransform, draftToSave.currentScreen);
+      const surface = surfaceTransform.surface;
+      const pixelRect = normalizeRectFromCorners(startSurface, endSurface, surface);
+      if (pixelRect.width <= 0 || pixelRect.height <= 0) {
+        return;
+      }
+      const normalizedRect = surfaceRectToNormalized(surface, pixelRect);
+      if (!isNormalizedRectInBounds(normalizedRect)) {
+        return;
+      }
+      await builderStore.upsertField({
+        fieldId: activeFieldId,
+        pageIndex: selectedPage.pageIndex,
+        bbox: normalizedRect,
+        pixelBbox: pixelRect,
+        pageSurface: {
+          pageIndex: surface.pageIndex,
+          surfaceWidth: surface.surfaceWidth,
+          surfaceHeight: surface.surfaceHeight
+        }
+      });
+      setDraft(null);
+
+      if (wizard) {
+        const remaining = wizard.fields.find(
+          (field) =>
+            field.fieldId !== activeFieldId &&
+            !builderState.fields.some((saved) => saved.fieldId === field.fieldId)
+        );
+        if (remaining) {
+          setActiveFieldId(remaining.fieldId);
+        }
+      }
+    },
+    [surfaceTransform, activeFieldId, selectedPage, builderStore, wizard, builderState.fields]
+  );
+
   const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!draft) {
-      return;
-    }
     const point = screenPointFromEvent(event);
     if (!point) {
       return;
     }
-    setDraft({ startScreen: draft.startScreen, currentScreen: point });
+    setDraft((current) =>
+      current
+        ? {
+            startScreen: current.startScreen,
+            currentScreen: point
+          }
+        : null
+    );
   };
 
   const handlePointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const point = screenPointFromEvent(event);
+    if (point) {
+      setDraft((current) => {
+        if (!current) {
+          return null;
+        }
+        const finalizedDraft = { startScreen: current.startScreen, currentScreen: point };
+        void persistDraft(finalizedDraft);
+        return finalizedDraft;
+      });
+    }
+    if ((event.target as HTMLElement).hasPointerCapture?.(event.pointerId)) {
+      (event.target as HTMLElement).releasePointerCapture(event.pointerId);
+    }
+  };
+
+  const handlePointerCancel = (event: ReactPointerEvent<HTMLDivElement>) => {
+    setDraft(null);
     if ((event.target as HTMLElement).hasPointerCapture?.(event.pointerId)) {
       (event.target as HTMLElement).releasePointerCapture(event.pointerId);
     }
@@ -258,43 +323,10 @@ export function ConfigCapture() {
   }, [draft]);
 
   const saveActiveField = async () => {
-    if (!surfaceTransform || !activeFieldId || !draft || !selectedPage) {
+    if (!draft) {
       return;
     }
-    const startSurface = screenToSurface(surfaceTransform, draft.startScreen);
-    const endSurface = screenToSurface(surfaceTransform, draft.currentScreen);
-    const surface = surfaceTransform.surface;
-    const pixelRect = normalizeRectFromCorners(startSurface, endSurface, surface);
-    if (pixelRect.width <= 0 || pixelRect.height <= 0) {
-      return;
-    }
-    const normalizedRect = surfaceRectToNormalized(surface, pixelRect);
-    if (!isNormalizedRectInBounds(normalizedRect)) {
-      return;
-    }
-    await builderStore.upsertField({
-      fieldId: activeFieldId,
-      pageIndex: selectedPage.pageIndex,
-      bbox: normalizedRect,
-      pixelBbox: pixelRect,
-      pageSurface: {
-        pageIndex: surface.pageIndex,
-        surfaceWidth: surface.surfaceWidth,
-        surfaceHeight: surface.surfaceHeight
-      }
-    });
-    setDraft(null);
-
-    if (wizard) {
-      const remaining = wizard.fields.find(
-        (field) =>
-          field.fieldId !== activeFieldId &&
-          !builderState.fields.some((saved) => saved.fieldId === field.fieldId)
-      );
-      if (remaining) {
-        setActiveFieldId(remaining.fieldId);
-      }
-    }
+    await persistDraft(draft);
   };
 
   const removeField = async (fieldId: string) => {
@@ -417,6 +449,7 @@ export function ConfigCapture() {
               onPointerDown={handlePointerDown}
               onPointerMove={handlePointerMove}
               onPointerUp={handlePointerUp}
+              onPointerCancel={handlePointerCancel}
               role="application"
               aria-label="Draw bounding box on normalized page"
             >
