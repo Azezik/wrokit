@@ -10,7 +10,6 @@ import {
 } from 'react';
 
 import type { GeometryFile } from '../../../core/contracts/geometry';
-import type { NormalizedPage } from '../../../core/contracts/normalized-page';
 import type { WizardFile } from '../../../core/contracts/wizard';
 import { createNormalizationEngine } from '../../../core/engines/normalization';
 import {
@@ -32,6 +31,7 @@ import {
 } from '../../../core/page-surface/page-surface';
 import { createConfigRunner } from '../../../core/runtime/config-runner';
 import { createGeometryBuilderStore } from '../../../core/storage/geometry-builder-store';
+import { getNormalizedPageSessionStore } from '../../../core/storage/normalized-page-session-store';
 import { Button } from '../../../core/ui/components/Button';
 import { Input } from '../../../core/ui/components/Input';
 import { Panel } from '../../../core/ui/components/Panel';
@@ -40,13 +40,6 @@ import { Section } from '../../../core/ui/components/Section';
 import './config-capture.css';
 
 const ACCEPTED_DOC_FORMATS = '.pdf,image/png,image/jpeg,image/webp';
-
-const computeDocumentFingerprint = (sourceName: string, pages: NormalizedPage[]): string => {
-  const surfaceSignature = pages
-    .map((page) => `${page.pageIndex}:${Math.round(page.width)}x${Math.round(page.height)}`)
-    .join('|');
-  return `surface:${sourceName}#${surfaceSignature}`;
-};
 
 interface DraftBox {
   startScreen: { x: number; y: number };
@@ -58,14 +51,14 @@ export function ConfigCapture() {
   const configRunnerRef = useRef(createConfigRunner());
   const builderStoreRef = useRef(createGeometryBuilderStore());
   const builderStore = builderStoreRef.current;
+  const pageSessionStoreRef = useRef(getNormalizedPageSessionStore());
+  const pageSessionStore = pageSessionStoreRef.current;
   const builderState = useSyncExternalStore(builderStore.subscribe, builderStore.getSnapshot);
+  const pageSession = useSyncExternalStore(pageSessionStore.subscribe, pageSessionStore.getSnapshot);
 
   const [wizard, setWizard] = useState<WizardFile | null>(null);
   const [wizardError, setWizardError] = useState<string | null>(null);
 
-  const [sourceName, setSourceName] = useState('');
-  const [pages, setPages] = useState<NormalizedPage[]>([]);
-  const [selectedPageIndex, setSelectedPageIndex] = useState(0);
   const [normalizationError, setNormalizationError] = useState<string | null>(null);
   const [isNormalizing, setIsNormalizing] = useState(false);
 
@@ -78,13 +71,8 @@ export function ConfigCapture() {
   const [displayRect, setDisplayRect] = useState<{ width: number; height: number } | null>(null);
 
   const selectedPage = useMemo(
-    () => pages.find((page) => page.pageIndex === selectedPageIndex) ?? null,
-    [pages, selectedPageIndex]
-  );
-
-  const documentFingerprint = useMemo(
-    () => (pages.length > 0 ? computeDocumentFingerprint(sourceName, pages) : ''),
-    [sourceName, pages]
+    () => pageSession.pages.find((page) => page.pageIndex === pageSession.selectedPageIndex) ?? null,
+    [pageSession.pages, pageSession.selectedPageIndex]
   );
 
   useEffect(() => {
@@ -94,8 +82,8 @@ export function ConfigCapture() {
   }, [wizard, builderStore]);
 
   useEffect(() => {
-    void builderStore.setDocumentFingerprint(documentFingerprint);
-  }, [documentFingerprint, builderStore]);
+    void builderStore.setDocumentFingerprint(pageSession.documentFingerprint);
+  }, [pageSession.documentFingerprint, builderStore]);
 
   useEffect(() => {
     if (!wizard) {
@@ -169,13 +157,12 @@ export function ConfigCapture() {
     setNormalizationError(null);
     try {
       const result = await normalizationEngineRef.current.normalize(file);
-      setSourceName(result.sourceName);
-      setPages(result.pages);
-      setSelectedPageIndex(0);
+      await pageSessionStore.setNormalizedDocument({
+        sourceName: result.sourceName,
+        pages: result.pages
+      });
     } catch (error) {
-      setSourceName('');
-      setPages([]);
-      setSelectedPageIndex(0);
+      await pageSessionStore.clearSession();
       setNormalizationError(
         error instanceof Error ? error.message : 'Normalization failed.'
       );
@@ -342,8 +329,8 @@ export function ConfigCapture() {
     if (!wizard) {
       return null;
     }
-    return configRunnerRef.current.validateExisting(geometryFile, wizard, pages);
-  }, [geometryFile, wizard, pages]);
+    return configRunnerRef.current.validateExisting(geometryFile, wizard, pageSession.pages);
+  }, [geometryFile, wizard, pageSession.pages]);
 
   const livePreview = useMemo(() => serializeGeometryFile(geometryFile), [geometryFile]);
 
@@ -359,12 +346,12 @@ export function ConfigCapture() {
       return [];
     }
     return builderState.fields
-      .filter((field) => field.pageIndex === selectedPageIndex)
+      .filter((field) => field.pageIndex === pageSession.selectedPageIndex)
       .map((field) => ({
         fieldId: field.fieldId,
         rect: normalizedRectToScreen(surfaceTransform, field.bbox)
       }));
-  }, [builderState.fields, selectedPageIndex, surfaceTransform]);
+  }, [builderState.fields, pageSession.selectedPageIndex, surfaceTransform]);
 
   return (
     <Section
@@ -397,21 +384,23 @@ export function ConfigCapture() {
               <span className="config-capture__meta">Normalizing upload…</span>
             ) : (
               <span className="config-capture__meta">
-                {sourceName ? `Source: ${sourceName} · ${pages.length} page(s)` : 'No document loaded.'}
+                {pageSession.sourceName
+                  ? `Source: ${pageSession.sourceName} · ${pageSession.pages.length} page(s)`
+                  : 'No document loaded.'}
               </span>
             )}
           </div>
           {normalizationError ? <p className="config-capture__error">{normalizationError}</p> : null}
 
-          {pages.length > 1 ? (
+          {pageSession.pages.length > 1 ? (
             <div className="config-capture__toolbar" role="group" aria-label="Page selection">
-              {pages.map((page) => (
+              {pageSession.pages.map((page) => (
                 <Button
                   key={page.pageIndex}
                   type="button"
-                  variant={selectedPageIndex === page.pageIndex ? 'primary' : 'default'}
+                  variant={pageSession.selectedPageIndex === page.pageIndex ? 'primary' : 'default'}
                   onClick={() => {
-                    setSelectedPageIndex(page.pageIndex);
+                    void pageSessionStore.selectPage(page.pageIndex);
                     setDraft(null);
                   }}
                 >
