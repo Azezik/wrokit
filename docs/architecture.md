@@ -58,6 +58,7 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
 - Stores are observable. Public surface: async mutators returning `Promise<void>`, `getSnapshot(): TSnapshot`, `subscribe(listener): () => void`.
 - The base shape lives in `src/core/storage/observable-store.ts`.
 - React consumers attach via `useSyncExternalStore(store.subscribe, store.getSnapshot)`.
+- `src/core/storage/normalized-page-session-store.ts` is the canonical NormalizedPage session authority for page-aware modules. It owns exactly one active normalized document/session (`pages`, `selectedPageIndex`, `sourceName`, `documentFingerprint`, `sessionId`) and exposes thin async mutators (`setNormalizedDocument`, `selectPage`, `clearSession`).
 - Current implementations are in-memory; persistence adapters can be substituted without changing consumers.
 
 ## UI Organization Rules
@@ -86,6 +87,7 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
 
 ## Surface Authority Rule
 - The NormalizedPage raster surface is the single canonical page authority used by every downstream module: Geometry capture today; Structural Engine / OpenCV, Localization, OCR crop readout, and runtime overlays in the future.
+- The shared normalized-page session store is the single owner of loaded page surfaces for the app. Page-aware modules must consume `NormalizedPage` through this session authority (or a typed equivalent adapter over it), never through module-local upload/page state.
 - `src/core/page-surface/` is the *only* place that converts between screen pixels, NormalizedPage surface pixels, and normalized [0, 1] coordinates. UI must build its display transform from the displayed image's actual `getBoundingClientRect()` and feed every pointer event through `screenToSurface` to obtain authoritative surface coordinates.
 - Normalized BBOX (`xNorm/yNorm/wNorm/hNorm`) on the NormalizedPage surface is the authoritative form persisted to disk. The pixel-space `pixelBbox` and the `pageSurface` reference are stored alongside it as derived snapshots so a future engine can verify the geometry was captured against the exact NormalizedPage dimensions it is now consuming.
 - There is no separate canvas space, no CSS-only coordinate assumption, and no alternate page-vs-image space. Display scaling is allowed; geometry must always resolve back to canonical NormalizedPage surface coordinates exactly.
@@ -103,14 +105,14 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
 - `src/core/io/geometry-file-io.ts` serializes/parses/downloads GeometryFile JSON.
 - `src/core/storage/geometry-builder-store.ts` is the in-progress capture session store.
 - `src/core/runtime/config-runner.ts` orchestrates geometry build + validation.
-- `src/features/config-capture/ui/ConfigCapture.tsx` is the **primary and only upload entry point** in the app. It handles the full intake flow: upload file → normalize via the normalization engine → display the canonical `NormalizedPage` raster surface → draw BBOX. Walk wizard fields in order, draw a BBOX on the NormalizedPage viewport, save per field, edit via redraw/clear, live JSON preview, validation panel, download/import GeometryFile JSON. There is no separate standalone normalization UI in the app.
+- `src/features/config-capture/ui/ConfigCapture.tsx` is the **primary and only upload entry point** in the app. It handles the full intake flow: upload file → normalize via the normalization engine → write `NormalizedPage[]` into the shared normalized-page session store → read selected page from that shared authority for BBOX capture. Walk wizard fields in order, draw a BBOX on the NormalizedPage viewport, save per field, edit via redraw/clear, live JSON preview, validation panel, download/import GeometryFile JSON. There is no separate standalone normalization UI in the app.
 
 ## Current Implementation Status
 Implemented:
 - Visible app shell + dashboard module status page.
 - Wizard Builder feature wired through reusable UI components and the IO module.
 - Normalization intake engine with isolated PDF/image raster adapters.
-- **Unified Config Capture intake flow**: upload (PDF/PNG/JPG/JPEG/WebP), normalization, and BBOX drawing are a single workflow in `ConfigCapture`. There is no separate standalone normalization UI mounted in the app.
+- **Unified Config Capture intake flow + canonical page session authority**: upload (PDF/PNG/JPG/JPEG/WebP), normalization, shared normalized-page session update, and BBOX drawing are a single workflow in `ConfigCapture`. There is no separate standalone normalization UI mounted in the app.
 - Surface authority layer (`page-surface`) used by the Geometry module today and reserved for all future page-aware engines.
 - Geometry module: BBOX capture (Config Mode), validation, save/load/import/export, edit/redraw, live JSON preview.
 - Shared tokenized styling system.

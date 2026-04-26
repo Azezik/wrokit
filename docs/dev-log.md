@@ -1,3 +1,52 @@
+## 2026-04-26 — Step: Canonical NormalizedPage Session Store Authority
+
+### Why this step
+- Config Capture previously owned `sourceName`, `pages`, and `selectedPageIndex` as local component state.
+- That local ownership was acceptable for a single feature, but it is not strict enough for the architecture target where Geometry, Structural/OpenCV, OCR overlays, and runtime modules must consume the exact same page authority.
+- Goal: create one canonical normalized-page session/store as infrastructure and route Config Capture through it.
+
+### What changed
+- Added `src/core/storage/normalized-page-session-store.ts` as a thin, typed infrastructure store.
+  - State ownership is explicit and minimal:
+    - `pages: NormalizedPage[]`
+    - `selectedPageIndex: number`
+    - `sourceName: string` (display-only)
+    - `documentFingerprint: string` (surface identity)
+    - `sessionId: string` (active session identity)
+  - Mutators are minimal and async:
+    - `setNormalizedDocument({ sourceName, pages })`
+    - `selectPage(pageIndex)`
+    - `clearSession()`
+  - Fingerprint generation (`surface:<source>#<page signatures>`) is centralized in this authority layer so consumers do not duplicate derivation.
+  - Exposes `createNormalizedPageSessionStore()` and a singleton accessor `getNormalizedPageSessionStore()` so the app has one canonical in-memory session owner.
+- Refactored `src/features/config-capture/ui/ConfigCapture.tsx` to consume normalized pages from the shared store via `useSyncExternalStore`.
+  - Removed competing local state ownership of normalized pages/source/page selection.
+  - Upload still runs through `createNormalizationEngine().normalize(file)`.
+  - After upload, Config Capture writes only normalized output (`sourceName`, `NormalizedPage[]`) into `setNormalizedDocument`.
+  - Geometry rendering, validation inputs, and page selection now read from the shared session snapshot.
+- Added `tests/unit/normalized-page-session-store.test.ts` to lock authority behavior:
+  - document load ownership,
+  - page selection semantics,
+  - session clear/reset identity behavior.
+
+### Surface authority outcome
+- Config Capture and any future page-aware module now have a dedicated authority layer to subscribe to for the active normalized document session.
+- This removes per-feature page session drift risk before OpenCV/Structural work begins.
+- Upload remains boundary-correct: raw files stay at the normalization boundary; downstream consumes only `NormalizedPage`.
+
+### Files modified
+- `src/core/storage/normalized-page-session-store.ts` (new)
+- `src/features/config-capture/ui/ConfigCapture.tsx`
+- `tests/unit/normalized-page-session-store.test.ts` (new)
+- `docs/architecture.md`
+- `docs/dev-log.md`
+
+### Checks run
+- `npm run check` (`tsc --noEmit`): passed.
+- `npm test` (vitest): passed.
+
+---
+
 # Wrokit Development Log
 
 ## 2026-04-26 — Step: Unify Normalization Flow into Config Capture
