@@ -23,12 +23,14 @@ const createField = (index: number): WizardField => ({
   required: false
 });
 
-const normalizeField = (field: WizardField, index: number): WizardField => ({
+const normalizeFieldForFile = (field: WizardField, index: number): WizardField => ({
   fieldId: field.fieldId.trim() || `field_${index + 1}`,
   label: field.label.trim() || `Field ${index + 1}`,
   type: field.type,
   required: field.required
 });
+
+const cloneField = (field: WizardField): WizardField => ({ ...field });
 
 export const createEmptyWizardFile = (): WizardFile => ({
   schema: 'wrokit/wizard-file',
@@ -42,7 +44,7 @@ export const createWizardBuilderStore = (
 ): WizardBuilderStore => {
   let state: WizardBuilderState = {
     wizardName: initial.wizardName,
-    fields: initial.fields.map((field, index) => normalizeField(field, index))
+    fields: initial.fields.map(cloneField)
   };
 
   const listeners = new Set<StoreListener>();
@@ -98,14 +100,11 @@ export const createWizardBuilderStore = (
         ...state,
         fields: state.fields.map((currentField, fieldIndex) =>
           fieldIndex === index
-            ? normalizeField(
-                {
-                  ...currentField,
-                  ...field,
-                  type: (field.type as WizardFieldType | undefined) ?? currentField.type
-                },
-                fieldIndex
-              )
+            ? {
+                ...currentField,
+                ...field,
+                type: (field.type as WizardFieldType | undefined) ?? currentField.type
+              }
             : currentField
         )
       });
@@ -114,7 +113,7 @@ export const createWizardBuilderStore = (
     replaceFromWizardFile: async (wizardFile) => {
       commit({
         wizardName: wizardFile.wizardName,
-        fields: wizardFile.fields.map((field, index) => normalizeField(field, index))
+        fields: wizardFile.fields.map(cloneField)
       });
     },
 
@@ -122,7 +121,7 @@ export const createWizardBuilderStore = (
       schema: 'wrokit/wizard-file',
       version: '1.0',
       wizardName: state.wizardName.trim(),
-      fields: state.fields.map((field, index) => normalizeField(field, index))
+      fields: state.fields.map((field, index) => normalizeFieldForFile(field, index))
     })
   };
 };
