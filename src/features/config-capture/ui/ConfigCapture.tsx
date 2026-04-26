@@ -10,6 +10,7 @@ import {
 } from 'react';
 
 import type { GeometryFile } from '../../../core/contracts/geometry';
+import type { StructuralModel } from '../../../core/contracts/structural-model';
 import type { WizardFile } from '../../../core/contracts/wizard';
 import { createNormalizationEngine } from '../../../core/engines/normalization';
 import {
@@ -18,6 +19,10 @@ import {
   parseGeometryFile,
   serializeGeometryFile
 } from '../../../core/io/geometry-file-io';
+import {
+  downloadStructuralModel,
+  serializeStructuralModel
+} from '../../../core/io/structural-model-io';
 import { parseWizardFile, WizardFileParseError } from '../../../core/io/wizard-file-io';
 import {
   buildSurfaceTransform,
@@ -30,8 +35,10 @@ import {
   type PixelRect
 } from '../../../core/page-surface/page-surface';
 import { createConfigRunner } from '../../../core/runtime/config-runner';
+import { createStructuralRunner } from '../../../core/runtime/structural-runner';
 import { createGeometryBuilderStore } from '../../../core/storage/geometry-builder-store';
 import { getNormalizedPageSessionStore } from '../../../core/storage/normalized-page-session-store';
+import { createStructuralStore } from '../../../core/storage/structural-store';
 import { Button } from '../../../core/ui/components/Button';
 import { Input } from '../../../core/ui/components/Input';
 import { Panel } from '../../../core/ui/components/Panel';
@@ -49,12 +56,19 @@ interface DraftBox {
 export function ConfigCapture() {
   const normalizationEngineRef = useRef(createNormalizationEngine());
   const configRunnerRef = useRef(createConfigRunner());
+  const structuralRunnerRef = useRef(createStructuralRunner());
   const builderStoreRef = useRef(createGeometryBuilderStore());
   const builderStore = builderStoreRef.current;
   const pageSessionStoreRef = useRef(getNormalizedPageSessionStore());
   const pageSessionStore = pageSessionStoreRef.current;
+  const structuralStoreRef = useRef(createStructuralStore());
+  const structuralStore = structuralStoreRef.current;
   const builderState = useSyncExternalStore(builderStore.subscribe, builderStore.getSnapshot);
   const pageSession = useSyncExternalStore(pageSessionStore.subscribe, pageSessionStore.getSnapshot);
+  const structuralState = useSyncExternalStore(
+    structuralStore.subscribe,
+    structuralStore.getSnapshot
+  );
 
   const [wizard, setWizard] = useState<WizardFile | null>(null);
   const [wizardError, setWizardError] = useState<string | null>(null);
@@ -65,6 +79,11 @@ export function ConfigCapture() {
   const [activeFieldId, setActiveFieldId] = useState<string | null>(null);
   const [draft, setDraft] = useState<DraftBox | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
+
+  const [showStructuralOverlay, setShowStructuralOverlay] = useState<boolean>(true);
+  const [structuralError, setStructuralError] = useState<string | null>(null);
+  const [isComputingStructure, setIsComputingStructure] = useState<boolean>(false);
+  const [activeStructuralModelId, setActiveStructuralModelId] = useState<string | null>(null);
 
   const imageRef = useRef<HTMLImageElement | null>(null);
   const frameRef = useRef<HTMLDivElement | null>(null);
@@ -127,6 +146,100 @@ export function ConfigCapture() {
     const surface = getPageSurface(selectedPage);
     return buildSurfaceTransform(surface, displayRect);
   }, [selectedPage, displayRect]);
+
+  const geometryFileSnapshot: GeometryFile = useMemo(
+    () => builderStore.toGeometryFile(),
+    [builderState, builderStore]
+  );
+
+  useEffect(() => {
+    if (pageSession.pages.length === 0) {
+      setActiveStructuralModelId(null);
+      setStructuralError(null);
+      return;
+    }
+    const fingerprint = pageSession.documentFingerprint;
+    const pages = pageSession.pages;
+    let cancelled = false;
+
+    const runCompute = async () => {
+      setIsComputingStructure(true);
+      setStructuralError(null);
+      try {
+        const model = await structuralRunnerRef.current.compute({
+          pages,
+          documentFingerprint: fingerprint,
+          geometry: geometryFileSnapshot.fields.length > 0 ? geometryFileSnapshot : null
+        });
+        if (cancelled) {
+          return;
+        }
+        await structuralStore.save(model);
+        setActiveStructuralModelId(model.id);
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        setStructuralError(
+          error instanceof Error ? error.message : 'Could not compute StructuralModel.'
+        );
+      } finally {
+        if (!cancelled) {
+          setIsComputingStructure(false);
+        }
+      }
+    };
+
+    void runCompute();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    pageSession.documentFingerprint,
+    pageSession.pages,
+    geometryFileSnapshot,
+    structuralStore
+  ]);
+
+  const activeStructuralModel: StructuralModel | null = useMemo(() => {
+    if (!activeStructuralModelId) {
+      return null;
+    }
+    return (
+      structuralState.models.find((model) => model.id === activeStructuralModelId) ?? null
+    );
+  }, [structuralState.models, activeStructuralModelId]);
+
+  const activeStructuralPage = useMemo(() => {
+    if (!activeStructuralModel) {
+      return null;
+    }
+    return (
+      activeStructuralModel.pages.find(
+        (page) => page.pageIndex === pageSession.selectedPageIndex
+      ) ?? null
+    );
+  }, [activeStructuralModel, pageSession.selectedPageIndex]);
+
+  const structuralOverlay = useMemo(() => {
+    if (!surfaceTransform || !activeStructuralPage) {
+      return null;
+    }
+    return {
+      border: normalizedRectToScreen(surfaceTransform, activeStructuralPage.border.rectNorm),
+      refinedBorder: normalizedRectToScreen(
+        surfaceTransform,
+        activeStructuralPage.refinedBorder.rectNorm
+      ),
+      source: activeStructuralPage.refinedBorder.source,
+      influencedByBBoxCount: activeStructuralPage.refinedBorder.influencedByBBoxCount
+    };
+  }, [surfaceTransform, activeStructuralPage]);
+
+  const structuralPreview = useMemo(
+    () => (activeStructuralModel ? serializeStructuralModel(activeStructuralModel) : ''),
+    [activeStructuralModel]
+  );
 
   const handleWizardImport = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -320,19 +433,21 @@ export function ConfigCapture() {
     await builderStore.removeField(fieldId);
   };
 
-  const geometryFile: GeometryFile = useMemo(
-    () => builderStore.toGeometryFile(),
-    [builderState, builderStore]
-  );
-
   const validation = useMemo(() => {
     if (!wizard) {
       return null;
     }
-    return configRunnerRef.current.validateExisting(geometryFile, wizard, pageSession.pages);
-  }, [geometryFile, wizard, pageSession.pages]);
+    return configRunnerRef.current.validateExisting(
+      geometryFileSnapshot,
+      wizard,
+      pageSession.pages
+    );
+  }, [geometryFileSnapshot, wizard, pageSession.pages]);
 
-  const livePreview = useMemo(() => serializeGeometryFile(geometryFile), [geometryFile]);
+  const livePreview = useMemo(
+    () => serializeGeometryFile(geometryFileSnapshot),
+    [geometryFileSnapshot]
+  );
 
   const activeFieldLabel = useMemo(() => {
     if (!wizard || !activeFieldId) {
@@ -442,6 +557,37 @@ export function ConfigCapture() {
               role="application"
               aria-label="Draw bounding box on normalized page"
             >
+              {showStructuralOverlay && structuralOverlay ? (
+                <>
+                  <div
+                    className="config-capture__structural-border"
+                    aria-hidden="true"
+                    style={{
+                      left: `${structuralOverlay.border.x}px`,
+                      top: `${structuralOverlay.border.y}px`,
+                      width: `${structuralOverlay.border.width}px`,
+                      height: `${structuralOverlay.border.height}px`
+                    }}
+                  >
+                    <span className="config-capture__structural-label">Border</span>
+                  </div>
+                  <div
+                    className="config-capture__structural-refined"
+                    aria-hidden="true"
+                    style={{
+                      left: `${structuralOverlay.refinedBorder.x}px`,
+                      top: `${structuralOverlay.refinedBorder.y}px`,
+                      width: `${structuralOverlay.refinedBorder.width}px`,
+                      height: `${structuralOverlay.refinedBorder.height}px`
+                    }}
+                  >
+                    <span className="config-capture__structural-label">
+                      Refined ({structuralOverlay.source})
+                    </span>
+                  </div>
+                </>
+              ) : null}
+
               {overlayBoxes.map((overlay) => (
                 <div
                   key={overlay.fieldId}
@@ -494,6 +640,27 @@ export function ConfigCapture() {
               Cancel Draft
             </Button>
           </div>
+
+          <div className="config-capture__toolbar">
+            <label className="config-capture__toggle">
+              <input
+                type="checkbox"
+                checked={showStructuralOverlay}
+                onChange={(event) => setShowStructuralOverlay(event.target.checked)}
+              />
+              Show Structural Debug Overlay
+            </label>
+            <span className="config-capture__meta">
+              {isComputingStructure
+                ? 'Computing StructuralModel…'
+                : activeStructuralModel
+                  ? `Structural: ${activeStructuralModel.cvAdapter.name} v${activeStructuralModel.cvAdapter.version} · ${activeStructuralModel.pages.length} page(s)`
+                  : pageSession.pages.length > 0
+                    ? 'StructuralModel pending.'
+                    : 'No NormalizedPage loaded.'}
+            </span>
+          </div>
+          {structuralError ? <p className="config-capture__error">{structuralError}</p> : null}
         </Panel>
 
         <Panel as="aside" className="config-capture__column">
@@ -553,7 +720,7 @@ export function ConfigCapture() {
             <Button
               type="button"
               onClick={() => {
-                downloadGeometryFile(geometryFile);
+                downloadGeometryFile(geometryFileSnapshot);
               }}
               disabled={!wizard || builderState.fields.length === 0}
             >
@@ -591,6 +758,27 @@ export function ConfigCapture() {
           <div>
             <strong>Live GeometryFile JSON</strong>
             <pre className="config-capture__json">{livePreview}</pre>
+          </div>
+
+          <div className="config-capture__toolbar">
+            <Button
+              type="button"
+              onClick={() => {
+                if (activeStructuralModel) {
+                  downloadStructuralModel(activeStructuralModel);
+                }
+              }}
+              disabled={!activeStructuralModel}
+            >
+              Download StructuralModel JSON
+            </Button>
+          </div>
+
+          <div>
+            <strong>Live StructuralModel JSON</strong>
+            <pre className="config-capture__json">
+              {structuralPreview || 'StructuralModel will be computed once a NormalizedPage is loaded.'}
+            </pre>
           </div>
         </Panel>
       </div>

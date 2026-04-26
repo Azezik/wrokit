@@ -140,19 +140,26 @@ describe('isGeometryFile', () => {
 });
 
 describe('isStructuralModel', () => {
-  it('accepts a valid StructuralModel', () => {
+  it('accepts a valid StructuralModel (Border + Refined Border)', () => {
     expect(
       isStructuralModel({
         schema: 'wrokit/structural-model',
-        version: '1.0',
+        version: '2.0',
+        structureVersion: 'wrokit/structure/v1',
         id: 's1',
         documentFingerprint: 'sha256:abc',
-        regions: [
+        cvAdapter: { name: 'opencv-js', version: '1.0' },
+        pages: [
           {
-            id: 'r1',
-            kind: 'text-block',
             pageIndex: 0,
-            bbox: { x: 0, y: 0, width: 10, height: 10 }
+            pageSurface: { pageIndex: 0, surfaceWidth: 1000, surfaceHeight: 1400 },
+            border: { rectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 } },
+            refinedBorder: {
+              rectNorm: { xNorm: 0.05, yNorm: 0.05, wNorm: 0.9, hNorm: 0.9 },
+              source: 'cv-content',
+              influencedByBBoxCount: 0,
+              containsAllSavedBBoxes: true
+            }
           }
         ],
         createdAtIso: '2026-01-01T00:00:00Z'
@@ -160,20 +167,38 @@ describe('isStructuralModel', () => {
     ).toBe(true);
   });
 
-  it('rejects unknown region kind', () => {
+  it('rejects missing structureVersion or unknown refined border source', () => {
     expect(isStructuralModel(null)).toBe(false);
     expect(
       isStructuralModel({
         schema: 'wrokit/structural-model',
-        version: '1.0',
+        version: '2.0',
         id: 's1',
         documentFingerprint: 'sha256:abc',
-        regions: [
+        cvAdapter: { name: 'opencv-js', version: '1.0' },
+        pages: [],
+        createdAtIso: '2026-01-01T00:00:00Z'
+      })
+    ).toBe(false);
+    expect(
+      isStructuralModel({
+        schema: 'wrokit/structural-model',
+        version: '2.0',
+        structureVersion: 'wrokit/structure/v1',
+        id: 's1',
+        documentFingerprint: 'sha256:abc',
+        cvAdapter: { name: 'opencv-js', version: '1.0' },
+        pages: [
           {
-            id: 'r1',
-            kind: 'mystery',
             pageIndex: 0,
-            bbox: { x: 0, y: 0, width: 10, height: 10 }
+            pageSurface: { pageIndex: 0, surfaceWidth: 1000, surfaceHeight: 1400 },
+            border: { rectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 } },
+            refinedBorder: {
+              rectNorm: { xNorm: 0.05, yNorm: 0.05, wNorm: 0.9, hNorm: 0.9 },
+              source: 'guessing',
+              influencedByBBoxCount: 0,
+              containsAllSavedBBoxes: true
+            }
           }
         ],
         createdAtIso: '2026-01-01T00:00:00Z'

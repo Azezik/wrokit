@@ -24,7 +24,7 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
   - `geometry-engine.ts`: builds a `GeometryFile` from human-confirmed BBOX drafts. Implements `Engine<GeometryEngineInput, GeometryFile>`.
   - `validation.ts`: validates a `GeometryFile` against a `WizardFile` and `NormalizedPage[]`. All validation lives here — UI only renders the result.
   - Geometry stores normalized BBOX (`xNorm/yNorm/wNorm/hNorm`) as the canonical authority, plus a derived `pixelBbox` and a `pageSurface` reference (page dimensions and index) used to verify that geometry is interpreted on the same NormalizedPage surface a future engine will consume.
-- `src/core/runtime`: the only place engines are composed. Runners exist as boundaries: `config-runner`, `extraction-runner`, `localization-runner`, `ocr-runner`, `confidence-runner`. Of these, only `config-runner` composes engines today (Geometry build + validation); the others are still stubs that throw `not implemented in foundation phase`.
+- `src/core/runtime`: the only place engines are composed. Runners exist as boundaries: `config-runner`, `structural-runner`, `extraction-runner`, `localization-runner`, `ocr-runner`, `confidence-runner`. `config-runner` composes Geometry build + validation; `structural-runner` owns the CV adapter selection (OpenCV.js by default) and runs the Structural Engine to produce a `StructuralModel` from `NormalizedPage[]` (+ optional `GeometryFile` for ground-truth-aware refined border). The remaining runners are still stubs that throw `not implemented in foundation phase`.
 - `src/core/ui/components`: reusable visual primitives (`Button`, `Input`, `Panel`, `Section`).
 - `src/core/ui/layout`: app-wide layout wrappers (`AppShell`).
 - `src/core/ui/styles`: centralized visual tokens + global base styles.
@@ -51,7 +51,7 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
   - `WizardFile`: `1.0`
   - `NormalizedPage`: `2.0`
   - `GeometryFile`: `1.1` (also carries `geometryFileVersion: 'wrokit/geometry/v1'` for human-readable schema identity)
-  - `StructuralModel`: `1.0`
+  - `StructuralModel`: `2.0` (also carries `structureVersion: 'wrokit/structure/v1'` for human-readable schema identity)
   - `ExtractionResult`: `1.0`
 
 ## Store Pattern
@@ -72,7 +72,7 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
 - `WizardFile` (`src/core/contracts/wizard.ts`): `schema: 'wrokit/wizard-file'`, `version: '1.0'`. Guard: `isWizardFile`.
 - `NormalizedPage` (`src/core/contracts/normalized-page.ts`): `schema: 'wrokit/normalized-page'`, `version: '2.0'`, includes pixel width/height/aspect ratio and raster image URL surface data, plus display-only `sourceName`. Guard: `isNormalizedPage`.
 - `GeometryFile` (`src/core/contracts/geometry.ts`): `schema: 'wrokit/geometry-file'`, `version: '1.1'`, `geometryFileVersion: 'wrokit/geometry/v1'`. Each `FieldGeometry` carries a normalized `bbox` (`xNorm/yNorm/wNorm/hNorm`) as canonical authority, a derived `pixelBbox` in NormalizedPage surface pixels, and a `pageSurface` reference so validation can detect drift against the loaded NormalizedPage. Guard: `isGeometryFile`.
-- `StructuralModel` (`src/core/contracts/structural-model.ts`): `schema: 'wrokit/structural-model'`, `version: '1.0'`. Guard: `isStructuralModel`.
+- `StructuralModel` (`src/core/contracts/structural-model.ts`): `schema: 'wrokit/structural-model'`, `version: '2.0'`, `structureVersion: 'wrokit/structure/v1'`. Each `StructuralPage` carries a `pageSurface` reference and two normalized rects: a `border` (full NormalizedPage boundary) and a `refinedBorder` (main useful content area, with `source` and `containsAllSavedBBoxes` markers). Stored separately from `GeometryFile`. Guard: `isStructuralModel`.
 - `ExtractionResult` (`src/core/contracts/extraction-result.ts`): `schema: 'wrokit/extraction-result'`, `version: '1.0'`. Guard: `isExtractionResult`.
 
 ## App Shell and Static Hosting
@@ -91,6 +91,28 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
 - `src/core/page-surface/` is the *only* place that converts between screen pixels, NormalizedPage surface pixels, and normalized [0, 1] coordinates. UI must build its display transform from the displayed image's actual `getBoundingClientRect()` and feed every pointer event through `screenToSurface` to obtain authoritative surface coordinates.
 - Normalized BBOX (`xNorm/yNorm/wNorm/hNorm`) on the NormalizedPage surface is the authoritative form persisted to disk. The pixel-space `pixelBbox` and the `pageSurface` reference are stored alongside it as derived snapshots so a future engine can verify the geometry was captured against the exact NormalizedPage dimensions it is now consuming.
 - There is no separate canvas space, no CSS-only coordinate assumption, and no alternate page-vs-image space. Display scaling is allowed; geometry must always resolve back to canonical NormalizedPage surface coordinates exactly.
+
+## Structural Engine (Border + Refined Border)
+- The Structural Engine is the second backbone of Wrokit alongside the NormalizedPage / Geometry authority model. It produces a `StructuralModel` from canonical `NormalizedPage[]` (and an optional `GeometryFile` so saved BBOXes are honored).
+- `src/core/engines/structure/structural-engine.ts` is the pure transform. It implements `Engine<StructuralEngineInput, StructuralModel>`. For each input page it derives the canonical `PageSurface` via `page-surface`, hands a surface-aligned RGBA raster to a CV adapter, and emits a `Border` (always `{0,0,1,1}`) and a `RefinedBorder` in normalized `[0, 1]` coordinates over the same NormalizedPage surface.
+- `src/core/engines/structure/cv/cv-adapter.ts` defines the abstract `CvAdapter` contract: input is a `CvSurfaceRaster` whose dimensions MUST match the canonical `PageSurface` dimensions (enforced by `assertRasterMatchesSurface`); output is a `contentRectSurface` in NormalizedPage surface pixels. The Structural Engine never imports any specific CV library.
+- `src/core/engines/structure/cv/opencv-js-adapter.ts` is the **only file in Wrokit allowed to reference OpenCV.js**. It implements the abstract `CvAdapter` and is the first CV implementation used by the Structural Engine. The adapter performs background-threshold + bounding-rect-of-content directly against the canonical NormalizedPage raster surface; if a real `cv.js` runtime is exposed (e.g. on `globalThis.cv`), the adapter is the only place that may use it. Replacing or extending the OpenCV-specific code is a single-file change.
+- `src/core/engines/structure/page-raster-loader.ts` is the only reader of `NormalizedPage.imageDataUrl` for CV. It always rasterizes to canvas dimensions equal to `surface.surfaceWidth/Height`, so the CV adapter sees the same surface geometry the user drew BBOXes against. There is no DPR scaling, alternate canvas space, or alternate coordinate universe.
+- `src/core/runtime/structural-runner.ts` composes `createStructuralEngine` with the OpenCV.js adapter (default) and exposes a single `compute(input)` method. UI consumes only this runner; it never touches CV adapters or engine internals.
+- `src/core/io/structural-model-io.ts` mirrors the Geometry IO module: `serializeStructuralModel`, `parseStructuralModel`, `downloadStructuralModel`. StructuralModels are persisted separately from GeometryFiles.
+- `src/core/storage/structural-store.ts` stores StructuralModels in-memory keyed by `id`, alongside the existing `geometry-store`. The two are never merged.
+- Refined Border invariants (enforced by the engine, not the UI):
+  - When saved BBOXes exist on a page, the refined border MUST contain every BBOX. If CV says otherwise, the engine **expands** the refined border to include them; it never crops.
+  - When no BBOXes exist, the refined border is `cv-content` if the adapter found usable content, otherwise `full-page-fallback`.
+  - When CV reports a degenerate rect but BBOXes exist, the refined border is the union of all BBOXes (`bbox-union`).
+  - When both contribute, the refined border is the union (`cv-and-bbox-union`).
+  - Each `RefinedBorder` carries `source`, `influencedByBBoxCount`, and `containsAllSavedBBoxes` so downstream readers can verify ground-truth protection without recomputing.
+- Auto-compute timing: `ConfigCapture` triggers structural compute as soon as `NormalizedPage[]` exists in the canonical session store. The user does not need to draw any BBOX before seeing the Border / Refined Border debug overlay. When BBOXes are drawn or imported, the engine recomputes with them honored as ground truth.
+- Debug overlay: `ConfigCapture` exposes a "Show Structural Debug Overlay" toggle. The overlay positions Border + Refined Border using the **same** `normalizedRectToScreen` transform that positions saved BBOX overlays, so all three overlays share one coordinate system.
+- StructuralModel does not carry: OCR, runtime extraction, localization, confidence scoring, or object hierarchy beyond Border + Refined Border. Those layers will land later as separate modules.
+
+## Ground Truth Rule
+- Human-confirmed BBOX geometry remains the highest authority. The Structural Engine never overrides, shrinks, moves, or reinterprets a saved BBOX as truth. If structural detection disagrees with saved geometry, geometry wins and the refined border expands to include the disagreement.
 
 ## Geometry Module
 - `src/core/contracts/geometry.ts` defines the persisted `GeometryFile` shape.
@@ -113,8 +135,9 @@ Implemented:
 - Wizard Builder feature wired through reusable UI components and the IO module.
 - Normalization intake engine with isolated PDF/image raster adapters.
 - **Unified Config Capture intake flow + canonical page session authority**: upload (PDF/PNG/JPG/JPEG/WebP), normalization, shared normalized-page session update, and BBOX drawing are a single workflow in `ConfigCapture`. There is no separate standalone normalization UI mounted in the app.
-- Surface authority layer (`page-surface`) used by the Geometry module today and reserved for all future page-aware engines.
+- Surface authority layer (`page-surface`) used by the Geometry module and the Structural Engine, and reserved for all future page-aware engines.
 - Geometry module: BBOX capture (Config Mode), validation, save/load/import/export, edit/redraw, live JSON preview.
+- Structural Engine v1: Border + Refined Border auto-compute on `NormalizedPage[]` availability via the OpenCV.js CV adapter, ground-truth-aware (BBOX union when present), structural-model-io for save/preview/download, debug overlay toggle in Config Capture.
 - Shared tokenized styling system.
 - Versioned + guarded contracts for all five persisted shapes.
 - Async observable stores with subscribe/snapshot.
@@ -122,7 +145,6 @@ Implemented:
 - Runtime stubs for extraction, localization, OCR, confidence.
 
 Not yet implemented:
-- Structural model generation.
 - Real OCR.
 - Runtime localization and OCR readout.
 - Persistence adapter.

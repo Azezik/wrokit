@@ -1,3 +1,90 @@
+## 2026-04-26 — Step: Structural Engine v1 (Border + Refined Border)
+
+### Why this step
+- Wrokit needed the first Structural Engine / Computer Vision layer alongside the NormalizedPage / Geometry authority model.
+- Goal: given a NormalizedPage and (optionally) a GeometryFile, produce the first deterministic StructuralModel containing a `Border` (full normalized page boundary) and a `Refined Border` (main useful content area), under the strict surface authority + ground-truth rules.
+- The Structural Engine becomes the second backbone of Wrokit, but must consume the same canonical NormalizedPage raster surface used by Geometry capture. No separate image space, alternate canvas space, OpenCV-only coordinate universe, or structural-only bbox system is permitted.
+
+### What changed
+- **Contract** (`src/core/contracts/structural-model.ts`): rewrote `StructuralModel` to v2.0 with `structureVersion: 'wrokit/structure/v1'`. Each `StructuralPage` carries:
+  - `pageSurface: { pageIndex, surfaceWidth, surfaceHeight }` — the canonical NormalizedPage surface.
+  - `border: { rectNorm: { 0, 0, 1, 1 } }` — the full normalized page boundary.
+  - `refinedBorder: { rectNorm, source, influencedByBBoxCount, containsAllSavedBBoxes }` — the main useful content area, in normalized `[0, 1]` coordinates over the *same* NormalizedPage surface, with explicit ground-truth markers.
+  - `cvAdapter: { name, version }` — provenance of the CV implementation. The contract is library-agnostic.
+- **CV adapter abstraction** (`src/core/engines/structure/cv/cv-adapter.ts`): defined the `CvAdapter` interface — input is a `CvSurfaceRaster` whose pixel dimensions MUST equal the canonical `PageSurface` dimensions (enforced by `assertRasterMatchesSurface`); output is a `contentRectSurface` in NormalizedPage surface pixels. The Structural Engine never imports any specific CV library.
+- **OpenCV.js adapter** (`src/core/engines/structure/cv/opencv-js-adapter.ts`): the **only** file in Wrokit allowed to reference OpenCV.js. Implements the abstract `CvAdapter`. Performs background-threshold + bounding-rect-of-content directly against the canonical NormalizedPage raster surface; will use a real `cv.js` runtime when one is exposed (e.g. on `globalThis.cv`), but never requires it. Replacing or extending the OpenCV-specific logic is a single-file change.
+- **Page raster loader** (`src/core/engines/structure/page-raster-loader.ts`): the only reader of `NormalizedPage.imageDataUrl` for CV. Always rasterizes to canvas dimensions equal to `surface.surfaceWidth/Height`. There is no DPR scaling, alternate canvas space, or alternate coordinate universe.
+- **Structural Engine** (`src/core/engines/structure/structural-engine.ts`): pure transform implementing `Engine<StructuralEngineInput, StructuralModel>`. For each input page:
+  - derives the canonical `PageSurface` via `getPageSurface(page)`,
+  - asks the CV adapter for a content rect on that surface,
+  - converts the result into the canonical normalized coordinate system via `surfaceRectToNormalized`,
+  - emits a Border at `{0,0,1,1}` and a Refined Border that respects every saved BBOX as ground truth.
+  - Refined Border invariants: with no BBOXes → `cv-content` or `full-page-fallback`; with BBOXes and unusable CV → `bbox-union`; with both → `cv-and-bbox-union`. The engine **expands** the refined border to include any BBOX that escapes; it never crops.
+- **Structural Runner** (`src/core/runtime/structural-runner.ts`): the only place engines are composed for structural detection. Owns CV adapter selection (OpenCV.js by default) and exposes a single `compute(input)` method. UI consumes only this runner.
+- **IO** (`src/core/io/structural-model-io.ts`): `serializeStructuralModel`, `parseStructuralModel`, `downloadStructuralModel` — mirrors the Geometry IO module shape. StructuralModels are persisted separately from GeometryFiles.
+- **Storage** (`src/core/storage/structural-store.ts`): no API changes — still keyed by `id`, separate from `geometry-store`.
+- **Config Capture wiring** (`src/features/config-capture/ui/ConfigCapture.tsx`):
+  - Auto-computes a StructuralModel as soon as `NormalizedPage[]` exists in the shared session store. The user does not need to draw any BBOX before seeing the structural debug overlay.
+  - Re-runs structural compute when BBOXes change (geometry is fed in as ground truth so the refined border honors saved BBOXes).
+  - Adds a **"Show Structural Debug Overlay"** toggle. Border + Refined Border are positioned via the **same** `normalizedRectToScreen` transform that positions saved BBOX overlays — one coordinate system for all three overlays.
+  - Adds Live StructuralModel JSON preview and a Download StructuralModel JSON button.
+- **Dashboard**: `Structural Model` module flipped from `planned` to `active`.
+
+### OpenCV.js containment
+- Only `src/core/engines/structure/cv/opencv-js-adapter.ts` may reference OpenCV.js or look up `globalThis.cv`.
+- The Structural Engine, Structural Runner, contracts, IO module, stores, runtime stubs, and UI consume only the abstract `CvAdapter` interface and the `StructuralModel` contract.
+- Replacing OpenCV.js with a different CV library (or attaching the real `cv.js` WASM build) is a single-file change inside the `cv/` directory and a runner-options swap; nothing else needs to know.
+
+### NormalizedPage surface authority preserved
+- The Structural Engine derives `PageSurface` via `getPageSurface(page)` from the same `page-surface` infrastructure module Geometry uses.
+- The CV adapter receives a raster whose dimensions equal the canonical surface dimensions (`assertRasterMatchesSurface`). It cannot operate on a non-canonical surface.
+- The CV adapter reports a content rect in NormalizedPage surface pixels; the engine maps it to canonical normalized coordinates via `surfaceRectToNormalized` — the same conversion Geometry uses.
+- Structural overlays are positioned using `normalizedRectToScreen` against the live display transform — the same transform that positions saved BBOX overlays. There is no separate structural overlay coordinate system.
+
+### Ground truth protection
+- Geometry remains authoritative. The engine never overrides, shrinks, moves, or reinterprets a saved BBOX. If structural detection disagrees, the engine **expands** the refined border to include the BBOX. Every `RefinedBorder` ships `containsAllSavedBBoxes: true` after construction; this is verified, not assumed.
+- StructuralModel is persisted separately from GeometryFile (`structural-store` vs `geometry-store`, `*.structural.json` vs `*.geometry.json`).
+
+### Anti-drift protections added
+- **No pixelBbox snapshots are used as authority.** Structural rects are normalized `[0, 1]` over the canonical NormalizedPage surface. Pixel-space data exists only at the CV adapter boundary as a transient surface-aligned read.
+- **No parallel structural bbox language.** All structural rects are typed as `StructuralNormalizedRect` and are produced via the same `surfaceRectToNormalized` helper Geometry uses. The contract guard rejects any model whose rects don't match the shape.
+- **No misleading legacy naming.** Public surface uses `pageSurface`, `surfaceWidth/Height`, `rectNorm`, `contentRectSurface`. The word "viewport" does not appear.
+- **Future runtime modules can consume StructuralModel without source-specific branching.** The model carries no MIME-type, PDF, or image-source identity. `cvAdapter` is provenance-only and does not change the contract shape.
+- **No OCR, runtime extraction, localization, confidence scoring, or extra object hierarchy was added.** The structural model contains only Border and Refined Border per page.
+
+### Files added
+- `src/core/engines/structure/structural-engine.ts`
+- `src/core/engines/structure/page-raster-loader.ts`
+- `src/core/engines/structure/types.ts`
+- `src/core/engines/structure/index.ts`
+- `src/core/engines/structure/cv/cv-adapter.ts`
+- `src/core/engines/structure/cv/opencv-js-adapter.ts`
+- `src/core/engines/structure/cv/index.ts`
+- `src/core/io/structural-model-io.ts`
+- `src/core/runtime/structural-runner.ts`
+- `tests/unit/structural-engine.test.ts`
+- `tests/unit/structural-model-io.test.ts`
+- `tests/unit/cv-opencv-js-adapter.test.ts`
+
+### Files modified
+- `src/core/contracts/structural-model.ts` (rewritten to v2.0 + structureVersion)
+- `src/features/config-capture/ui/ConfigCapture.tsx` (auto-compute, overlay, JSON preview/download)
+- `src/features/config-capture/ui/config-capture.css` (structural overlay + toggle styles)
+- `src/app/pages/HomeDashboardPage.tsx` (Structural Model status → active)
+- `tests/unit/contracts.test.ts` (updated to v2.0 StructuralModel shape)
+- `docs/architecture.md`
+- `docs/dev-log.md`
+
+### Checks run
+- `npm run check` (`tsc --noEmit`): passed.
+- `npm test` (vitest): all 48 tests pass (10 contracts + 6 page-surface + 7 geometry-validation + 4 geometry-file-io + 3 normalized-page-session-store + 5 wizard-builder-store + 4 cv-opencv-js-adapter + 5 structural-engine + 4 structural-model-io).
+- `npm run build` (`tsc -b && vite build`): passed; bundle emitted.
+
+### Recommended next step
+- Persist completed `StructuralModel` snapshots into the existing `structural-store` from a future "Save Structural" UI action, mirroring the Geometry save flow, so the dashboard can list saved structural interpretations alongside saved geometries.
+
+---
+
 ## 2026-04-26 — Step: Canonical NormalizedPage Session Store Authority
 
 ### Why this step
