@@ -16,9 +16,9 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
 - `src/core/storage`: UI-agnostic stores. All store mutators are async. All stores expose `subscribe(listener)` and `getSnapshot()` so React can attach via `useSyncExternalStore` and a future persistence adapter is a drop-in.
 - `src/core/engines`: pure transforms. Every engine implements the canonical `Engine<TInput, TOutput>` from `src/core/engines/engine.ts`. Engines never compose other engines and never reach into UI or storage.
 - `src/core/engines/normalization`: hard intake boundary. Accepts upload files and emits only `NormalizedPage[]`.
-  - `image-rasterizer.ts`: image decode/raster path.
-  - `pdf-rasterizer.ts`: **only allowed PDF.js usage**, and only for PDF page raster rendering.
-  - `normalization-engine.ts`: routes input files to raster adapters and returns normalized contract output.
+  - `image-rasterizer.ts`: image decode/raster path. Decodes via `createImageBitmap`, draws onto a fresh `HTMLCanvasElement`, and re-encodes via `canvas.toDataURL('image/png')`. The output PNG carries no source-format identity.
+  - `pdf-rasterizer.ts`: **only allowed PDF.js usage**, and only for PDF page raster rendering. Imports `pdfjs-dist` directly from the bundled npm dependency, and resolves the PDF.js worker through Vite's `?url` import (`pdfjs-dist/build/pdf.worker.min.mjs?url`). The worker is emitted by Vite as a hashed asset under the configured `base` path, which keeps it working under GitHub Pages project-page routing. `GlobalWorkerOptions.workerSrc` is set once on first use and never mutated by callers.
+  - `normalization-engine.ts`: routes input files to raster adapters by MIME type at the boundary, then immediately wraps each `RasterizedPageSurface` into a `NormalizedPage` via `toNormalizedPage`. Downstream modules cannot distinguish a PDF-sourced page from an image-sourced page.
 - `src/core/runtime`: the only place engines are composed. Runners exist as boundaries: `config-runner`, `extraction-runner`, `localization-runner`, `ocr-runner`, `confidence-runner`. Most are stubs that throw `not implemented in foundation phase`.
 - `src/core/ui/components`: reusable visual primitives (`Button`, `Input`, `Panel`, `Section`).
 - `src/core/ui/layout`: app-wide layout wrappers (`AppShell`).
@@ -36,6 +36,8 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
 - Intake conversion is one-way. Once normalized, downstream modules receive only `NormalizedPage[]`.
 - Downstream modules must not inspect or branch on original MIME type, upload internals, PDF dimensions, PDF coordinates, text tokens, annotations, or metadata.
 - `sourceName` in `NormalizedPage` is display-only and must not drive extraction logic.
+- `pdfjs-dist` may be imported only inside `pdf-rasterizer.ts`. No other module — engine, runner, store, contract, UI, or app — may import or reference PDF.js directly.
+- The PDF.js worker is loaded as a Vite static asset (`?url` import) so it inherits the deployed `base` path and continues to resolve correctly under static hosting (e.g. GitHub Pages project pages).
 
 ## Contract Versioning Rule
 - Every persisted contract declares a literal `schema: 'wrokit/<name>'` and a semantic `version`.
