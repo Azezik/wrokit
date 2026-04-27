@@ -39,7 +39,7 @@ const stubLoader = async (
 const cvAdapterReturning = (rect: PixelRect): CvAdapter => ({
   name: 'mock-cv',
   version: '0.0',
-  detectContentRect: async () => ({ contentRectSurface: rect, objectsSurface: [] })
+  detectContentRect: async () => ({ executionMode: 'heuristic-fallback', contentRectSurface: rect, objectsSurface: [] })
 });
 
 describe('createStructuralEngine', () => {
@@ -60,6 +60,7 @@ describe('createStructuralEngine', () => {
     expect(model.cvAdapter).toEqual({ name: 'mock-cv', version: '0.0' });
     expect(model.pages).toHaveLength(1);
     const page = model.pages[0];
+    expect(page.cvExecutionMode).toBe('heuristic-fallback');
     expect(page.border.rectNorm).toEqual({ xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 });
     expect(page.refinedBorder.source).toBe('cv-content');
     expect(page.refinedBorder.rectNorm).toEqual({
@@ -235,6 +236,7 @@ describe('createStructuralEngine', () => {
         name: 'mock-cv',
         version: '0.1',
         detectContentRect: async () => ({
+          executionMode: 'opencv-runtime',
           contentRectSurface: { x: 100, y: 200, width: 800, height: 1600 },
           objectsSurface: [
             {
@@ -299,6 +301,7 @@ describe('createStructuralEngine', () => {
         name: 'mock-cv',
         version: '0.2',
         detectContentRect: async () => ({
+          executionMode: 'opencv-runtime',
           contentRectSurface: { x: 100, y: 200, width: 800, height: 1600 },
           objectsSurface: [
             {

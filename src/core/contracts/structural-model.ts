@@ -64,12 +64,15 @@ export interface StructuralRefinedBorder {
 export interface StructuralPage {
   pageIndex: number;
   pageSurface: StructuralPageSurfaceRef;
+  cvExecutionMode: StructuralCvExecutionMode;
   border: StructuralBorder;
   refinedBorder: StructuralRefinedBorder;
   objectHierarchy: StructuralObjectHierarchy;
   pageAnchorRelations: StructuralPageAnchorRelations;
   fieldRelationships: StructuralFieldRelationship[];
 }
+
+export type StructuralCvExecutionMode = 'opencv-runtime' | 'heuristic-fallback';
 
 export type StructuralObjectType =
   | 'rectangle'
@@ -545,6 +548,8 @@ const isStructuralPage = (value: unknown): value is StructuralPage => {
   return (
     isFiniteNumber(value.pageIndex) &&
     isStructuralPageSurfaceRef(value.pageSurface) &&
+    (value.cvExecutionMode === 'opencv-runtime' ||
+      value.cvExecutionMode === 'heuristic-fallback') &&
     isStructuralBorder(value.border) &&
     isStructuralRefinedBorder(value.refinedBorder) &&
     isStructuralObjectHierarchy(value.objectHierarchy) &&

@@ -15,10 +15,15 @@ import {
 } from '../../../core/io/structural-model-io';
 import { parseWizardFile, WizardFileParseError } from '../../../core/io/wizard-file-io';
 import {
-  normalizedRectToScreen,
   type SurfaceTransform
 } from '../../../core/page-surface/page-surface';
-import { NormalizedPageViewport } from '../../../core/page-surface/ui';
+import {
+  DEFAULT_STRUCTURAL_OVERLAY_OPTIONS,
+  NormalizedPageViewport,
+  StructuralDebugOverlay,
+  type StructuralOverlayFieldBox,
+  type StructuralOverlayOptions
+} from '../../../core/page-surface/ui';
 import { createLocalizationRunner, type PredictedGeometryFile } from '../../../core/runtime/localization-runner';
 import { createStructuralRunner } from '../../../core/runtime/structural-runner';
 import { Button } from '../../../core/ui/components/Button';
@@ -53,8 +58,12 @@ export function RunMode() {
   const [configStructuralError, setConfigStructuralError] = useState<string | null>(null);
   const [runtimeNormalizationError, setRuntimeNormalizationError] = useState<string | null>(null);
   const [showRuntimeStructuralOverlay, setShowRuntimeStructuralOverlay] = useState<boolean>(true);
+  const [structuralOverlayOptions, setStructuralOverlayOptions] = useState<StructuralOverlayOptions>(
+    DEFAULT_STRUCTURAL_OVERLAY_OPTIONS
+  );
 
   const [surfaceTransform, setSurfaceTransform] = useState<SurfaceTransform | null>(null);
+  const structuralRuntimeLoadStatus = structuralRunnerRef.current.runtimeLoadStatus;
 
   const selectedPage = useMemo(
     () => runtimePages.find((page) => page.pageIndex === selectedPageIndex) ?? null,
@@ -72,12 +81,19 @@ export function RunMode() {
     return map;
   }, [wizard]);
 
-  const predictedBoxesForPage = useMemo(() => {
+  const predictedBoxesForPage = useMemo<StructuralOverlayFieldBox[]>(() => {
     if (!predicted || !selectedPage) {
       return [];
     }
-    return predicted.fields.filter((field) => field.pageIndex === selectedPage.pageIndex);
-  }, [predicted, selectedPage]);
+    return predicted.fields
+      .filter((field) => field.pageIndex === selectedPage.pageIndex)
+      .map((field) => ({
+        fieldId: field.fieldId,
+        label: fieldLabels.get(field.fieldId) ?? field.fieldId,
+        bbox: field.bbox,
+        variant: 'predicted'
+      }));
+  }, [predicted, selectedPage, fieldLabels]);
 
   const runtimeStructuralPage = useMemo(() => {
     if (!runtimeStructuralModel || !selectedPage) {
@@ -97,20 +113,6 @@ export function RunMode() {
     () => (runtimeStructuralModel ? JSON.stringify(runtimeStructuralModel, null, 2) : ''),
     [runtimeStructuralModel]
   );
-
-  const runtimeStructuralOverlay = useMemo(() => {
-    if (!surfaceTransform || !runtimeStructuralPage) {
-      return null;
-    }
-    return {
-      border: normalizedRectToScreen(surfaceTransform, runtimeStructuralPage.border.rectNorm),
-      refinedBorder: normalizedRectToScreen(
-        surfaceTransform,
-        runtimeStructuralPage.refinedBorder.rectNorm
-      ),
-      source: runtimeStructuralPage.refinedBorder.source
-    };
-  }, [surfaceTransform, runtimeStructuralPage]);
 
   const handleWizardImport = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -291,6 +293,71 @@ export function RunMode() {
               />{' '}
               Show Runtime Structural Debug Overlay
             </label>
+            <label className="run-mode__toggle">
+              <input
+                type="checkbox"
+                checked={structuralOverlayOptions.showStructuralObjects}
+                onChange={(event) =>
+                  setStructuralOverlayOptions((current) => ({
+                    ...current,
+                    showStructuralObjects: event.target.checked
+                  }))
+                }
+              />{' '}
+              Show Structural Objects
+            </label>
+            <label className="run-mode__toggle">
+              <input
+                type="checkbox"
+                checked={structuralOverlayOptions.showLineObjects}
+                onChange={(event) =>
+                  setStructuralOverlayOptions((current) => ({
+                    ...current,
+                    showLineObjects: event.target.checked
+                  }))
+                }
+              />{' '}
+              Show Line Objects
+            </label>
+            <label className="run-mode__toggle">
+              <input
+                type="checkbox"
+                checked={structuralOverlayOptions.showAllObjects}
+                onChange={(event) =>
+                  setStructuralOverlayOptions((current) => ({
+                    ...current,
+                    showAllObjects: event.target.checked
+                  }))
+                }
+              />{' '}
+              Show All Objects
+            </label>
+            <label className="run-mode__toggle">
+              <input
+                type="checkbox"
+                checked={structuralOverlayOptions.showLabels}
+                onChange={(event) =>
+                  setStructuralOverlayOptions((current) => ({
+                    ...current,
+                    showLabels: event.target.checked
+                  }))
+                }
+              />{' '}
+              Show Object Labels
+            </label>
+            <label className="run-mode__toggle">
+              <input
+                type="checkbox"
+                checked={structuralOverlayOptions.showContainmentChains}
+                onChange={(event) =>
+                  setStructuralOverlayOptions((current) => ({
+                    ...current,
+                    showContainmentChains: event.target.checked
+                  }))
+                }
+              />{' '}
+              Show Containment Chains
+            </label>
           </div>
 
           <div className="run-mode__toolbar">
@@ -326,8 +393,11 @@ export function RunMode() {
             <li>
               Runtime structure status:{' '}
               {runtimeStructuralModel
-                ? `computed via ${runtimeStructuralModel.cvAdapter.name}@${runtimeStructuralModel.cvAdapter.version}`
+                ? `computed via ${runtimeStructuralModel.cvAdapter.name}@${runtimeStructuralModel.cvAdapter.version} · page CV ${runtimeStructuralPage?.cvExecutionMode ?? 'n/a'}`
                 : 'not computed'}
+              {structuralRuntimeLoadStatus
+                ? ` · OpenCV runtime ${structuralRuntimeLoadStatus.status}${structuralRuntimeLoadStatus.reason ? ` (${structuralRuntimeLoadStatus.reason})` : ''}`
+                : ''}
             </li>
           </ul>
 
@@ -372,55 +442,13 @@ export function RunMode() {
               <p className="run-mode__meta">Runtime normalized page preview appears here.</p>
             }
           >
-            {showRuntimeStructuralOverlay && runtimeStructuralOverlay ? (
-              <>
-                <div
-                  className="run-mode__structural-border"
-                  style={{
-                    left: `${runtimeStructuralOverlay.border.x}px`,
-                    top: `${runtimeStructuralOverlay.border.y}px`,
-                    width: `${runtimeStructuralOverlay.border.width}px`,
-                    height: `${runtimeStructuralOverlay.border.height}px`
-                  }}
-                >
-                  <span className="run-mode__overlay-label">Runtime Border</span>
-                </div>
-                <div
-                  className="run-mode__structural-refined"
-                  style={{
-                    left: `${runtimeStructuralOverlay.refinedBorder.x}px`,
-                    top: `${runtimeStructuralOverlay.refinedBorder.y}px`,
-                    width: `${runtimeStructuralOverlay.refinedBorder.width}px`,
-                    height: `${runtimeStructuralOverlay.refinedBorder.height}px`
-                  }}
-                >
-                  <span className="run-mode__overlay-label">
-                    Runtime Refined ({runtimeStructuralOverlay.source})
-                  </span>
-                </div>
-              </>
-            ) : null}
-            {showRuntimeStructuralOverlay && surfaceTransform
-              ? predictedBoxesForPage.map((field) => {
-                  const screenRect = normalizedRectToScreen(surfaceTransform, field.bbox);
-                  return (
-                    <div
-                      key={`${field.fieldId}-${field.pageIndex}`}
-                      className="run-mode__overlay-box"
-                      style={{
-                        left: `${screenRect.x}px`,
-                        top: `${screenRect.y}px`,
-                        width: `${screenRect.width}px`,
-                        height: `${screenRect.height}px`
-                      }}
-                    >
-                      <span className="run-mode__overlay-label">
-                        {fieldLabels.get(field.fieldId) ?? field.fieldId}
-                      </span>
-                    </div>
-                  );
-                })
-              : null}
+            <StructuralDebugOverlay
+              page={runtimeStructuralPage}
+              surfaceTransform={surfaceTransform}
+              visible={showRuntimeStructuralOverlay}
+              options={structuralOverlayOptions}
+              fieldBoxes={predictedBoxesForPage}
+            />
           </NormalizedPageViewport>
 
           <h4>Predicted Geometry JSON</h4>

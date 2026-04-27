@@ -5,8 +5,14 @@ export {
 } from './structural-engine';
 export type {
   CvAdapter,
+  CvExecutionMode,
   CvContentRectResult,
   CvSurfaceRaster,
+  OpenCvRuntimeLoadResult,
   OpenCvJsAdapterOptions
 } from './cv';
-export { createOpenCvJsAdapter, CvAdapterSurfaceMismatchError } from './cv';
+export {
+  createOpenCvJsAdapter,
+  ensureOpenCvJsRuntime,
+  CvAdapterSurfaceMismatchError
+} from './cv';

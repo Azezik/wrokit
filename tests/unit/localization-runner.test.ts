@@ -52,6 +52,7 @@ const createModel = (id: string, xNorm: number, yNorm: number, wNorm: number, hN
     {
       pageIndex: 0,
       pageSurface: { pageIndex: 0, surfaceWidth: 1000, surfaceHeight: 2000 },
+      cvExecutionMode: 'heuristic-fallback',
       border: { rectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 } },
       refinedBorder: {
         rectNorm: { xNorm, yNorm, wNorm, hNorm },
@@ -132,6 +133,7 @@ describe('localization-runner', () => {
     const buildPage = (objects: StructuralObjectNode[], fieldAnchorObjectId: string): StructuralPage => ({
       pageIndex: 0,
       pageSurface: { pageIndex: 0, surfaceWidth: 1000, surfaceHeight: 2000 },
+      cvExecutionMode: 'heuristic-fallback',
       border: { rectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 } },
       refinedBorder: {
         rectNorm: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.8, hNorm: 0.8 },
@@ -296,6 +298,7 @@ describe('localization-runner', () => {
     ): StructuralPage => ({
       pageIndex: 0,
       pageSurface: { pageIndex: 0, surfaceWidth: 1000, surfaceHeight: 2000 },
+      cvExecutionMode: 'heuristic-fallback',
       border: { rectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 } },
       refinedBorder: {
         rectNorm: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.8, hNorm: 0.8 },

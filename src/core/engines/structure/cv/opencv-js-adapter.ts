@@ -442,6 +442,7 @@ const detectWithHeuristicFallback = (
 
   if (!bounds) {
     return {
+      executionMode: 'heuristic-fallback',
       contentRectSurface: {
         x: 0,
         y: 0,
@@ -457,6 +458,7 @@ const detectWithHeuristicFallback = (
 
   if (width < minSidePx || height < minSidePx) {
     return {
+      executionMode: 'heuristic-fallback',
       contentRectSurface: {
         x: 0,
         y: 0,
@@ -468,6 +470,7 @@ const detectWithHeuristicFallback = (
   }
 
   return {
+    executionMode: 'heuristic-fallback',
     contentRectSurface: {
       x: bounds.left,
       y: bounds.top,
@@ -674,6 +677,7 @@ const detectWithOpenCvRuntime = (
 
     if (!contentBounds) {
       return {
+        executionMode: 'opencv-runtime',
         contentRectSurface: {
           x: 0,
           y: 0,
@@ -689,6 +693,7 @@ const detectWithOpenCvRuntime = (
 
     if (contentRectSurface.width < minSidePx || contentRectSurface.height < minSidePx) {
       return {
+        executionMode: 'opencv-runtime',
         contentRectSurface: {
           x: 0,
           y: 0,
@@ -700,6 +705,7 @@ const detectWithOpenCvRuntime = (
     }
 
     return {
+      executionMode: 'opencv-runtime',
       contentRectSurface,
       objectsSurface: [...objectsFromContours, ...objectsFromLines]
     };

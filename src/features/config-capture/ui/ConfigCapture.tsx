@@ -26,7 +26,6 @@ import {
 import { parseWizardFile, WizardFileParseError } from '../../../core/io/wizard-file-io';
 import {
   isNormalizedRectInBounds,
-  normalizedRectToScreen,
   normalizeRectFromCorners,
   screenToSurface,
   surfaceRectToNormalized,
@@ -35,8 +34,12 @@ import {
 } from '../../../core/page-surface/page-surface';
 import {
   NormalizedPageViewport,
+  StructuralDebugOverlay,
+  DEFAULT_STRUCTURAL_OVERLAY_OPTIONS,
   pointerToImageRect,
-  type NormalizedPageViewportHandle
+  type NormalizedPageViewportHandle,
+  type StructuralOverlayFieldBox,
+  type StructuralOverlayOptions
 } from '../../../core/page-surface/ui';
 import { createConfigRunner } from '../../../core/runtime/config-runner';
 import { createStructuralRunner } from '../../../core/runtime/structural-runner';
@@ -85,12 +88,16 @@ export function ConfigCapture() {
   const [importError, setImportError] = useState<string | null>(null);
 
   const [showStructuralOverlay, setShowStructuralOverlay] = useState<boolean>(true);
+  const [structuralOverlayOptions, setStructuralOverlayOptions] = useState<StructuralOverlayOptions>(
+    DEFAULT_STRUCTURAL_OVERLAY_OPTIONS
+  );
   const [structuralError, setStructuralError] = useState<string | null>(null);
   const [isComputingStructure, setIsComputingStructure] = useState<boolean>(false);
   const [activeStructuralModelId, setActiveStructuralModelId] = useState<string | null>(null);
 
   const viewportRef = useRef<NormalizedPageViewportHandle | null>(null);
   const [surfaceTransform, setSurfaceTransform] = useState<SurfaceTransform | null>(null);
+  const structuralRuntimeLoadStatus = structuralRunnerRef.current.runtimeLoadStatus;
 
   const selectedPage = useMemo(
     () => pageSession.pages.find((page) => page.pageIndex === pageSession.selectedPageIndex) ?? null,
@@ -193,47 +200,6 @@ export function ConfigCapture() {
       ) ?? null
     );
   }, [activeStructuralModel, pageSession.selectedPageIndex]);
-
-  const structuralOverlay = useMemo(() => {
-    if (!surfaceTransform || !activeStructuralPage) {
-      return null;
-    }
-    const objectById = new Map(
-      activeStructuralPage.objectHierarchy.objects.map((object) => [object.objectId, object])
-    );
-    const buildContainmentChainText = (objectId: string): string => {
-      const chain: string[] = [];
-      const visited = new Set<string>();
-      let current = objectById.get(objectId) ?? null;
-      while (current) {
-        if (visited.has(current.objectId)) {
-          chain.push('[cycle]');
-          break;
-        }
-        visited.add(current.objectId);
-        chain.unshift(current.objectId);
-        current = current.parentObjectId ? objectById.get(current.parentObjectId) ?? null : null;
-      }
-      return chain.join(' > ');
-    };
-    return {
-      border: normalizedRectToScreen(surfaceTransform, activeStructuralPage.border.rectNorm),
-      refinedBorder: normalizedRectToScreen(
-        surfaceTransform,
-        activeStructuralPage.refinedBorder.rectNorm
-      ),
-      objects: activeStructuralPage.objectHierarchy.objects.map((object) => ({
-        objectId: object.objectId,
-        type: object.type,
-        parentObjectId: object.parentObjectId,
-        confidence: object.confidence,
-        containmentChainText: buildContainmentChainText(object.objectId),
-        rect: normalizedRectToScreen(surfaceTransform, object.bbox)
-      })),
-      source: activeStructuralPage.refinedBorder.source,
-      influencedByBBoxCount: activeStructuralPage.refinedBorder.influencedByBBoxCount
-    };
-  }, [surfaceTransform, activeStructuralPage]);
 
   const structuralPreview = useMemo(
     () => (activeStructuralModel ? serializeStructuralModel(activeStructuralModel) : ''),
@@ -448,17 +414,16 @@ export function ConfigCapture() {
     return wizard.fields.find((field) => field.fieldId === activeFieldId)?.label ?? activeFieldId;
   }, [wizard, activeFieldId]);
 
-  const overlayBoxes = useMemo(() => {
-    if (!surfaceTransform) {
-      return [];
-    }
+  const overlayBoxes = useMemo<StructuralOverlayFieldBox[]>(() => {
     return builderState.fields
       .filter((field) => field.pageIndex === pageSession.selectedPageIndex)
       .map((field) => ({
         fieldId: field.fieldId,
-        rect: normalizedRectToScreen(surfaceTransform, field.bbox)
+        label: field.fieldId,
+        bbox: field.bbox,
+        variant: 'saved'
       }));
-  }, [builderState.fields, pageSession.selectedPageIndex, surfaceTransform]);
+  }, [builderState.fields, pageSession.selectedPageIndex]);
 
   return (
     <Section
@@ -537,75 +502,13 @@ export function ConfigCapture() {
             onPointerUp={handlePointerUp}
             onPointerCancel={handlePointerCancel}
           >
-            {showStructuralOverlay && structuralOverlay ? (
-              <>
-                <div
-                  className="config-capture__structural-border"
-                  aria-hidden="true"
-                  style={{
-                    left: `${structuralOverlay.border.x}px`,
-                    top: `${structuralOverlay.border.y}px`,
-                    width: `${structuralOverlay.border.width}px`,
-                    height: `${structuralOverlay.border.height}px`
-                  }}
-                >
-                  <span className="config-capture__structural-label">Border</span>
-                </div>
-                <div
-                  className="config-capture__structural-refined"
-                  aria-hidden="true"
-                  style={{
-                    left: `${structuralOverlay.refinedBorder.x}px`,
-                    top: `${structuralOverlay.refinedBorder.y}px`,
-                    width: `${structuralOverlay.refinedBorder.width}px`,
-                    height: `${structuralOverlay.refinedBorder.height}px`
-                  }}
-                >
-                  <span className="config-capture__structural-label">
-                    Refined ({structuralOverlay.source})
-                  </span>
-                </div>
-                {structuralOverlay.objects.map((object) => (
-                  <div
-                    key={object.objectId}
-                    className="config-capture__structural-object"
-                    data-object-type={object.type}
-                    aria-hidden="true"
-                    style={{
-                      left: `${object.rect.x}px`,
-                      top: `${object.rect.y}px`,
-                      width: `${object.rect.width}px`,
-                      height: `${object.rect.height}px`
-                    }}
-                  >
-                    <span className="config-capture__structural-object-label">
-                      {object.type} · {object.objectId} · parent:{' '}
-                      {object.parentObjectId ?? 'root'} · conf: {object.confidence.toFixed(2)}
-                    </span>
-                    <span className="config-capture__structural-object-chain">
-                      chain: {object.containmentChainText}
-                    </span>
-                  </div>
-                ))}
-              </>
-            ) : null}
-
-            {overlayBoxes.map((overlay) => (
-              <div
-                key={overlay.fieldId}
-                className="config-capture__overlay-box"
-                data-saved="true"
-                data-active={overlay.fieldId === activeFieldId ? 'true' : 'false'}
-                style={{
-                  left: `${overlay.rect.x}px`,
-                  top: `${overlay.rect.y}px`,
-                  width: `${overlay.rect.width}px`,
-                  height: `${overlay.rect.height}px`
-                }}
-              >
-                <span className="config-capture__overlay-label">{overlay.fieldId}</span>
-              </div>
-            ))}
+            <StructuralDebugOverlay
+              page={activeStructuralPage}
+              surfaceTransform={surfaceTransform}
+              visible={showStructuralOverlay}
+              options={structuralOverlayOptions}
+              fieldBoxes={overlayBoxes}
+            />
 
             {draftScreenRect ? (
               <div
@@ -651,14 +554,82 @@ export function ConfigCapture() {
               />
               Show Structural Debug Overlay
             </label>
+            <label className="config-capture__toggle">
+              <input
+                type="checkbox"
+                checked={structuralOverlayOptions.showStructuralObjects}
+                onChange={(event) =>
+                  setStructuralOverlayOptions((current) => ({
+                    ...current,
+                    showStructuralObjects: event.target.checked
+                  }))
+                }
+              />
+              Show Structural Objects
+            </label>
+            <label className="config-capture__toggle">
+              <input
+                type="checkbox"
+                checked={structuralOverlayOptions.showLineObjects}
+                onChange={(event) =>
+                  setStructuralOverlayOptions((current) => ({
+                    ...current,
+                    showLineObjects: event.target.checked
+                  }))
+                }
+              />
+              Show Line Objects
+            </label>
+            <label className="config-capture__toggle">
+              <input
+                type="checkbox"
+                checked={structuralOverlayOptions.showAllObjects}
+                onChange={(event) =>
+                  setStructuralOverlayOptions((current) => ({
+                    ...current,
+                    showAllObjects: event.target.checked
+                  }))
+                }
+              />
+              Show All Objects
+            </label>
+            <label className="config-capture__toggle">
+              <input
+                type="checkbox"
+                checked={structuralOverlayOptions.showLabels}
+                onChange={(event) =>
+                  setStructuralOverlayOptions((current) => ({
+                    ...current,
+                    showLabels: event.target.checked
+                  }))
+                }
+              />
+              Show Object Labels
+            </label>
+            <label className="config-capture__toggle">
+              <input
+                type="checkbox"
+                checked={structuralOverlayOptions.showContainmentChains}
+                onChange={(event) =>
+                  setStructuralOverlayOptions((current) => ({
+                    ...current,
+                    showContainmentChains: event.target.checked
+                  }))
+                }
+              />
+              Show Containment Chains
+            </label>
             <span className="config-capture__meta">
               {isComputingStructure
                 ? 'Computing StructuralModel…'
                 : activeStructuralModel
-                  ? `Structural: ${activeStructuralModel.cvAdapter.name} v${activeStructuralModel.cvAdapter.version} · ${activeStructuralModel.pages.length} page(s)`
+                  ? `Structural: ${activeStructuralModel.cvAdapter.name} v${activeStructuralModel.cvAdapter.version} · ${activeStructuralModel.pages.length} page(s) · page CV ${activeStructuralPage?.cvExecutionMode ?? 'n/a'}`
                   : pageSession.pages.length > 0
                     ? 'StructuralModel pending.'
                     : 'No NormalizedPage loaded.'}
+              {structuralRuntimeLoadStatus
+                ? ` · OpenCV runtime ${structuralRuntimeLoadStatus.status}${structuralRuntimeLoadStatus.reason ? ` (${structuralRuntimeLoadStatus.reason})` : ''}`
+                : ''}
             </span>
           </div>
           {structuralError ? <p className="config-capture__error">{structuralError}</p> : null}
