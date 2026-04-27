@@ -48,6 +48,93 @@ const makeRaster = (
   };
 };
 
+const createMockOpenCvRuntime = () => {
+  class MockMat {
+    rows = 0;
+    cols = 0;
+    data32S?: Int32Array;
+    delete(): void {}
+  }
+
+  class MockMatVector {
+    private mats: MockMat[] = [];
+    size(): number {
+      return this.mats.length;
+    }
+    get(index: number): MockMat {
+      return this.mats[index];
+    }
+    push(mat: MockMat): void {
+      this.mats.push(mat);
+    }
+    delete(): void {}
+  }
+
+  return {
+    Mat: MockMat,
+    MatVector: MockMatVector,
+    Size: class MockSize {
+      constructor(public width: number, public height: number) {}
+    },
+    matFromImageData: (_imageData: ImageData) => new MockMat(),
+    cvtColor: (_src: MockMat, _dst: MockMat, _code: number) => {},
+    adaptiveThreshold: (
+      _src: MockMat,
+      _dst: MockMat,
+      _maxValue: number,
+      _adaptiveMethod: number,
+      _thresholdType: number,
+      _blockSize: number,
+      _c: number
+    ) => {},
+    threshold: (_src: MockMat, _dst: MockMat, _thresh: number, _maxVal: number, _type: number) => {},
+    getStructuringElement: (_shape: number, _ksize: unknown) => new MockMat(),
+    morphologyEx: (_src: MockMat, _dst: MockMat, _op: number, _kernel: MockMat) => {},
+    Canny: (_src: MockMat, _dst: MockMat, _t1: number, _t2: number) => {},
+    bitwise_or: (_src1: MockMat, _src2: MockMat, _dst: MockMat) => {},
+    findContours: (
+      _image: MockMat,
+      contours: InstanceType<typeof MockMatVector>,
+      _hierarchy: MockMat,
+      _mode: number,
+      _method: number
+    ) => {
+      const contourA = new MockMat();
+      contourA.data32S = new Int32Array([8, 9, 28, 24]);
+      const contourB = new MockMat();
+      contourB.data32S = new Int32Array([35, 6, 18, 28]);
+      contours.push(contourA);
+      contours.push(contourB);
+    },
+    boundingRect: (contour: MockMat) => ({
+      x: contour.data32S?.[0] ?? 0,
+      y: contour.data32S?.[1] ?? 0,
+      width: contour.data32S?.[2] ?? 0,
+      height: contour.data32S?.[3] ?? 0
+    }),
+    HoughLinesP: (
+      _image: MockMat,
+      lines: MockMat,
+      _rho: number,
+      _theta: number,
+      _threshold: number,
+      _minLineLength: number,
+      _maxLineGap: number
+    ) => {
+      lines.data32S = new Int32Array([4, 40, 52, 40, 12, 5, 12, 54]);
+    },
+    COLOR_RGBA2GRAY: 0,
+    ADAPTIVE_THRESH_GAUSSIAN_C: 0,
+    THRESH_BINARY_INV: 0,
+    THRESH_BINARY: 0,
+    MORPH_RECT: 0,
+    MORPH_OPEN: 0,
+    MORPH_CLOSE: 0,
+    RETR_EXTERNAL: 0,
+    CHAIN_APPROX_SIMPLE: 0
+  };
+};
+
 describe('createOpenCvJsAdapter', () => {
   it('detects the bounding rect of non-background pixels on the canonical surface', async () => {
     const adapter = createOpenCvJsAdapter();
@@ -132,5 +219,35 @@ describe('createOpenCvJsAdapter', () => {
       (o) => o.type === 'line-horizontal' || o.type === 'line-vertical'
     );
     expect(lineObjects).toHaveLength(0);
+  });
+
+  it('extracts contour and line objects through the OpenCV runtime boundary when runtime is provided', async () => {
+    const adapter = createOpenCvJsAdapter({
+      opencvRuntime: createMockOpenCvRuntime()
+    });
+    const raster = makeRaster(60, 60, () => {});
+
+    const result = await adapter.detectContentRect(raster);
+    expect(result.contentRectSurface).toEqual({ x: 4, y: 5, width: 49, height: 50 });
+
+    const contourRects = result.objectsSurface
+      .filter((item) => item.objectId.startsWith('obj_cv_'))
+      .map((item) => item.bboxSurface);
+    expect(contourRects).toEqual(
+      expect.arrayContaining([
+        { x: 8, y: 9, width: 28, height: 24 },
+        { x: 35, y: 6, width: 18, height: 28 }
+      ])
+    );
+
+    const lineRects = result.objectsSurface
+      .filter((item) => item.objectId.startsWith('obj_cv_line_'))
+      .map((item) => item.bboxSurface);
+    expect(lineRects).toEqual(
+      expect.arrayContaining([
+        { x: 4, y: 40, width: 49, height: 1 },
+        { x: 12, y: 5, width: 1, height: 50 }
+      ])
+    );
   });
 });
