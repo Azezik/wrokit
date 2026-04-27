@@ -136,6 +136,120 @@ const findContainingObject = (
   return containing[0] ?? null;
 };
 
+/**
+ * Walk the structural containment chain from the smallest object that contains the
+ * field outward through its parents. The first chain entry is the direct container
+ * (smallest enclosing object), the next is its structural parent, and so on. This
+ * mirrors the mental model `field → container → parent → grandparent → …` that
+ * Run Mode relocation depends on.
+ *
+ * The chain is the AUTHORITY for stable anchors. Center-distance ranking is only
+ * used as contingency to fill anchor slots when the chain is shorter than the
+ * requested limit.
+ */
+const buildContainmentChain = (
+  field: NormalizedBoundingBox,
+  objects: StructuralObjectNode[],
+  limit = MAX_FIELD_ANCHORS
+): StructuralObjectNode[] => {
+  const direct = findContainingObject(field, objects);
+  if (!direct) {
+    return [];
+  }
+
+  const objectsById = new Map<string, StructuralObjectNode>(
+    objects.map((object) => [object.objectId, object])
+  );
+  const chain: StructuralObjectNode[] = [direct];
+  const seen = new Set<string>([direct.objectId]);
+
+  let cursor: StructuralObjectNode | null = direct;
+  while (chain.length < limit && cursor?.parentObjectId) {
+    if (seen.has(cursor.parentObjectId)) {
+      break;
+    }
+    const parent: StructuralObjectNode | null = objectsById.get(cursor.parentObjectId) ?? null;
+    if (!parent) {
+      break;
+    }
+    chain.push(parent);
+    seen.add(parent.objectId);
+    cursor = parent;
+  }
+
+  return chain;
+};
+
+/**
+ * Pick supplemental anchor objects when the containment chain has fewer than
+ * `limit` entries. Preference order:
+ *   1. other objects that fully contain the field (different chain branches),
+ *   2. objects that overlap the field (partial structural support),
+ *   3. nearest objects by center distance (final contingency only).
+ *
+ * Anchors already in the chain are excluded so each anchor slot points at a
+ * distinct structural object.
+ */
+const selectFallbackAnchorObjects = (
+  field: NormalizedBoundingBox,
+  objects: StructuralObjectNode[],
+  excludeIds: Set<string>,
+  needed: number
+): StructuralObjectNode[] => {
+  if (needed <= 0) {
+    return [];
+  }
+  const fieldRect = toRect(field);
+  const candidates = objects.filter((object) => !excludeIds.has(object.objectId));
+
+  const containers = candidates
+    .filter((object) => bboxContainsField(object.objectRectNorm, field))
+    .sort((a, b) => rectArea(a.objectRectNorm) - rectArea(b.objectRectNorm));
+
+  const overlappers = candidates
+    .filter((object) => !bboxContainsField(object.objectRectNorm, field))
+    .filter((object) => {
+      const xOverlap = overlapSpan(
+        object.objectRectNorm.xNorm,
+        object.objectRectNorm.xNorm + object.objectRectNorm.wNorm,
+        fieldRect.xNorm,
+        fieldRect.xNorm + fieldRect.wNorm
+      );
+      const yOverlap = overlapSpan(
+        object.objectRectNorm.yNorm,
+        object.objectRectNorm.yNorm + object.objectRectNorm.hNorm,
+        fieldRect.yNorm,
+        fieldRect.yNorm + fieldRect.hNorm
+      );
+      return xOverlap > EPS && yOverlap > EPS;
+    })
+    .sort((a, b) => rectDistance(fieldRect, a.objectRectNorm) - rectDistance(fieldRect, b.objectRectNorm));
+
+  const nearest = candidates
+    .slice()
+    .sort(
+      (a, b) =>
+        rectDistance(fieldRect, a.objectRectNorm) - rectDistance(fieldRect, b.objectRectNorm) ||
+        a.objectId.localeCompare(b.objectId)
+    );
+
+  const ordered: StructuralObjectNode[] = [];
+  const taken = new Set<string>();
+  for (const pool of [containers, overlappers, nearest]) {
+    for (const object of pool) {
+      if (ordered.length >= needed) {
+        return ordered;
+      }
+      if (taken.has(object.objectId)) {
+        continue;
+      }
+      taken.add(object.objectId);
+      ordered.push(object);
+    }
+  }
+  return ordered;
+};
+
 const relativePositionWithinParent = (
   field: NormalizedBoundingBox,
   parent: StructuralObjectNode | null
@@ -303,19 +417,34 @@ export const buildFieldRelationships = (input: {
 
   return input.fields.map((field) => {
     const fieldRect = toRect(field.bbox);
-    const parent = findContainingObject(field.bbox, objects);
-    const nearest = nearestObjects(field.bbox, objects, MAX_FIELD_ANCHORS);
 
-    const stableAnchors = nearest.map((object, index) => {
-      const anchorObject = objects.find((candidate) => candidate.objectId === object.objectId);
-      const anchorRect = anchorObject?.objectRectNorm ?? input.refinedBorderRect;
-      return {
-        label: stableAnchorLabel(index),
-        objectId: object.objectId,
-        distance: object.distance,
-        relativeFieldRect: relativeRect(fieldRect, anchorRect)
-      };
-    });
+    // Containment chain authority: A = direct container, B = its parent,
+    // C = grandparent. This is the structural map that Run Mode relocation
+    // walks: field → containing object → parent object → … → Refined → Border.
+    const containmentChain = buildContainmentChain(field.bbox, objects, MAX_FIELD_ANCHORS);
+    const directContainer = containmentChain[0] ?? null;
+
+    const usedIds = new Set(containmentChain.map((object) => object.objectId));
+    const supplemental =
+      containmentChain.length < MAX_FIELD_ANCHORS
+        ? selectFallbackAnchorObjects(
+            field.bbox,
+            objects,
+            usedIds,
+            MAX_FIELD_ANCHORS - containmentChain.length
+          )
+        : [];
+
+    const anchorObjects: StructuralObjectNode[] = [...containmentChain, ...supplemental];
+
+    const nearestForLegacy = nearestObjects(field.bbox, objects, MAX_FIELD_ANCHORS);
+
+    const stableAnchors = anchorObjects.map((object, index) => ({
+      label: stableAnchorLabel(index),
+      objectId: object.objectId,
+      distance: rectDistance(fieldRect, object.objectRectNorm),
+      relativeFieldRect: relativeRect(fieldRect, object.objectRectNorm)
+    }));
 
     const anchorByObjectId = new Map(stableAnchors.map((anchor) => [anchor.objectId, anchor]));
 
@@ -355,11 +484,18 @@ export const buildFieldRelationships = (input: {
       fieldAnchors,
       objectAnchorGraph,
       // Legacy fields kept for compatibility while consumers migrate.
-      containedBy: parent?.objectId ?? null,
-      nearestObjects: nearest,
-      relativePositionWithinParent: relativePositionWithinParent(field.bbox, parent),
+      // `containedBy` mirrors the direct container (A in the chain) so legacy
+      // readers see the same structural authority the new anchors expose.
+      containedBy: directContainer?.objectId ?? null,
+      nearestObjects: nearestForLegacy,
+      relativePositionWithinParent: relativePositionWithinParent(field.bbox, directContainer),
       distanceToBorder: fieldAnchors.borderAnchor.distanceToEdge,
       distanceToRefinedBorder: fieldAnchors.refinedBorderAnchor.distanceToEdge
     };
   });
+};
+
+export const __testing = {
+  buildContainmentChain,
+  selectFallbackAnchorObjects
 };
