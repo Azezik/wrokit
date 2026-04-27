@@ -594,6 +594,7 @@ export function ConfigCapture() {
                     <div
                       key={object.objectId}
                       className="config-capture__structural-object"
+                      data-object-type={object.type}
                       aria-hidden="true"
                       style={{
                         left: `${object.rect.x}px`,
