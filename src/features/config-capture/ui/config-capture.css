@@ -66,18 +66,18 @@
 .config-capture__overlay-box {
   position: absolute;
   border: 2px solid var(--color-primary);
-  background: rgb(42 95 255 / 0.12);
+  background: transparent;
   pointer-events: none;
 }
 
 .config-capture__overlay-box[data-saved='true'] {
   border-color: #10b981;
-  background: rgb(16 185 129 / 0.12);
+  background: transparent;
 }
 
 .config-capture__overlay-box[data-active='true'] {
   border-color: var(--color-primary);
-  background: rgb(42 95 255 / 0.18);
+  background: transparent;
 }
 
 .config-capture__overlay-label {
@@ -95,7 +95,7 @@
 .config-capture__draft {
   position: absolute;
   border: 2px dashed var(--color-primary);
-  background: rgb(42 95 255 / 0.16);
+  background: transparent;
   pointer-events: none;
 }
 
@@ -109,7 +109,7 @@
 .config-capture__structural-refined {
   position: absolute;
   border: 2px dashed #a855f7;
-  background: rgb(168 85 247 / 0.05);
+  background: transparent;
   pointer-events: none;
 }
 
@@ -127,7 +127,7 @@
 
 .config-capture__structural-object {
   position: absolute;
-  border: 1px solid rgb(14 116 144 / 0.75);
+  border: 1px solid rgb(14 116 144 / 0.55);
   background: transparent;
   pointer-events: none;
 }
@@ -143,6 +143,18 @@
   top: -1.2rem;
   left: 0;
   background: rgb(8 47 73 / 0.82);
+  color: #fff;
+  padding: 0 var(--space-1);
+  font-size: 0.65rem;
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+.config-capture__structural-object-chain {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  background: rgb(8 47 73 / 0.72);
   color: #fff;
   padding: 0 var(--space-1);
   font-size: 0.65rem;
