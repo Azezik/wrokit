@@ -1,3 +1,62 @@
+## 2026-04-27 — Feature: Transformation Model (Config↔Runtime alignment report)
+
+### Why this step
+- Config and Runtime structural detection rarely produce identical output for the same template — OpenCV may detect slightly different objects, sizes, or counts on the runtime document. We needed an explicit, honest layer that **interprets** the difference between the two `StructuralModel`s without overwriting either side or fabricating corrections inside the existing models.
+- The Transformation Model is intentionally additive: it does not replace the Structural Engine, OpenCV, or the Localization Runner. It produces a separate alignment report that downstream localization can later consume to project Field BBOXes more accurately.
+
+### What the Transformation Model represents
+- A read-only comparison report between a Config `StructuralModel` and a Runtime `StructuralModel` for the same template.
+- Output shape: per page → object matches (with per-match affine transforms, basis tags, confidences, notes/warnings); unmatched config + runtime object lists; four level summaries (`border`, `refined-border`, `object`, `parent-chain`); a `consensus` block (page-level weighted-mean affine, outlier list with per-component delta and reason, weight coverage, virtual-projection IoU); and per-field alignment candidates with explicit fallback ordering.
+- Page-agnostic `overallConfidence` is the per-page consensus confidence weighted by contributing match count.
+
+### How it compares Config vs Runtime structure
+- Hierarchical matching: top-level objects first → recursive descent within already-matched parents (so children are anchored to their parent's match) → stricter global pass over remainders.
+- Weighted similarity scoring: type, normalized position, size, aspect ratio, parent-chain anchoring, refined-border relation. Per-component scores are surfaced for diagnostics.
+- Greedy max-score 1:1 assignment with a configurable confidence threshold; matches below threshold become "unmatched" entries on either side rather than fabricated pairings.
+
+### What transforms it calculates
+- Per-match affine derived directly from the matched rect deltas.
+- Border-level summary: trivial 1:1 between full normalized pages (always identity-equivalent).
+- Refined-border-level summary: 1:1 between refined borders, with confidence keyed off the `source` flag (cv-content > cv-and-bbox-union > bbox-union > full-page-fallback).
+- Object-level summary: weighted-mean affine over all matches (weight = match confidence × √area), with outlier rejection.
+- Parent-chain-level summary: same aggregation, restricted to matches that include `parent-chain` basis (i.e. children anchored under matched parents).
+- Consensus: weighted-mean affine with per-component outlier tolerances; outliers are reported (id + reason + delta from consensus), not silently dropped. Cross-validation: project the consensus transform onto every contributing config rect and average the IoU against its actual runtime match. Low projection IoU surfaces a warning.
+
+### How it preserves OpenCV / StructuralModel honesty
+- No mutation of `GeometryFile`, the Config `StructuralModel`, the Runtime `StructuralModel`, or any OpenCV output.
+- No invented objects: every match references existing object IDs from both sides.
+- Outliers and weak signals are reported as warnings/null transforms instead of fabricated corrections.
+- Refined-border summary surfaces a warning when either side fell back to `full-page-fallback`, so consumers know the level signal is weak.
+- Both source models are referenced by `{id, documentFingerprint}` only — never embedded.
+- All transforms remain in canonical normalized [0, 1] space. No parallel coordinate system, no perspective warp, no source-format branching.
+
+### How it can later guide localization
+- Per-field alignment candidates explicitly walk the fallback chain: `matched-object → parent-object → refined-border → border`. Each candidate carries the transform that would apply, the `relativeFieldRect` from the source anchor, and a confidence derived from the underlying signal.
+- A future localization step can pick the highest-confidence candidate per field without recomputing anchors, while the existing `localization-runner.ts` remains untouched in this phase.
+- Run Mode now displays the alignment report's overall confidence in the status list and emits the full report JSON next to the runtime StructuralModel JSON, but does not yet feed it into prediction.
+
+### Files added
+- `src/core/contracts/transformation-model.ts`
+- `src/core/io/transformation-model-io.ts`
+- `src/core/runtime/transformation-runner.ts`
+- `src/core/runtime/transformation/similarity.ts`
+- `src/core/runtime/transformation/hierarchical-matcher.ts`
+- `src/core/runtime/transformation/transform-math.ts`
+- `src/core/runtime/transformation/consensus.ts`
+- `src/core/runtime/transformation/field-candidates.ts`
+- `tests/unit/transformation-model-io.test.ts`
+- `tests/unit/transformation-matching.test.ts`
+- `tests/unit/transformation-consensus.test.ts`
+- `tests/unit/transformation-runner.test.ts`
+
+### Files modified
+- `src/features/run-mode/ui/RunMode.tsx` — read-only call site after runtime structural build; status-list line + JSON preview for the alignment report.
+- `docs/architecture.md` — new "Transformation Model" section.
+
+### Checks run
+- `npm run check`
+- `npm test`
+
 ## 2026-04-27 — Fix: Run Mode containment-chain authority for field anchors
 
 ### Why this step

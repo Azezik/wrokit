@@ -172,6 +172,23 @@ Not yet implemented:
 - Runtime Border, runtime Refined Border, runtime objects, and predicted BBOX overlays all render through the same `page-surface` transform path (`getPageSurface` → `buildSurfaceTransform` → `normalizedRectToScreen`) used in Config Capture, so overlay parity is explicit and single-authority.
 - Ground truth remains primary: Run Mode does not discover fields or reinterpret meaning; it relocates existing field geometry by `fieldId`/`pageIndex`.
 
+## Transformation Model (Config↔Runtime Alignment Report)
+- The Transformation Model is a **separate alignment layer**: it compares a Config `StructuralModel` against a Runtime `StructuralModel` for the same template and produces an alignment/transform report. It does **not** mutate `GeometryFile`, either `StructuralModel`, or any OpenCV output.
+- Contract: `src/core/contracts/transformation-model.ts` (`schema: 'wrokit/transformation-model'`, `version: '1.0'`, `transformVersion: 'wrokit/transformation/v1'`). All transforms are simple affine in v1 (`scaleX, scaleY, translateX, translateY`) over canonical normalized [0, 1] coordinates — no parallel coordinate system, no perspective warp.
+- Runner: `src/core/runtime/transformation-runner.ts`. Pure read-only computation: takes `(configModel, runtimeModel)` and returns a `TransformationModel`. Run Mode (`src/features/run-mode/ui/RunMode.tsx`) invokes it after the runtime structural build as a read-only step that does not influence localization.
+- Internals (under `src/core/runtime/transformation/`):
+  - `similarity.ts` — pure weighted scorer over object type, normalized position, size, aspect ratio, parent-chain anchoring, and refined-border relation. Emits per-component scores and basis tags.
+  - `hierarchical-matcher.ts` — three-pass strategy: (1) top-level objects, (2) recursive descent within already-matched parents, (3) stricter global pass over remainders. Greedy max-score 1:1 assignment with confidence threshold; weak matches are rejected and listed as unmatched on either side.
+  - `transform-math.ts` — `affineFromRects`, `applyAffineToRect`, `iouOfRects`, `affineDistance`, `IDENTITY_AFFINE`.
+  - `consensus.ts` — per-page level summaries for `border` (always 1:1 identity), `refined-border` (1:1 with confidence keyed off the source flag), `object`, and `parent-chain`; plus a single `consensus` block computed by weighted-mean affine (weight = match confidence × √area), with explicit outlier rejection (per-component tolerances), weight-coverage tracking, and a virtual-projection cross-check (apply consensus to every contributing config rect, average IoU vs runtime match).
+  - `field-candidates.ts` — per-field fallback chain `matched-object → parent-object → refined-border → border`. Each candidate carries the transform that would apply, the `relativeFieldRect` from the source anchor, and a confidence derived from the underlying signal. Localization can later consume these without recomputing anchors.
+- Honesty rules enforced:
+  - Outliers are reported in `consensus.outliers` (with reason and per-component delta), not silently dropped.
+  - When data is insufficient, `transform` is `null` and confidence is `0` rather than fabricated.
+  - The model only references both source `StructuralModel`s by `{id, documentFingerprint}`; it never embeds or mutates either.
+  - Refined-border summary surfaces a warning when either side fell back to `full-page-fallback`.
+- IO: `src/core/io/transformation-model-io.ts` (serialize/parse/download); separately persistable.
+
 ## Containment Chain Authority for Field Anchors
 - Stable field anchors `A → B → C` on every `StructuralFieldRelationship` are produced from the **containment chain**, not from nearest-by-distance ranking. `A` is the smallest object that fully contains the field BBOX, `B` is `A`'s structural parent, and `C` is the next ancestor (or, if the chain runs out, the smallest other containing/overlapping object as supplemental fill). `containedBy` mirrors `A.objectId`.
 - `relativeFieldRect` on each chain anchor is computed against that anchor's own normalized rect, so for chain anchors the field ratios are guaranteed to live in `[0, 1]`. Run Mode projects the saved relative rect through whichever runtime anchor it can resolve, falling back deterministically `A → B → C → Refined Border → Border`.

@@ -13,6 +13,7 @@ import {
   computeRefinedBorderLevelSummary,
   type ConsensusOptions
 } from './transformation/consensus';
+import { computeFieldAlignments } from './transformation/field-candidates';
 import { matchPage, type MatcherOptions } from './transformation/hierarchical-matcher';
 
 export interface TransformationRunnerInput {
@@ -73,11 +74,11 @@ const buildLevelSummaries = (
  * Config StructuralModel against a Runtime StructuralModel. It does not mutate
  * either input.
  *
- * Phase 3 wiring: in addition to the Phase 2 matcher output, the runner now
- * derives per-page level summaries (border, refined-border, object,
- * parent-chain) and a single consensus block per page. overallConfidence is
- * the match-count-weighted average of per-page consensus confidences. Field
- * alignments still default to empty until Phase 4.
+ * Phase 4 wiring: matcher output, level summaries, consensus, and per-field
+ * alignment candidates with explicit fallback ordering (matched-object →
+ * parent-object → refined-border → border) are all produced. The runner is
+ * still a pure read-only report: it never writes back into Geometry, the
+ * StructuralModel, or OpenCV output.
  */
 export const createTransformationRunner = (
   options: CreateTransformationRunnerOptions = {}
@@ -125,6 +126,11 @@ export const createTransformationRunner = (
           runtimePage,
           consensusOptions ?? {}
         );
+        const fieldAlignments = computeFieldAlignments(
+          configPage,
+          result.matches,
+          levelSummaries
+        );
 
         return {
           ...emptyPage,
@@ -133,6 +139,7 @@ export const createTransformationRunner = (
           unmatchedRuntimeObjectIds: result.unmatchedRuntimeObjectIds,
           levelSummaries,
           consensus,
+          fieldAlignments,
           notes: [...emptyPage.notes, ...result.notes],
           warnings: [...emptyPage.warnings, ...result.warnings]
         };
