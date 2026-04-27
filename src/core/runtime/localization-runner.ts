@@ -1,17 +1,37 @@
 import type { FieldGeometry, GeometryFile, NormalizedBoundingBox, PixelBoundingBox } from '../contracts/geometry';
 import type { NormalizedPage } from '../contracts/normalized-page';
-import type { StructuralModel, StructuralNormalizedRect, StructuralPage } from '../contracts/structural-model';
+import type {
+  StructuralFieldRelationship,
+  StructuralModel,
+  StructuralNormalizedRect,
+  StructuralObjectNode,
+  StructuralPage,
+  StructuralRelativeAnchorRect,
+  StructuralStableFieldAnchorLabel
+} from '../contracts/structural-model';
 import { getPageSurface } from '../page-surface/page-surface';
+
+export type RuntimeAnchorTier =
+  | 'field-object-a'
+  | 'field-object-b'
+  | 'field-object-c'
+  | 'refined-border'
+  | 'border';
+
+export type RuntimeObjectMatchStrategy = 'id' | 'type-hierarchy-geometry';
 
 export interface RuntimeStructuralTransform {
   pageIndex: number;
-  basis: 'refined-border';
+  basis: RuntimeAnchorTier;
   sourceConfigRectNorm: StructuralNormalizedRect;
   sourceRuntimeRectNorm: StructuralNormalizedRect;
   scaleX: number;
   scaleY: number;
   translateX: number;
   translateY: number;
+  configObjectId?: string;
+  runtimeObjectId?: string;
+  objectMatchStrategy?: RuntimeObjectMatchStrategy;
 }
 
 export interface PredictedFieldGeometry {
@@ -26,6 +46,7 @@ export interface PredictedFieldGeometry {
   };
   sourceGeometryConfirmedAtIso: string;
   sourceGeometryConfirmedBy: string;
+  anchorTierUsed: RuntimeAnchorTier;
   transform: RuntimeStructuralTransform;
 }
 
@@ -74,34 +95,142 @@ const getStructuralPage = (model: StructuralModel, pageIndex: number): Structura
   return page;
 };
 
-const isUsableDimension = (value: number): boolean => Number.isFinite(value) && value > 1e-9;
+const getFieldRelationship = (
+  page: StructuralPage,
+  fieldId: string
+): StructuralFieldRelationship | undefined =>
+  page.fieldRelationships.find((relationship) => relationship.fieldId === fieldId);
 
-const solveTransform = (
-  configPage: StructuralPage,
-  runtimePage: StructuralPage,
-  pageIndex: number
-): RuntimeStructuralTransform => {
-  const configRect = configPage.refinedBorder.rectNorm;
-  const runtimeRect = runtimePage.refinedBorder.rectNorm;
+const stableAnchorLabelRank = (label: StructuralStableFieldAnchorLabel): number =>
+  label === 'A' ? 0 : label === 'B' ? 1 : 2;
 
-  if (!isUsableDimension(configRect.wNorm) || !isUsableDimension(configRect.hNorm)) {
-    throw new Error(`Config StructuralModel page ${pageIndex} refined border is not usable.`);
+const getObjectById = (
+  page: StructuralPage,
+  objectId: string | null | undefined
+): StructuralObjectNode | undefined => {
+  if (!objectId) {
+    return undefined;
+  }
+  return page.objectHierarchy.objects.find((object) => object.objectId === objectId);
+};
+
+const getObjectDepth = (page: StructuralPage, objectId: string): number => {
+  let depth = 0;
+  let cursor = getObjectById(page, objectId);
+  const seen = new Set<string>();
+
+  while (cursor?.parentObjectId) {
+    if (seen.has(cursor.objectId)) {
+      break;
+    }
+    seen.add(cursor.objectId);
+    depth += 1;
+    cursor = getObjectById(page, cursor.parentObjectId);
   }
 
-  const scaleX = runtimeRect.wNorm / configRect.wNorm;
-  const scaleY = runtimeRect.hNorm / configRect.hNorm;
-  const translateX = runtimeRect.xNorm - configRect.xNorm * scaleX;
-  const translateY = runtimeRect.yNorm - configRect.yNorm * scaleY;
+  return depth;
+};
+
+const getAncestorIds = (page: StructuralPage, objectId: string): Set<string> => {
+  const ancestors = new Set<string>();
+  let cursor = getObjectById(page, objectId);
+  const seen = new Set<string>();
+
+  while (cursor?.parentObjectId) {
+    if (seen.has(cursor.objectId)) {
+      break;
+    }
+    seen.add(cursor.objectId);
+    ancestors.add(cursor.parentObjectId);
+    cursor = getObjectById(page, cursor.parentObjectId);
+  }
+
+  return ancestors;
+};
+
+const resolveAnchorPriority = (
+  page: StructuralPage,
+  relationship: StructuralFieldRelationship,
+  anchorObjectId: string
+): number => {
+  const containingObjectId = relationship.containedBy;
+  if (!containingObjectId) {
+    return 4;
+  }
+
+  if (anchorObjectId === containingObjectId) {
+    return 0;
+  }
+
+  const containingObject = getObjectById(page, containingObjectId);
+  if (!containingObject) {
+    return 4;
+  }
+
+  const containingAncestors = getAncestorIds(page, containingObjectId);
+  if (containingAncestors.has(anchorObjectId)) {
+    return 1;
+  }
+
+  const anchorObject = getObjectById(page, anchorObjectId);
+  if (anchorObject && containingObject.parentObjectId && anchorObject.parentObjectId === containingObject.parentObjectId) {
+    return 2;
+  }
+
+  const relation = page.pageAnchorRelations.objectToObject.find(
+    (item) => item.fromObjectId === containingObjectId && item.toObjectId === anchorObjectId
+  );
+  if (relation?.relationKind === 'adjacent') {
+    return 3;
+  }
+
+  return 4;
+};
+
+const sortStableAnchors = (
+  page: StructuralPage,
+  relationship: StructuralFieldRelationship
+): StructuralFieldRelationship['fieldAnchors']['stableObjectAnchors'] =>
+  [...relationship.fieldAnchors.stableObjectAnchors].sort((left, right) => {
+    const leftPriority = resolveAnchorPriority(page, relationship, left.objectId);
+    const rightPriority = resolveAnchorPriority(page, relationship, right.objectId);
+    if (leftPriority !== rightPriority) {
+      return leftPriority - rightPriority;
+    }
+    return stableAnchorLabelRank(left.label) - stableAnchorLabelRank(right.label);
+  });
+
+const toPixelBbox = (bbox: NormalizedBoundingBox, page: NormalizedPage): PixelBoundingBox => ({
+  x: bbox.xNorm * page.width,
+  y: bbox.yNorm * page.height,
+  width: bbox.wNorm * page.width,
+  height: bbox.hNorm * page.height
+});
+
+const solveRectTransform = (
+  pageIndex: number,
+  basis: RuntimeAnchorTier,
+  sourceConfigRectNorm: StructuralNormalizedRect,
+  sourceRuntimeRectNorm: StructuralNormalizedRect,
+  details?: Pick<RuntimeStructuralTransform, 'configObjectId' | 'runtimeObjectId' | 'objectMatchStrategy'>
+): RuntimeStructuralTransform => {
+  const configWidth = Math.max(sourceConfigRectNorm.wNorm, 1e-9);
+  const configHeight = Math.max(sourceConfigRectNorm.hNorm, 1e-9);
+  const scaleX = sourceRuntimeRectNorm.wNorm / configWidth;
+  const scaleY = sourceRuntimeRectNorm.hNorm / configHeight;
+  const translateX = sourceRuntimeRectNorm.xNorm - sourceConfigRectNorm.xNorm * scaleX;
+  const translateY = sourceRuntimeRectNorm.yNorm - sourceConfigRectNorm.yNorm * scaleY;
 
   return {
     pageIndex,
-    basis: 'refined-border',
-    sourceConfigRectNorm: { ...configRect },
-    sourceRuntimeRectNorm: { ...runtimeRect },
+    basis,
+    sourceConfigRectNorm: { ...sourceConfigRectNorm },
+    sourceRuntimeRectNorm: { ...sourceRuntimeRectNorm },
     scaleX,
     scaleY,
     translateX,
-    translateY
+    translateY,
+    ...details
   };
 };
 
@@ -127,26 +256,215 @@ const applyTransformToBox = (
   };
 };
 
-const toPixelBbox = (bbox: NormalizedBoundingBox, page: NormalizedPage): PixelBoundingBox => ({
-  x: bbox.xNorm * page.width,
-  y: bbox.yNorm * page.height,
-  width: bbox.wNorm * page.width,
-  height: bbox.hNorm * page.height
-});
+const projectRelativeRect = (
+  relativeRect: StructuralRelativeAnchorRect,
+  anchorRect: StructuralNormalizedRect
+): NormalizedBoundingBox => {
+  const xNorm = anchorRect.xNorm + relativeRect.xRatio * anchorRect.wNorm;
+  const yNorm = anchorRect.yNorm + relativeRect.yRatio * anchorRect.hNorm;
+  const wNorm = relativeRect.wRatio * anchorRect.wNorm;
+  const hNorm = relativeRect.hRatio * anchorRect.hNorm;
+
+  return {
+    xNorm: clamp01(xNorm),
+    yNorm: clamp01(yNorm),
+    wNorm: clamp01(wNorm),
+    hNorm: clamp01(hNorm)
+  };
+};
+
+const geometryDistance = (a: StructuralNormalizedRect, b: StructuralNormalizedRect): number => {
+  const aCenterX = a.xNorm + a.wNorm / 2;
+  const aCenterY = a.yNorm + a.hNorm / 2;
+  const bCenterX = b.xNorm + b.wNorm / 2;
+  const bCenterY = b.yNorm + b.hNorm / 2;
+
+  return (
+    Math.abs(aCenterX - bCenterX) +
+    Math.abs(aCenterY - bCenterY) +
+    Math.abs(a.wNorm - b.wNorm) +
+    Math.abs(a.hNorm - b.hNorm)
+  );
+};
+
+const hierarchyRoleDistance = (
+  configPage: StructuralPage,
+  runtimePage: StructuralPage,
+  configObject: StructuralObjectNode,
+  runtimeObject: StructuralObjectNode
+): [number, number, number] => {
+  const configParent = getObjectById(configPage, configObject.parentObjectId);
+  const runtimeParent = getObjectById(runtimePage, runtimeObject.parentObjectId);
+
+  const childPresencePenalty = Number((configObject.childObjectIds.length > 0) !== (runtimeObject.childObjectIds.length > 0));
+  const depthPenalty = Math.abs(getObjectDepth(configPage, configObject.objectId) - getObjectDepth(runtimePage, runtimeObject.objectId));
+  const parentTypePenalty = Number(Boolean(configParent?.type) !== Boolean(runtimeParent?.type) || (configParent?.type && runtimeParent?.type && configParent.type !== runtimeParent.type));
+
+  return [childPresencePenalty, depthPenalty, parentTypePenalty];
+};
+
+const resolveRuntimeObject = (
+  configPage: StructuralPage,
+  runtimePage: StructuralPage,
+  configObjectId: string
+): { object: StructuralObjectNode; strategy: RuntimeObjectMatchStrategy } | null => {
+  const configObject = configPage.objectHierarchy.objects.find((object) => object.objectId === configObjectId);
+
+  const runtimeById = runtimePage.objectHierarchy.objects.find((object) => object.objectId === configObjectId);
+  if (runtimeById && (!configObject || runtimeById.type === configObject.type)) {
+    return {
+      object: runtimeById,
+      strategy: 'id'
+    };
+  }
+
+  if (!configObject) {
+    return null;
+  }
+
+  const sameType = runtimePage.objectHierarchy.objects
+    .filter((object) => object.type === configObject.type)
+    .map((object) => ({
+      object,
+      hierarchyRole: hierarchyRoleDistance(configPage, runtimePage, configObject, object),
+      distance: geometryDistance(configObject.objectRectNorm, object.objectRectNorm)
+    }))
+    .sort((left, right) => {
+      if (left.hierarchyRole[0] !== right.hierarchyRole[0]) {
+        return left.hierarchyRole[0] - right.hierarchyRole[0];
+      }
+      if (left.hierarchyRole[1] !== right.hierarchyRole[1]) {
+        return left.hierarchyRole[1] - right.hierarchyRole[1];
+      }
+      if (left.hierarchyRole[2] !== right.hierarchyRole[2]) {
+        return left.hierarchyRole[2] - right.hierarchyRole[2];
+      }
+      if (left.distance !== right.distance) {
+        return left.distance - right.distance;
+      }
+      return left.object.objectId.localeCompare(right.object.objectId);
+    });
+
+  if (sameType.length === 0) {
+    return null;
+  }
+
+  return {
+    object: sameType[0].object,
+    strategy: 'type-hierarchy-geometry'
+  };
+};
+
+interface AnchorResolution {
+  tier: RuntimeAnchorTier;
+  transform: RuntimeStructuralTransform;
+  predictedBox: NormalizedBoundingBox;
+}
+
+const resolveFieldAnchor = (
+  source: FieldGeometry,
+  configPage: StructuralPage,
+  runtimePage: StructuralPage
+): AnchorResolution => {
+  const relationship = getFieldRelationship(configPage, source.fieldId);
+
+  if (relationship) {
+    const stableAnchorOrder = sortStableAnchors(configPage, relationship);
+
+    for (const stableAnchor of stableAnchorOrder) {
+      const tier: RuntimeAnchorTier =
+        stableAnchor.label === 'A'
+          ? 'field-object-a'
+          : stableAnchor.label === 'B'
+            ? 'field-object-b'
+            : 'field-object-c';
+
+      const configObject = configPage.objectHierarchy.objects.find(
+        (object) => object.objectId === stableAnchor.objectId
+      );
+      if (!configObject) {
+        continue;
+      }
+
+      const runtimeMatch = resolveRuntimeObject(configPage, runtimePage, stableAnchor.objectId);
+      if (!runtimeMatch) {
+        continue;
+      }
+
+      const predictedBox = projectRelativeRect(stableAnchor.relativeFieldRect, runtimeMatch.object.objectRectNorm);
+      return {
+        tier,
+        transform: solveRectTransform(
+          source.pageIndex,
+          tier,
+          configObject.objectRectNorm,
+          runtimeMatch.object.objectRectNorm,
+          {
+            configObjectId: configObject.objectId,
+            runtimeObjectId: runtimeMatch.object.objectId,
+            objectMatchStrategy: runtimeMatch.strategy
+          }
+        ),
+        predictedBox
+      };
+    }
+
+    const refinedBorderAnchor = relationship.fieldAnchors.refinedBorderAnchor;
+    if (refinedBorderAnchor) {
+      const predictedBox = projectRelativeRect(refinedBorderAnchor.relativeFieldRect, runtimePage.refinedBorder.rectNorm);
+      return {
+        tier: 'refined-border',
+        transform: solveRectTransform(
+          source.pageIndex,
+          'refined-border',
+          configPage.refinedBorder.rectNorm,
+          runtimePage.refinedBorder.rectNorm
+        ),
+        predictedBox
+      };
+    }
+
+    const borderAnchor = relationship.fieldAnchors.borderAnchor;
+    if (borderAnchor) {
+      const predictedBox = projectRelativeRect(borderAnchor.relativeFieldRect, runtimePage.border.rectNorm);
+      return {
+        tier: 'border',
+        transform: solveRectTransform(
+          source.pageIndex,
+          'border',
+          configPage.border.rectNorm,
+          runtimePage.border.rectNorm
+        ),
+        predictedBox
+      };
+    }
+  }
+
+  const transform = solveRectTransform(
+    source.pageIndex,
+    'refined-border',
+    configPage.refinedBorder.rectNorm,
+    runtimePage.refinedBorder.rectNorm
+  );
+  return {
+    tier: 'refined-border',
+    transform,
+    predictedBox: applyTransformToBox(source.bbox, transform)
+  };
+};
 
 const buildPredictedField = (
   source: FieldGeometry,
   runtimePage: NormalizedPage,
-  transform: RuntimeStructuralTransform
+  resolution: AnchorResolution
 ): PredictedFieldGeometry => {
-  const predictedBox = applyTransformToBox(source.bbox, transform);
   const runtimeSurface = getPageSurface(runtimePage);
 
   return {
     fieldId: source.fieldId,
     pageIndex: source.pageIndex,
-    bbox: predictedBox,
-    pixelBbox: toPixelBbox(predictedBox, runtimePage),
+    bbox: resolution.predictedBox,
+    pixelBbox: toPixelBbox(resolution.predictedBox, runtimePage),
     pageSurface: {
       pageIndex: runtimeSurface.pageIndex,
       surfaceWidth: runtimeSurface.surfaceWidth,
@@ -154,32 +472,28 @@ const buildPredictedField = (
     },
     sourceGeometryConfirmedAtIso: source.confirmedAtIso,
     sourceGeometryConfirmedBy: source.confirmedBy,
-    transform
+    anchorTierUsed: resolution.tier,
+    transform: resolution.transform
   };
 };
 
 export const createLocalizationRunner = (): LocalizationRunner => ({
   run: async (input) => {
-    const transformsByPage = new Map<number, RuntimeStructuralTransform>();
-
-    for (const runtimePage of input.runtimePages) {
-      const pageIndex = runtimePage.pageIndex;
-      const configStructuralPage = getStructuralPage(input.configStructuralModel, pageIndex);
-      const runtimeStructuralPage = getStructuralPage(input.runtimeStructuralModel, pageIndex);
-      transformsByPage.set(pageIndex, solveTransform(configStructuralPage, runtimeStructuralPage, pageIndex));
-    }
-
     const runtimePagesByIndex = new Map(input.runtimePages.map((page) => [page.pageIndex, page]));
 
     const fields = input.configGeometry.fields
       .filter((field) => runtimePagesByIndex.has(field.pageIndex))
       .map((field) => {
         const runtimePage = runtimePagesByIndex.get(field.pageIndex);
-        const transform = transformsByPage.get(field.pageIndex);
-        if (!runtimePage || !transform) {
+        if (!runtimePage) {
           throw new Error(`Runtime page ${field.pageIndex} missing while building predicted geometry.`);
         }
-        return buildPredictedField(field, runtimePage, transform);
+
+        const configStructuralPage = getStructuralPage(input.configStructuralModel, field.pageIndex);
+        const runtimeStructuralPage = getStructuralPage(input.runtimeStructuralModel, field.pageIndex);
+        const resolution = resolveFieldAnchor(field, configStructuralPage, runtimeStructuralPage);
+
+        return buildPredictedField(field, runtimePage, resolution);
       });
 
     return {
@@ -199,6 +513,9 @@ export const createLocalizationRunner = (): LocalizationRunner => ({
 });
 
 export const __testing = {
-  solveTransform,
-  applyTransformToBox
+  solveRectTransform,
+  applyTransformToBox,
+  projectRelativeRect,
+  resolveRuntimeObject,
+  resolveFieldAnchor
 };

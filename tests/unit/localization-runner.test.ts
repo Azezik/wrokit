@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { GeometryFile } from '../../src/core/contracts/geometry';
 import type { NormalizedPage } from '../../src/core/contracts/normalized-page';
-import type { StructuralModel } from '../../src/core/contracts/structural-model';
+import type { StructuralModel, StructuralObjectNode, StructuralPage } from '../../src/core/contracts/structural-model';
 import { createLocalizationRunner, __testing } from '../../src/core/runtime/localization-runner';
 
 const runtimePage: NormalizedPage = {
@@ -124,5 +124,166 @@ describe('localization-runner', () => {
     expect(transformed.yNorm).toBe(0.9700000000000001);
     expect(transformed.wNorm).toBe(0);
     expect(transformed.hNorm).toBeCloseTo(0.029999999999999916);
+  });
+
+  it('prioritizes containment-chain anchor ranking over nearest-label ordering', () => {
+    const field = configGeometry.fields[0];
+
+    const buildPage = (objects: StructuralObjectNode[], fieldAnchorObjectId: string): StructuralPage => ({
+      pageIndex: 0,
+      pageSurface: { pageIndex: 0, surfaceWidth: 1000, surfaceHeight: 2000 },
+      border: { rectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 } },
+      refinedBorder: {
+        rectNorm: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.8, hNorm: 0.8 },
+        source: 'cv-content',
+        influencedByBBoxCount: 0,
+        containsAllSavedBBoxes: true
+      },
+      objectHierarchy: { objects },
+      pageAnchorRelations: {
+        objectToObject: [
+          {
+            fromObjectId: 'obj_container',
+            toObjectId: 'obj_adjacent',
+            relationKind: 'adjacent',
+            relativeRect: { xRatio: 0, yRatio: 0, wRatio: 1, hRatio: 1 },
+            fallbackOrder: 0,
+            distance: 0.1
+          }
+        ],
+        objectToRefinedBorder: objects.map((object) => ({
+          objectId: object.objectId,
+          relativeRect: { xRatio: object.objectRectNorm.xNorm, yRatio: object.objectRectNorm.yNorm, wRatio: object.objectRectNorm.wNorm, hRatio: object.objectRectNorm.hNorm }
+        })),
+        refinedBorderToBorder: {
+          relativeRect: { xRatio: 0.1, yRatio: 0.1, wRatio: 0.8, hRatio: 0.8 }
+        }
+      },
+      fieldRelationships: [
+        {
+          fieldId: field.fieldId,
+          fieldAnchors: {
+            objectAnchors: [
+              { rank: 'primary', objectId: 'obj_sibling', relativeFieldRect: { xRatio: 0.1, yRatio: 0.1, wRatio: 0.2, hRatio: 0.2 } },
+              { rank: 'secondary', objectId: 'obj_adjacent', relativeFieldRect: { xRatio: 0.1, yRatio: 0.1, wRatio: 0.2, hRatio: 0.2 } },
+              { rank: 'tertiary', objectId: fieldAnchorObjectId, relativeFieldRect: { xRatio: 0.1, yRatio: 0.1, wRatio: 0.2, hRatio: 0.2 } }
+            ],
+            stableObjectAnchors: [
+              { label: 'A', objectId: 'obj_sibling', distance: 0.01, relativeFieldRect: { xRatio: 0.1, yRatio: 0.1, wRatio: 0.2, hRatio: 0.2 } },
+              { label: 'B', objectId: 'obj_adjacent', distance: 0.02, relativeFieldRect: { xRatio: 0.1, yRatio: 0.1, wRatio: 0.2, hRatio: 0.2 } },
+              { label: 'C', objectId: fieldAnchorObjectId, distance: 0.05, relativeFieldRect: { xRatio: 0.1, yRatio: 0.1, wRatio: 0.2, hRatio: 0.2 } }
+            ],
+            refinedBorderAnchor: {
+              relativeFieldRect: { xRatio: 0.2, yRatio: 0.2, wRatio: 0.2, hRatio: 0.1 },
+              distanceToEdge: 0.1
+            },
+            borderAnchor: {
+              relativeFieldRect: { xRatio: 0.2, yRatio: 0.2, wRatio: 0.2, hRatio: 0.1 },
+              distanceToEdge: 0.2
+            }
+          },
+          objectAnchorGraph: [],
+          containedBy: fieldAnchorObjectId,
+          nearestObjects: [
+            { objectId: 'obj_sibling', distance: 0.01 },
+            { objectId: 'obj_adjacent', distance: 0.02 },
+            { objectId: fieldAnchorObjectId, distance: 0.05 }
+          ],
+          relativePositionWithinParent: null,
+          distanceToBorder: 0.2,
+          distanceToRefinedBorder: 0.1
+        }
+      ]
+    });
+
+    const configPage = buildPage(
+      [
+        {
+          objectId: 'obj_container',
+          type: 'container',
+          objectRectNorm: { xNorm: 0.2, yNorm: 0.2, wNorm: 0.5, hNorm: 0.4 },
+          bbox: { xNorm: 0.2, yNorm: 0.2, wNorm: 0.5, hNorm: 0.4 },
+          parentObjectId: null,
+          childObjectIds: ['obj_child'],
+          confidence: 0.9
+        },
+        {
+          objectId: 'obj_child',
+          type: 'rectangle',
+          objectRectNorm: { xNorm: 0.25, yNorm: 0.25, wNorm: 0.1, hNorm: 0.1 },
+          bbox: { xNorm: 0.25, yNorm: 0.25, wNorm: 0.1, hNorm: 0.1 },
+          parentObjectId: 'obj_container',
+          childObjectIds: [],
+          confidence: 0.8
+        },
+        {
+          objectId: 'obj_sibling',
+          type: 'container',
+          objectRectNorm: { xNorm: 0.72, yNorm: 0.2, wNorm: 0.2, hNorm: 0.2 },
+          bbox: { xNorm: 0.72, yNorm: 0.2, wNorm: 0.2, hNorm: 0.2 },
+          parentObjectId: null,
+          childObjectIds: [],
+          confidence: 0.8
+        },
+        {
+          objectId: 'obj_adjacent',
+          type: 'container',
+          objectRectNorm: { xNorm: 0.2, yNorm: 0.62, wNorm: 0.2, hNorm: 0.2 },
+          bbox: { xNorm: 0.2, yNorm: 0.62, wNorm: 0.2, hNorm: 0.2 },
+          parentObjectId: null,
+          childObjectIds: [],
+          confidence: 0.8
+        }
+      ],
+      'obj_container'
+    );
+
+    const runtimePageStructural = buildPage(
+      [
+        {
+          objectId: 'obj_runtime_container',
+          type: 'container',
+          objectRectNorm: { xNorm: 0.3, yNorm: 0.25, wNorm: 0.45, hNorm: 0.4 },
+          bbox: { xNorm: 0.3, yNorm: 0.25, wNorm: 0.45, hNorm: 0.4 },
+          parentObjectId: null,
+          childObjectIds: ['obj_runtime_child'],
+          confidence: 0.9
+        },
+        {
+          objectId: 'obj_runtime_child',
+          type: 'rectangle',
+          objectRectNorm: { xNorm: 0.35, yNorm: 0.3, wNorm: 0.08, hNorm: 0.08 },
+          bbox: { xNorm: 0.35, yNorm: 0.3, wNorm: 0.08, hNorm: 0.08 },
+          parentObjectId: 'obj_runtime_container',
+          childObjectIds: [],
+          confidence: 0.7
+        },
+        {
+          objectId: 'obj_sibling',
+          type: 'container',
+          objectRectNorm: { xNorm: 0.7, yNorm: 0.18, wNorm: 0.2, hNorm: 0.2 },
+          bbox: { xNorm: 0.7, yNorm: 0.18, wNorm: 0.2, hNorm: 0.2 },
+          parentObjectId: null,
+          childObjectIds: [],
+          confidence: 0.8
+        },
+        {
+          objectId: 'obj_adjacent',
+          type: 'container',
+          objectRectNorm: { xNorm: 0.22, yNorm: 0.64, wNorm: 0.2, hNorm: 0.2 },
+          bbox: { xNorm: 0.22, yNorm: 0.64, wNorm: 0.2, hNorm: 0.2 },
+          parentObjectId: null,
+          childObjectIds: [],
+          confidence: 0.8
+        }
+      ],
+      'obj_runtime_container'
+    );
+
+    const resolution = __testing.resolveFieldAnchor(field, configPage, runtimePageStructural);
+    expect(resolution.tier).toBe('field-object-c');
+    expect(resolution.transform.configObjectId).toBe('obj_container');
+    expect(resolution.transform.runtimeObjectId).toBe('obj_runtime_container');
+    expect(resolution.transform.objectMatchStrategy).toBe('type-hierarchy-geometry');
   });
 });
