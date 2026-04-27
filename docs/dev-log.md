@@ -1,3 +1,68 @@
+## 2026-04-27 — Fix: Config Capture / Run Mode overlay alignment + shared viewport authority
+
+### Why this step
+- Config Capture's structural overlays (Border / Refined Border / objects / saved BBOXes) no longer aligned with the visible document. The overlay appeared too wide / offset relative to the rendered image.
+- Root cause was a display-plane desync: the overlay coordinate plane was being measured from a container that did not equal the rendered image rect.
+- Run Mode rendered the same kind of overlays through a parallel local implementation, so the same alignment risk existed in both screens with no shared source of truth.
+
+### Root cause
+- `ConfigCapture.tsx` set the viewport frame to `width: 100%` and the image to `width: 100%; max-height: 80vh; object-fit: contain`. When the rendered image had to letterbox to satisfy `max-height`, the `<img>` element's bounding rect stayed at the full container width while the actual rendered image content shrank inside it. The overlay was sized to the IMG bounding rect (and `inset: 0` of the frame), so it was wider than the rendered image. Saved-BBOX overlays therefore drifted, and Border / Refined Border / object overlays appeared misaligned.
+- Config Capture and Run Mode each owned their own measurement / transform / overlay container, so the same fix had to land in both places and could drift again later.
+
+### Fix
+- Added `src/core/page-surface/ui/NormalizedPageViewport.tsx` as the **single shared NormalizedPage viewport authority** for the app. It owns:
+  - rendered image measurement (single `ResizeObserver` on the image element),
+  - overlay plane sizing (positioned to the measured image rect via `overlayPlaneStyle(displayRect)`),
+  - `SurfaceTransform` construction via `buildSurfaceTransform(getPageSurface(page), displayRect)`,
+  - pointer-to-image-rect conversion via `pointerToImageRect(image, event)`,
+  - resize / layout recalculation.
+- The shared viewport uses **shrink-wrap** geometry: the frame is `display: inline-block`, the image is rendered at its natural aspect ratio with `max-width: 100%; max-height: 80vh` (no `object-fit`, no fixed width), and the overlay div is sized **explicitly** to `(0, 0, displayRect.width, displayRect.height)`. By construction: image rect = overlay rect.
+- Refactored `src/features/config-capture/ui/ConfigCapture.tsx` to render through `NormalizedPageViewport` and consume the transform via `onSurfaceTransformChange`. Removed the local frame/image/overlay markup and the local measurement effect. Pointer events resolve through `pointerToImageRect`, which uses the shared image element.
+- Refactored `src/features/run-mode/ui/RunMode.tsx` to render through the same `NormalizedPageViewport`. Removed the local frame/image/overlay markup and the local measurement effect. Run Mode now consumes the transform via the same `onSurfaceTransformChange` callback.
+- Cleaned up `config-capture.css` and `run-mode.css` to drop the per-feature frame/image/overlay rules — the shared viewport owns those styles.
+
+### Coordinate authority preserved
+- No change to `StructuralModel` math, `GeometryFile`, or any `page-surface` transform math.
+- All overlays in both screens — Border, Refined Border, structural objects, saved BBOXes, predicted BBOXes, draft rect — are still positioned via `normalizedRectToScreen(transform, rectNorm)` on the same `SurfaceTransform`.
+- The display transform is still built from the rendered image's actual `getBoundingClientRect()` — but now via one shared component, so Config Capture and Run Mode cannot drift apart.
+- Saved geometry remains normalized over the canonical NormalizedPage surface; resizing the browser, changing zoom, or reflowing the layout cannot change saved coordinates.
+
+### Regression guard
+- Added `tests/unit/normalized-page-viewport.test.ts`:
+  - `overlay plane style pins to (0,0,width,height) of the rendered image rect` — codifies image-plane = overlay-plane via the `overlayPlaneStyle` helper.
+  - `normalized rect 0,0,1,1 maps exactly to the displayed image bounds`.
+  - `a saved BBOX maps back to the same screen location after a draw round-trip`.
+  - `saved normalized coordinates do not change when the displayed image is resized` (resolution / layout independence).
+  - `pointerToImageRect resolves clientX/Y against the rendered image, not its container` — the exact failure mode from the regression.
+  - Clamping + null-safety cases for `pointerToImageRect`.
+
+### Files added
+- `src/core/page-surface/ui/NormalizedPageViewport.tsx`
+- `src/core/page-surface/ui/normalized-page-viewport.css`
+- `src/core/page-surface/ui/index.ts`
+- `tests/unit/normalized-page-viewport.test.ts`
+
+### Files modified
+- `src/core/page-surface/index.ts` (re-exports the shared viewport)
+- `src/features/config-capture/ui/ConfigCapture.tsx`
+- `src/features/config-capture/ui/config-capture.css`
+- `src/features/run-mode/ui/RunMode.tsx`
+- `src/features/run-mode/ui/run-mode.css`
+- `docs/dev-log.md`
+
+### Checks run
+- `npm run check` (`tsc --noEmit`): clean.
+- `npm test` (vitest): 60/60 passing (53 prior + 7 new viewport regression tests).
+- `npm run build` (`tsc -b && vite build`): clean.
+
+### Boundaries preserved
+- No change to `StructuralModel`, `GeometryFile`, `WizardFile`, or any contract.
+- No change to `src/core/page-surface/page-surface.ts` math.
+- No new coordinate system, no offsets, no padding compensation, no magic constants.
+- Detected Border remains the structural reference — the fix targeted only the image/overlay plane lock that Border, Refined Border, BBOXes, and structural objects all depend on.
+
+---
+
 ## 2026-04-27 — Phase 1 fix: Config Capture structural overlay overwhelm
 
 ### Why this step
