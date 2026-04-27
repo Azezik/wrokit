@@ -479,7 +479,7 @@ export function ConfigCapture() {
       description="Load a WizardFile and a normalized document. Draw the bbox for each field directly on the canonical NormalizedPage surface."
     >
       <div className="config-capture">
-        <Panel className="config-capture__column">
+        <Panel className="config-capture__column config-capture__panel--capture">
           <div className="config-capture__toolbar">
             <label>
               <Input type="file" accept="application/json" onChange={handleWizardImport} />
@@ -686,7 +686,7 @@ export function ConfigCapture() {
           {structuralError ? <p className="config-capture__error">{structuralError}</p> : null}
         </Panel>
 
-        <Panel as="aside" className="config-capture__column">
+        <Panel as="aside" className="config-capture__column config-capture__panel--details">
           <strong>Wizard Fields</strong>
           <div className="config-capture__field-list">
             {wizard && wizard.fields.length > 0 ? (
