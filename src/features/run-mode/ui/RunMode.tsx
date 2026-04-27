@@ -26,6 +26,8 @@ import {
 } from '../../../core/page-surface/ui';
 import { createLocalizationRunner, type PredictedGeometryFile } from '../../../core/runtime/localization-runner';
 import { createStructuralRunner } from '../../../core/runtime/structural-runner';
+import { createTransformationRunner } from '../../../core/runtime/transformation-runner';
+import type { TransformationModel } from '../../../core/contracts/transformation-model';
 import { Button } from '../../../core/ui/components/Button';
 import { Input } from '../../../core/ui/components/Input';
 import { Panel } from '../../../core/ui/components/Panel';
@@ -39,6 +41,7 @@ export function RunMode() {
   const normalizationEngineRef = useRef(createNormalizationEngine());
   const structuralRunnerRef = useRef(createStructuralRunner());
   const localizationRunnerRef = useRef(createLocalizationRunner());
+  const transformationRunnerRef = useRef(createTransformationRunner());
 
   const [wizard, setWizard] = useState<WizardFile | null>(null);
   const [geometry, setGeometry] = useState<GeometryFile | null>(null);
@@ -50,6 +53,7 @@ export function RunMode() {
 
   const [predicted, setPredicted] = useState<PredictedGeometryFile | null>(null);
   const [runtimeStructuralModel, setRuntimeStructuralModel] = useState<StructuralModel | null>(null);
+  const [transformationModel, setTransformationModel] = useState<TransformationModel | null>(null);
   const [isNormalizing, setIsNormalizing] = useState(false);
   const [isComputingPredictions, setIsComputingPredictions] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
@@ -112,6 +116,11 @@ export function RunMode() {
   const runtimeStructuralPreview = useMemo(
     () => (runtimeStructuralModel ? JSON.stringify(runtimeStructuralModel, null, 2) : ''),
     [runtimeStructuralModel]
+  );
+
+  const transformationPreview = useMemo(
+    () => (transformationModel ? JSON.stringify(transformationModel, null, 2) : ''),
+    [transformationModel]
   );
 
   const handleWizardImport = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -185,6 +194,7 @@ export function RunMode() {
     setRuntimeNormalizationError(null);
     setPredicted(null);
     setRuntimeStructuralModel(null);
+    setTransformationModel(null);
 
     try {
       const result = await normalizationEngineRef.current.normalize(file);
@@ -222,6 +232,15 @@ export function RunMode() {
       });
       setRuntimeStructuralModel(runtimeStructuralModel);
 
+      // Read-only alignment report between Config and Runtime StructuralModels.
+      // Does not influence localization in this phase; it is exposed for
+      // inspection and for future localization consumers.
+      const transformationReport = transformationRunnerRef.current.compute({
+        config: configStructuralModel,
+        runtime: runtimeStructuralModel
+      });
+      setTransformationModel(transformationReport);
+
       const result = await localizationRunnerRef.current.run({
         wizardId: wizard.wizardName,
         configGeometry: geometry,
@@ -233,6 +252,7 @@ export function RunMode() {
       setPredicted(result);
     } catch (runError) {
       setRuntimeStructuralModel(null);
+      setTransformationModel(null);
       setPredicted(null);
       setRunError(runError instanceof Error ? runError.message : 'Run Mode matching failed.');
     } finally {
@@ -399,6 +419,12 @@ export function RunMode() {
                 ? ` · OpenCV runtime ${structuralRuntimeLoadStatus.status}${structuralRuntimeLoadStatus.reason ? ` (${structuralRuntimeLoadStatus.reason})` : ''}`
                 : ''}
             </li>
+            <li>
+              TransformationModel:{' '}
+              {transformationModel
+                ? `computed · overall confidence ${transformationModel.overallConfidence.toFixed(3)}`
+                : 'not computed'}
+            </li>
           </ul>
 
           {isNormalizing ? <p className="run-mode__meta">Normalizing runtime upload…</p> : null}
@@ -456,6 +482,15 @@ export function RunMode() {
           <h4>Runtime StructuralModel JSON</h4>
           <pre className="run-mode__json">
             {runtimeStructuralPreview || 'Run matching to preview runtime StructuralModel JSON.'}
+          </pre>
+          <h4>
+            TransformationModel (alignment report)
+            {transformationModel
+              ? ` · overall confidence ${transformationModel.overallConfidence.toFixed(3)}`
+              : ''}
+          </h4>
+          <pre className="run-mode__json">
+            {transformationPreview || 'Run matching to preview the Config↔Runtime alignment report.'}
           </pre>
         </Panel>
       </div>
