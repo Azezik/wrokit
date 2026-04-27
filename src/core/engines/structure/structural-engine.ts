@@ -255,6 +255,7 @@ export const createStructuralEngine = (
         surfaceWidth: surface.surfaceWidth,
         surfaceHeight: surface.surfaceHeight
       },
+      cvExecutionMode: cvResult.executionMode,
       border: buildBorder(),
       refinedBorder,
       objectHierarchy: hierarchy,

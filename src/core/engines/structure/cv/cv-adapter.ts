@@ -22,6 +22,7 @@ export interface CvSurfaceRaster {
 }
 
 export interface CvContentRectResult {
+  executionMode: CvExecutionMode;
   /**
    * Detected content rect in NormalizedPage surface coordinates. Always inside
    * `[0, 0, surfaceWidth, surfaceHeight]`. May equal the full surface when the
@@ -30,6 +31,8 @@ export interface CvContentRectResult {
   contentRectSurface: PixelRect;
   objectsSurface: CvSurfaceObject[];
 }
+
+export type CvExecutionMode = 'opencv-runtime' | 'heuristic-fallback';
 
 export interface CvSurfaceObject {
   objectId: string;

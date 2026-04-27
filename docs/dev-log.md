@@ -1,3 +1,51 @@
+## 2026-04-27 — OpenCV execution honesty + unified structural overlay renderer
+
+### Why this step
+- Structural execution provenance was ambiguous: UI showed `opencv-js` adapter identity even when runtime detection could silently fall back to heuristics.
+- Config Capture and Run Mode had separate structural overlay implementations, which drifted in rendered layers and readability defaults.
+- Goal: make CV execution mode explicit/persisted and enforce one shared structural overlay renderer across both screens.
+
+### What changed
+- **OpenCV runtime load + provenance**
+  - Added `src/core/engines/structure/cv/opencv-js-runtime-loader.ts`:
+    - best-effort browser runtime loading by script injection,
+    - explicit status reporting (`loaded`, `already-available`, `unavailable`),
+    - no hard failure when runtime is missing.
+  - `src/core/runtime/structural-runner.ts` now attempts runtime loading before compute and exposes load status for UI reporting.
+  - `CvContentRectResult` now carries `executionMode: 'opencv-runtime' | 'heuristic-fallback'`.
+  - `StructuralPage` now persists `cvExecutionMode` so each page records actual structural execution source.
+- **Single shared structural overlay system**
+  - Added `src/core/page-surface/ui/StructuralDebugOverlay.tsx` and shared styles.
+  - Both `ConfigCapture` and `RunMode` now render structural overlays through this component only.
+  - Shared renderer supports:
+    - Border + Refined Border
+    - Structural objects
+    - Optional labels + containment chains
+    - Saved/predicted field boxes
+    - CV execution mode display in refined label
+- **Readable defaults + common toggles**
+  - Added the same debug controls in Config and Run:
+    - Show Structural Objects
+    - Show Line Objects
+    - Show All Objects
+    - Show Object Labels
+    - Show Containment Chains
+  - Default settings are readability-first:
+    - objects shown with filtered visibility (high confidence + structural container types),
+    - labels/chains off,
+    - line objects off.
+- **Tests**
+  - Updated CV adapter tests to assert execution-mode outputs for fallback and OpenCV runtime branches.
+  - Updated structural-model/engine/localization/contract test fixtures to include persisted `cvExecutionMode`.
+  - Kept all existing structural/localization invariants intact.
+
+### Boundaries preserved
+- OpenCV-specific behavior remains isolated in structural CV modules; UI does not call OpenCV APIs.
+- No alternate coordinate universe introduced; all overlay geometry still flows through canonical `page-surface` transforms.
+- GeometryFile authority unchanged; structural overlays remain interpretive/debug and do not mutate saved field BBOX truth.
+
+---
+
 ## 2026-04-27 — Tests + docs: OpenCV authority, contingency fallback, and deterministic localization fallback chain
 
 ### Why this step

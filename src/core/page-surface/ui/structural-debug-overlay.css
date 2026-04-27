@@ -1,0 +1,67 @@
+.structural-debug-overlay__border,
+.structural-debug-overlay__refined,
+.structural-debug-overlay__object,
+.structural-debug-overlay__field {
+  position: absolute;
+  pointer-events: none;
+}
+
+.structural-debug-overlay__border {
+  border: 2px dashed #f59e0b;
+  background: rgb(245 158 11 / 0.06);
+}
+
+.structural-debug-overlay__refined {
+  border: 2px dashed #a855f7;
+  background: rgb(168 85 247 / 0.06);
+}
+
+.structural-debug-overlay__object {
+  border: 1.5px solid rgb(14 116 144 / 0.65);
+  background: transparent;
+}
+
+.structural-debug-overlay__object[data-object-type='line-horizontal'],
+.structural-debug-overlay__object[data-object-type='line-vertical'] {
+  border-color: rgb(8 145 178 / 0.22);
+}
+
+.structural-debug-overlay__field {
+  border: 2px solid #10b981;
+  background: rgb(16 185 129 / 0.08);
+}
+
+.structural-debug-overlay__field[data-variant='predicted'] {
+  border-color: #2563eb;
+  background: rgb(37 99 235 / 0.12);
+}
+
+.structural-debug-overlay__label,
+.structural-debug-overlay__object-label,
+.structural-debug-overlay__object-chain {
+  position: absolute;
+  left: 0;
+  color: #fff;
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+.structural-debug-overlay__label,
+.structural-debug-overlay__object-label {
+  top: -1.4rem;
+  background: rgb(15 23 40 / 0.84);
+  padding: 0 var(--space-2);
+  font-size: var(--font-size-xs);
+}
+
+.structural-debug-overlay__object-label {
+  font-size: 0.65rem;
+  padding: 0 var(--space-1);
+}
+
+.structural-debug-overlay__object-chain {
+  top: calc(100% + 2px);
+  background: rgb(8 47 73 / 0.72);
+  padding: 0 var(--space-1);
+  font-size: 0.65rem;
+}

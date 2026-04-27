@@ -3,8 +3,10 @@ import type { NormalizedPage } from '../contracts/normalized-page';
 import type { StructuralModel } from '../contracts/structural-model';
 import {
   createOpenCvJsAdapter,
+  ensureOpenCvJsRuntime,
   createStructuralEngine,
   type CvAdapter,
+  type OpenCvRuntimeLoadResult,
   type StructuralEngine
 } from '../engines/structure';
 
@@ -19,12 +21,14 @@ export interface StructuralRunnerInput {
 
 export interface StructuralRunner {
   readonly cvAdapter: CvAdapter;
+  readonly runtimeLoadStatus: OpenCvRuntimeLoadResult | null;
   compute(input: StructuralRunnerInput): Promise<StructuralModel>;
 }
 
 export interface CreateStructuralRunnerOptions {
   cvAdapter?: CvAdapter;
   engineFactory?: (cvAdapter: CvAdapter) => StructuralEngine;
+  ensureRuntime?: () => Promise<OpenCvRuntimeLoadResult>;
 }
 
 /**
@@ -40,17 +44,24 @@ export const createStructuralRunner = (
   const engine =
     options.engineFactory?.(cvAdapter) ??
     createStructuralEngine({ cvAdapter });
+  let runtimeLoadStatus: OpenCvRuntimeLoadResult | null = null;
 
   return {
     cvAdapter,
-    compute: async (input) =>
-      engine.run({
+    get runtimeLoadStatus() {
+      return runtimeLoadStatus;
+    },
+    compute: async (input) => {
+      runtimeLoadStatus =
+        (await (options.ensureRuntime?.() ?? ensureOpenCvJsRuntime())) ?? null;
+      return engine.run({
         pages: input.pages,
         geometry: input.geometry ?? null,
         documentFingerprint: input.documentFingerprint,
         pageIndexes: input.pageIndexes,
         id: input.id,
         nowIso: input.nowIso
-      })
+      });
+    }
   };
 };

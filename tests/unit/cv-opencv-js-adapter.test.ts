@@ -143,6 +143,7 @@ describe('createOpenCvJsAdapter', () => {
     });
 
     const result = await adapter.detectContentRect(raster);
+    expect(result.executionMode).toBe('heuristic-fallback');
     expect(result.contentRectSurface).toEqual({ x: 4, y: 6, width: 10, height: 10 });
     expect(Array.isArray(result.objectsSurface)).toBe(true);
   });
@@ -151,6 +152,7 @@ describe('createOpenCvJsAdapter', () => {
     const adapter = createOpenCvJsAdapter();
     const raster = makeRaster(10, 10, () => {});
     const result = await adapter.detectContentRect(raster);
+    expect(result.executionMode).toBe('heuristic-fallback');
     expect(result.contentRectSurface).toEqual({ x: 0, y: 0, width: 10, height: 10 });
     expect(result.objectsSurface).toEqual([]);
   });
@@ -192,6 +194,7 @@ describe('createOpenCvJsAdapter', () => {
     });
 
     const result = await adapter.detectContentRect(raster);
+    expect(result.executionMode).toBe('heuristic-fallback');
     const horizontals = result.objectsSurface.filter((o) => o.type === 'line-horizontal');
     const verticals = result.objectsSurface.filter((o) => o.type === 'line-vertical');
 
@@ -215,6 +218,7 @@ describe('createOpenCvJsAdapter', () => {
     });
 
     const result = await adapter.detectContentRect(raster);
+    expect(result.executionMode).toBe('heuristic-fallback');
     const lineObjects = result.objectsSurface.filter(
       (o) => o.type === 'line-horizontal' || o.type === 'line-vertical'
     );
@@ -228,6 +232,7 @@ describe('createOpenCvJsAdapter', () => {
     const raster = makeRaster(60, 60, () => {});
 
     const result = await adapter.detectContentRect(raster);
+    expect(result.executionMode).toBe('opencv-runtime');
     expect(result.contentRectSurface).toEqual({ x: 4, y: 5, width: 49, height: 50 });
 
     const contourRects = result.objectsSurface
