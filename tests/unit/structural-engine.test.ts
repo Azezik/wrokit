@@ -43,7 +43,7 @@ const cvAdapterReturning = (rect: PixelRect): CvAdapter => ({
 });
 
 describe('createStructuralEngine', () => {
-  it('emits a Border + Refined Border as a valid StructuralModel v1', async () => {
+  it('emits a Border + Refined Border as a valid StructuralModel v2', async () => {
     const engine = createStructuralEngine({
       cvAdapter: cvAdapterReturning({ x: 100, y: 200, width: 800, height: 1600 }),
       rasterLoader: stubLoader
@@ -56,7 +56,7 @@ describe('createStructuralEngine', () => {
     });
 
     expect(isStructuralModel(model)).toBe(true);
-    expect(model.structureVersion).toBe('wrokit/structure/v1');
+    expect(model.structureVersion).toBe('wrokit/structure/v2');
     expect(model.cvAdapter).toEqual({ name: 'mock-cv', version: '0.0' });
     expect(model.pages).toHaveLength(1);
     const page = model.pages[0];
@@ -71,6 +71,14 @@ describe('createStructuralEngine', () => {
     expect(page.refinedBorder.containsAllSavedBBoxes).toBe(true);
     expect(page.refinedBorder.influencedByBBoxCount).toBe(0);
     expect(page.objectHierarchy.objects).toEqual([]);
+    expect(page.pageAnchorRelations.objectToObject).toEqual([]);
+    expect(page.pageAnchorRelations.objectToRefinedBorder).toEqual([]);
+    expect(page.pageAnchorRelations.refinedBorderToBorder.relativeRect).toEqual({
+      xRatio: 0.1,
+      yRatio: 0.1,
+      wRatio: 0.8,
+      hRatio: 0.8
+    });
     expect(page.fieldRelationships).toEqual([]);
   });
 
@@ -255,9 +263,11 @@ describe('createStructuralEngine', () => {
 
     const page = model.pages[0];
     expect(page.objectHierarchy.objects).toHaveLength(2);
-    expect(page.objectHierarchy.objects[0].bbox.xNorm).toBeCloseTo(0.15, 6);
+    expect(page.objectHierarchy.objects[0].objectRectNorm.xNorm).toBeCloseTo(0.15, 6);
     expect(page.fieldRelationships).toHaveLength(1);
     expect(page.fieldRelationships[0].fieldId).toBe('amount');
+    expect(page.fieldRelationships[0].fieldAnchors.objectAnchors[0].rank).toBe('primary');
+    expect(page.pageAnchorRelations.objectToObject).toHaveLength(1);
     expect(page.fieldRelationships[0].nearestObjects.length).toBeGreaterThan(0);
   });
 });

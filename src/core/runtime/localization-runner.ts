@@ -33,7 +33,7 @@ export interface PredictedGeometryFile {
   schema: 'wrokit/predicted-geometry-file';
   version: '1.0';
   geometryFileVersion: 'wrokit/geometry/v1';
-  structureVersion: 'wrokit/structure/v1';
+  structureVersion: 'wrokit/structure/v2';
   id: string;
   wizardId: string;
   sourceGeometryFileId: string;
@@ -186,7 +186,7 @@ export const createLocalizationRunner = (): LocalizationRunner => ({
       schema: 'wrokit/predicted-geometry-file',
       version: '1.0',
       geometryFileVersion: 'wrokit/geometry/v1',
-      structureVersion: 'wrokit/structure/v1',
+      structureVersion: 'wrokit/structure/v2',
       id: input.predictedId ?? generateId(),
       wizardId: input.wizardId,
       sourceGeometryFileId: input.configGeometry.id,

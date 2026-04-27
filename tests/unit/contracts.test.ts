@@ -144,8 +144,8 @@ describe('isStructuralModel', () => {
     expect(
       isStructuralModel({
         schema: 'wrokit/structural-model',
-        version: '2.0',
-        structureVersion: 'wrokit/structure/v1',
+        version: '3.0',
+        structureVersion: 'wrokit/structure/v2',
         id: 's1',
         documentFingerprint: 'sha256:abc',
         cvAdapter: { name: 'opencv-js', version: '1.0' },
@@ -165,6 +165,7 @@ describe('isStructuralModel', () => {
                 {
                   objectId: 'obj_1',
                   type: 'container',
+                  objectRectNorm: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.8, hNorm: 0.8 },
                   bbox: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.8, hNorm: 0.8 },
                   parentObjectId: null,
                   childObjectIds: [],
@@ -172,9 +173,38 @@ describe('isStructuralModel', () => {
                 }
               ]
             },
+            pageAnchorRelations: {
+              objectToObject: [],
+              objectToRefinedBorder: [
+                {
+                  objectId: 'obj_1',
+                  relativeRect: { xRatio: 0.1, yRatio: 0.1, wRatio: 0.8, hRatio: 0.8 }
+                }
+              ],
+              refinedBorderToBorder: {
+                relativeRect: { xRatio: 0.05, yRatio: 0.05, wRatio: 0.9, hRatio: 0.9 }
+              }
+            },
             fieldRelationships: [
               {
                 fieldId: 'f1',
+                fieldAnchors: {
+                  objectAnchors: [
+                    {
+                      rank: 'primary',
+                      objectId: 'obj_1',
+                      relativeFieldRect: { xRatio: 0.1, yRatio: 0.1, wRatio: 0.2, hRatio: 0.2 }
+                    }
+                  ],
+                  refinedBorderAnchor: {
+                    relativeFieldRect: { xRatio: 0.1, yRatio: 0.1, wRatio: 0.2, hRatio: 0.2 },
+                    distanceToEdge: 0.05
+                  },
+                  borderAnchor: {
+                    relativeFieldRect: { xRatio: 0.1, yRatio: 0.1, wRatio: 0.2, hRatio: 0.2 },
+                    distanceToEdge: 0.1
+                  }
+                },
                 containedBy: 'obj_1',
                 nearestObjects: [{ objectId: 'obj_1', distance: 0.1 }],
                 relativePositionWithinParent: {
@@ -199,7 +229,7 @@ describe('isStructuralModel', () => {
     expect(
       isStructuralModel({
         schema: 'wrokit/structural-model',
-        version: '2.0',
+        version: '3.0',
         id: 's1',
         documentFingerprint: 'sha256:abc',
         cvAdapter: { name: 'opencv-js', version: '1.0' },
@@ -210,8 +240,8 @@ describe('isStructuralModel', () => {
     expect(
       isStructuralModel({
         schema: 'wrokit/structural-model',
-        version: '2.0',
-        structureVersion: 'wrokit/structure/v1',
+        version: '3.0',
+        structureVersion: 'wrokit/structure/v2',
         id: 's1',
         documentFingerprint: 'sha256:abc',
         cvAdapter: { name: 'opencv-js', version: '1.0' },
@@ -227,6 +257,13 @@ describe('isStructuralModel', () => {
               containsAllSavedBBoxes: true
             },
             objectHierarchy: { objects: [] },
+            pageAnchorRelations: {
+              objectToObject: [],
+              objectToRefinedBorder: [],
+              refinedBorderToBorder: {
+                relativeRect: { xRatio: 0, yRatio: 0, wRatio: 1, hRatio: 1 }
+              }
+            },
             fieldRelationships: []
           }
         ],

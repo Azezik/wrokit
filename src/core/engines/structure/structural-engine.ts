@@ -19,11 +19,11 @@ import {
 
 import type { CvAdapter, CvSurfaceRaster } from './cv/cv-adapter';
 import { loadPageSurfaceRaster, type PageRasterLoaderEnv } from './page-raster-loader';
-import { buildFieldRelationships, buildObjectHierarchy } from './object-hierarchy';
+import { buildFieldRelationships, buildObjectHierarchy, buildPageAnchorRelations } from './object-hierarchy';
 import type { StructuralEngine, StructuralEngineInput } from './types';
 
-const STRUCTURE_VERSION = 'wrokit/structure/v1' as const;
-const SCHEMA_VERSION = '2.0' as const;
+const STRUCTURE_VERSION = 'wrokit/structure/v2' as const;
+const SCHEMA_VERSION = '3.0' as const;
 
 const generateId = (): string => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -242,6 +242,12 @@ export const createStructuralEngine = (
       hierarchy
     });
 
+    const pageAnchorRelations = buildPageAnchorRelations({
+      hierarchy,
+      refinedBorderRect: refinedBorder.rectNorm,
+      borderRect: FULL_PAGE_RECT
+    });
+
     return {
       pageIndex: page.pageIndex,
       pageSurface: {
@@ -252,6 +258,7 @@ export const createStructuralEngine = (
       border: buildBorder(),
       refinedBorder,
       objectHierarchy: hierarchy,
+      pageAnchorRelations,
       fieldRelationships
     };
   };

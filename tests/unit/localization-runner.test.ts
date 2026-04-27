@@ -43,8 +43,8 @@ const configGeometry: GeometryFile = {
 
 const createModel = (id: string, xNorm: number, yNorm: number, wNorm: number, hNorm: number): StructuralModel => ({
   schema: 'wrokit/structural-model',
-  version: '2.0',
-  structureVersion: 'wrokit/structure/v1',
+  version: '3.0',
+  structureVersion: 'wrokit/structure/v2',
   id,
   documentFingerprint: `${id}-fingerprint`,
   cvAdapter: { name: 'opencv-js', version: '1.0' },
@@ -60,6 +60,13 @@ const createModel = (id: string, xNorm: number, yNorm: number, wNorm: number, hN
         containsAllSavedBBoxes: true
       },
       objectHierarchy: { objects: [] },
+      pageAnchorRelations: {
+        objectToObject: [],
+        objectToRefinedBorder: [],
+        refinedBorderToBorder: {
+          relativeRect: { xRatio: xNorm, yRatio: yNorm, wRatio: wNorm, hRatio: hNorm }
+        }
+      },
       fieldRelationships: []
     }
   ],

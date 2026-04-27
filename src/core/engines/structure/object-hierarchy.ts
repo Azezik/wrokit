@@ -4,7 +4,9 @@ import type {
   StructuralNormalizedRect,
   StructuralObjectHierarchy,
   StructuralObjectNode,
-  StructuralObjectType
+  StructuralObjectType,
+  StructuralPageAnchorRelations,
+  StructuralRelativeAnchorRect
 } from '../../contracts/structural-model';
 
 interface RawObjectInput {
@@ -65,6 +67,21 @@ const toRect = (bbox: NormalizedBoundingBox): StructuralNormalizedRect => ({
   hNorm: bbox.hNorm
 });
 
+const relativeRect = (
+  subject: StructuralNormalizedRect,
+  anchor: StructuralNormalizedRect
+): StructuralRelativeAnchorRect => {
+  const safeW = Math.max(anchor.wNorm, EPS);
+  const safeH = Math.max(anchor.hNorm, EPS);
+
+  return {
+    xRatio: (subject.xNorm - anchor.xNorm) / safeW,
+    yRatio: (subject.yNorm - anchor.yNorm) / safeH,
+    wRatio: subject.wNorm / safeW,
+    hRatio: subject.hNorm / safeH
+  };
+};
+
 const nearestObjects = (
   field: NormalizedBoundingBox,
   objects: StructuralObjectNode[],
@@ -72,7 +89,7 @@ const nearestObjects = (
 ): { objectId: string; distance: number }[] => {
   const fieldRect = toRect(field);
   return objects
-    .map((object) => ({ objectId: object.objectId, distance: rectDistance(fieldRect, object.bbox) }))
+    .map((object) => ({ objectId: object.objectId, distance: rectDistance(fieldRect, object.objectRectNorm) }))
     .sort((a, b) => a.distance - b.distance)
     .slice(0, limit);
 };
@@ -82,8 +99,8 @@ const findContainingObject = (
   objects: StructuralObjectNode[]
 ): StructuralObjectNode | null => {
   const containing = objects
-    .filter((obj) => bboxContainsField(obj.bbox, field))
-    .sort((a, b) => rectArea(a.bbox) - rectArea(b.bbox));
+    .filter((obj) => bboxContainsField(obj.objectRectNorm, field))
+    .sort((a, b) => rectArea(a.objectRectNorm) - rectArea(b.objectRectNorm));
   return containing[0] ?? null;
 };
 
@@ -95,12 +112,12 @@ const relativePositionWithinParent = (
     return null;
   }
 
-  const safeW = Math.max(parent.bbox.wNorm, EPS);
-  const safeH = Math.max(parent.bbox.hNorm, EPS);
+  const safeW = Math.max(parent.objectRectNorm.wNorm, EPS);
+  const safeH = Math.max(parent.objectRectNorm.hNorm, EPS);
 
   return {
-    xRatio: (field.xNorm - parent.bbox.xNorm) / safeW,
-    yRatio: (field.yNorm - parent.bbox.yNorm) / safeH,
+    xRatio: (field.xNorm - parent.objectRectNorm.xNorm) / safeW,
+    yRatio: (field.yNorm - parent.objectRectNorm.yNorm) / safeH,
     widthRatio: field.wNorm / safeW,
     heightRatio: field.hNorm / safeH
   };
@@ -110,6 +127,8 @@ export const buildObjectHierarchy = (rawObjects: RawObjectInput[]): StructuralOb
   const nodes: StructuralObjectNode[] = rawObjects.map((obj) => ({
     objectId: obj.objectId,
     type: obj.type,
+    objectRectNorm: obj.bbox,
+    // Compatibility mirror of machine object rect.
     bbox: obj.bbox,
     parentObjectId: null,
     childObjectIds: [],
@@ -119,8 +138,8 @@ export const buildObjectHierarchy = (rawObjects: RawObjectInput[]): StructuralOb
   for (const node of nodes) {
     const possibleParents = nodes
       .filter((candidate) => candidate.objectId !== node.objectId)
-      .filter((candidate) => rectContains(candidate.bbox, node.bbox, EPS))
-      .sort((a, b) => rectArea(a.bbox) - rectArea(b.bbox));
+      .filter((candidate) => rectContains(candidate.objectRectNorm, node.objectRectNorm, EPS))
+      .sort((a, b) => rectArea(a.objectRectNorm) - rectArea(b.objectRectNorm));
 
     const parent = possibleParents[0] ?? null;
     if (parent) {
@@ -141,6 +160,40 @@ export const buildObjectHierarchy = (rawObjects: RawObjectInput[]): StructuralOb
   return { objects: nodes };
 };
 
+export const buildPageAnchorRelations = (input: {
+  hierarchy: StructuralObjectHierarchy;
+  refinedBorderRect: StructuralNormalizedRect;
+  borderRect: StructuralNormalizedRect;
+}): StructuralPageAnchorRelations => {
+  const objects = input.hierarchy.objects;
+  const objectToObject = objects
+    .flatMap((object) =>
+      object.childObjectIds.map((childObjectId) => {
+        const child = objects.find((candidate) => candidate.objectId === childObjectId);
+        if (!child) {
+          return null;
+        }
+        return {
+          fromObjectId: object.objectId,
+          toObjectId: child.objectId,
+          relativeRect: relativeRect(child.objectRectNorm, object.objectRectNorm)
+        };
+      })
+    )
+    .filter((relation): relation is NonNullable<typeof relation> => relation !== null);
+
+  return {
+    objectToObject,
+    objectToRefinedBorder: objects.map((object) => ({
+      objectId: object.objectId,
+      relativeRect: relativeRect(object.objectRectNorm, input.refinedBorderRect)
+    })),
+    refinedBorderToBorder: {
+      relativeRect: relativeRect(input.refinedBorderRect, input.borderRect)
+    }
+  };
+};
+
 export const buildFieldRelationships = (input: {
   fields: Array<{ fieldId: string; bbox: NormalizedBoundingBox }>;
   borderRect: StructuralNormalizedRect;
@@ -149,14 +202,42 @@ export const buildFieldRelationships = (input: {
 }): StructuralFieldRelationship[] => {
   const objects = input.hierarchy.objects;
   return input.fields.map((field) => {
+    const fieldRect = toRect(field.bbox);
     const parent = findContainingObject(field.bbox, objects);
+    const nearest = nearestObjects(field.bbox, objects);
+
+    const fieldAnchors = {
+      objectAnchors: nearest.map((object, index) => ({
+        rank: (index === 0 ? 'primary' : index === 1 ? 'secondary' : 'tertiary') as
+          | 'primary'
+          | 'secondary'
+          | 'tertiary',
+        objectId: object.objectId,
+        relativeFieldRect: relativeRect(
+          fieldRect,
+          objects.find((candidate) => candidate.objectId === object.objectId)?.objectRectNorm ??
+            input.refinedBorderRect
+        )
+      })),
+      refinedBorderAnchor: {
+        relativeFieldRect: relativeRect(fieldRect, input.refinedBorderRect),
+        distanceToEdge: shortestDistanceToRectEdge(input.refinedBorderRect, field.bbox)
+      },
+      borderAnchor: {
+        relativeFieldRect: relativeRect(fieldRect, input.borderRect),
+        distanceToEdge: shortestDistanceToRectEdge(input.borderRect, field.bbox)
+      }
+    };
+
     return {
       fieldId: field.fieldId,
+      fieldAnchors,
+      // Legacy fields kept for compatibility while consumers migrate.
       containedBy: parent?.objectId ?? null,
-      nearestObjects: nearestObjects(field.bbox, objects),
+      nearestObjects: nearest,
       relativePositionWithinParent: relativePositionWithinParent(field.bbox, parent),
-      distanceToBorder: shortestDistanceToRectEdge(input.borderRect, field.bbox),
-      distanceToRefinedBorder: shortestDistanceToRectEdge(input.refinedBorderRect, field.bbox)
+      distanceToBorder: fieldAnchors.borderAnchor.distanceToEdge,
+      distanceToRefinedBorder: fieldAnchors.refinedBorderAnchor.distanceToEdge
     };
   });
 };
