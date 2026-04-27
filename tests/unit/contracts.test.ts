@@ -159,7 +159,34 @@ describe('isStructuralModel', () => {
               source: 'cv-content',
               influencedByBBoxCount: 0,
               containsAllSavedBBoxes: true
-            }
+            },
+            objectHierarchy: {
+              objects: [
+                {
+                  objectId: 'obj_1',
+                  type: 'container',
+                  bbox: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.8, hNorm: 0.8 },
+                  parentObjectId: null,
+                  childObjectIds: [],
+                  confidence: 0.9
+                }
+              ]
+            },
+            fieldRelationships: [
+              {
+                fieldId: 'f1',
+                containedBy: 'obj_1',
+                nearestObjects: [{ objectId: 'obj_1', distance: 0.1 }],
+                relativePositionWithinParent: {
+                  xRatio: 0.1,
+                  yRatio: 0.1,
+                  widthRatio: 0.2,
+                  heightRatio: 0.2
+                },
+                distanceToBorder: 0.1,
+                distanceToRefinedBorder: 0.05
+              }
+            ]
           }
         ],
         createdAtIso: '2026-01-01T00:00:00Z'
@@ -198,7 +225,9 @@ describe('isStructuralModel', () => {
               source: 'guessing',
               influencedByBBoxCount: 0,
               containsAllSavedBBoxes: true
-            }
+            },
+            objectHierarchy: { objects: [] },
+            fieldRelationships: []
           }
         ],
         createdAtIso: '2026-01-01T00:00:00Z'

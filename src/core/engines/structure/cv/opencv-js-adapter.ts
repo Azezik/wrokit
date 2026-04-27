@@ -1,6 +1,7 @@
 import {
   assertRasterMatchesSurface,
   type CvAdapter,
+  type CvSurfaceObject,
   type CvContentRectResult,
   type CvSurfaceRaster
 } from './cv-adapter';
@@ -57,6 +58,8 @@ interface OpenCvLikeRuntime {
 
 const DEFAULT_BACKGROUND_THRESHOLD = 245;
 const DEFAULT_MIN_SIDE_PX = 4;
+const MIN_OBJECT_AREA_PX = 36;
+const MIN_LINE_LENGTH_PX = 24;
 
 const isLikelyOpenCvRuntime = (value: unknown): value is OpenCvLikeRuntime => {
   return typeof value === 'object' && value !== null && 'Mat' in (value as Record<string, unknown>);
@@ -114,6 +117,236 @@ const computeContentBoundsFromPixels = (
   return { left, top, right: right + 1, bottom: bottom + 1 };
 };
 
+interface PixelBounds {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+const clampRectToSurface = (
+  width: number,
+  height: number,
+  bounds: PixelBounds
+): PixelBounds => ({
+  left: Math.max(0, Math.min(width, bounds.left)),
+  top: Math.max(0, Math.min(height, bounds.top)),
+  right: Math.max(0, Math.min(width, bounds.right)),
+  bottom: Math.max(0, Math.min(height, bounds.bottom))
+});
+
+const boundsToRect = (bounds: PixelBounds) => ({
+  x: bounds.left,
+  y: bounds.top,
+  width: Math.max(0, bounds.right - bounds.left),
+  height: Math.max(0, bounds.bottom - bounds.top)
+});
+
+const detectConnectedBounds = (
+  pixels: ImageData,
+  backgroundThreshold: number
+): PixelBounds[] => {
+  const { width, height, data } = pixels;
+  const visited = new Uint8Array(width * height);
+  const components: PixelBounds[] = [];
+  const queue = new Int32Array(width * height);
+
+  const isForeground = (x: number, y: number): boolean => {
+    const i = (y * width + x) * 4;
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    const a = data[i + 3];
+    return !(
+      a < 8 ||
+      (r >= backgroundThreshold && g >= backgroundThreshold && b >= backgroundThreshold)
+    );
+  };
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const seed = y * width + x;
+      if (visited[seed] === 1 || !isForeground(x, y)) {
+        visited[seed] = 1;
+        continue;
+      }
+
+      let head = 0;
+      let tail = 0;
+      queue[tail++] = seed;
+      visited[seed] = 1;
+
+      let left = x;
+      let right = x;
+      let top = y;
+      let bottom = y;
+      let area = 0;
+
+      while (head < tail) {
+        const idx = queue[head++];
+        const qx = idx % width;
+        const qy = Math.floor(idx / width);
+        area += 1;
+        if (qx < left) left = qx;
+        if (qx > right) right = qx;
+        if (qy < top) top = qy;
+        if (qy > bottom) bottom = qy;
+
+        const neighbors = [
+          [qx - 1, qy],
+          [qx + 1, qy],
+          [qx, qy - 1],
+          [qx, qy + 1]
+        ] as const;
+        for (const [nx, ny] of neighbors) {
+          if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
+            continue;
+          }
+          const nIdx = ny * width + nx;
+          if (visited[nIdx] === 1) {
+            continue;
+          }
+          visited[nIdx] = 1;
+          if (isForeground(nx, ny)) {
+            queue[tail++] = nIdx;
+          }
+        }
+      }
+
+      if (area >= MIN_OBJECT_AREA_PX) {
+        components.push({ left, top, right: right + 1, bottom: bottom + 1 });
+      }
+    }
+  }
+
+  return components;
+};
+
+const buildLineObjects = (pixels: ImageData, backgroundThreshold: number): CvSurfaceObject[] => {
+  const { width, height, data } = pixels;
+  const objects: CvSurfaceObject[] = [];
+  let lineId = 0;
+  const densityCutoff = 0.95;
+
+  for (let y = 0; y < height; y += 1) {
+    let darkCount = 0;
+    for (let x = 0; x < width; x += 1) {
+      const i = (y * width + x) * 4;
+      const isBg =
+        data[i + 3] < 8 ||
+        (data[i] >= backgroundThreshold &&
+          data[i + 1] >= backgroundThreshold &&
+          data[i + 2] >= backgroundThreshold);
+      if (!isBg) darkCount += 1;
+    }
+    if (darkCount >= MIN_LINE_LENGTH_PX && darkCount / width >= densityCutoff) {
+      objects.push({
+        objectId: `obj_hline_${lineId++}`,
+        type: 'line-horizontal',
+        bboxSurface: { x: 0, y, width, height: 1 },
+        confidence: Math.min(1, 0.75 + darkCount / width * 0.25)
+      });
+    }
+  }
+
+  lineId = 0;
+  for (let x = 0; x < width; x += 1) {
+    let darkCount = 0;
+    for (let y = 0; y < height; y += 1) {
+      const i = (y * width + x) * 4;
+      const isBg =
+        data[i + 3] < 8 ||
+        (data[i] >= backgroundThreshold &&
+          data[i + 1] >= backgroundThreshold &&
+          data[i + 2] >= backgroundThreshold);
+      if (!isBg) darkCount += 1;
+    }
+    if (darkCount >= MIN_LINE_LENGTH_PX && darkCount / height >= densityCutoff) {
+      objects.push({
+        objectId: `obj_vline_${lineId++}`,
+        type: 'line-vertical',
+        bboxSurface: { x, y: 0, width: 1, height },
+        confidence: Math.min(1, 0.75 + darkCount / height * 0.25)
+      });
+    }
+  }
+
+  return objects;
+};
+
+const detectSurfaceObjects = (
+  pixels: ImageData,
+  backgroundThreshold: number
+): CvSurfaceObject[] => {
+  const objects: CvSurfaceObject[] = [];
+  const { width, height } = pixels;
+  const components = detectConnectedBounds(pixels, backgroundThreshold);
+  let id = 0;
+
+  for (const component of components) {
+    const bounds = clampRectToSurface(width, height, component);
+    const rect = boundsToRect(bounds);
+    if (rect.width <= 0 || rect.height <= 0) {
+      continue;
+    }
+    const area = rect.width * rect.height;
+    const pageArea = width * height;
+    const isContainer = area / pageArea >= 0.12;
+    const isHorizontalLine = rect.height <= 3 && rect.width >= MIN_LINE_LENGTH_PX;
+    const isVerticalLine = rect.width <= 3 && rect.height >= MIN_LINE_LENGTH_PX;
+    const isTableLike = rect.width >= width * 0.35 && rect.height >= height * 0.15;
+
+    let type: CvSurfaceObject['type'] = 'rectangle';
+    if (isHorizontalLine) {
+      type = 'line-horizontal';
+    } else if (isVerticalLine) {
+      type = 'line-vertical';
+    } else if (isTableLike) {
+      type = 'table-like';
+    } else if (isContainer) {
+      type = 'container';
+    }
+
+    objects.push({
+      objectId: `obj_${id++}`,
+      type,
+      bboxSurface: rect,
+      confidence: Math.min(0.99, 0.62 + Math.min(1, area / pageArea) * 0.38)
+    });
+  }
+
+  const contentBounds = computeContentBoundsFromPixels(pixels, backgroundThreshold);
+  if (contentBounds) {
+    const topBand = Math.max(1, Math.round(height * 0.12));
+    const bottomBand = Math.max(1, Math.round(height * 0.12));
+    objects.push({
+      objectId: `obj_header_${id++}`,
+      type: 'header',
+      bboxSurface: {
+        x: contentBounds.left,
+        y: contentBounds.top,
+        width: Math.max(1, contentBounds.right - contentBounds.left),
+        height: Math.min(topBand, Math.max(1, contentBounds.bottom - contentBounds.top))
+      },
+      confidence: 0.7
+    });
+    objects.push({
+      objectId: `obj_footer_${id++}`,
+      type: 'footer',
+      bboxSurface: {
+        x: contentBounds.left,
+        y: Math.max(contentBounds.top, contentBounds.bottom - bottomBand),
+        width: Math.max(1, contentBounds.right - contentBounds.left),
+        height: Math.min(bottomBand, Math.max(1, contentBounds.bottom - contentBounds.top))
+      },
+      confidence: 0.68
+    });
+  }
+
+  objects.push(...buildLineObjects(pixels, backgroundThreshold));
+  return objects;
+};
+
 export const createOpenCvJsAdapter = (
   options: OpenCvJsAdapterOptions = {}
 ): CvAdapter => {
@@ -143,7 +376,8 @@ export const createOpenCvJsAdapter = (
             y: 0,
             width: surface.surfaceWidth,
             height: surface.surfaceHeight
-          }
+          },
+          objectsSurface: []
         };
       }
 
@@ -157,7 +391,8 @@ export const createOpenCvJsAdapter = (
             y: 0,
             width: surface.surfaceWidth,
             height: surface.surfaceHeight
-          }
+          },
+          objectsSurface: []
         };
       }
 
@@ -167,7 +402,8 @@ export const createOpenCvJsAdapter = (
           y: bounds.top,
           width,
           height
-        }
+        },
+        objectsSurface: detectSurfaceObjects(input.pixels, backgroundThreshold)
       };
     }
   };

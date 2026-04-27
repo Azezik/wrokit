@@ -58,7 +58,9 @@ const createModel = (id: string, xNorm: number, yNorm: number, wNorm: number, hN
         source: 'cv-content',
         influencedByBBoxCount: 0,
         containsAllSavedBBoxes: true
-      }
+      },
+      objectHierarchy: { objects: [] },
+      fieldRelationships: []
     }
   ],
   createdAtIso: '2026-01-01T00:00:00Z'

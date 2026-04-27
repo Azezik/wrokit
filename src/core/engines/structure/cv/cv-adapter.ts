@@ -1,4 +1,5 @@
 import type { PageSurface, PixelRect } from '../../../page-surface/page-surface';
+import type { StructuralObjectType } from '../../../contracts/structural-model';
 
 /**
  * Surface raster handle accepted by every CV adapter. The Structural Engine hands
@@ -27,6 +28,14 @@ export interface CvContentRectResult {
    * adapter cannot find usable content margins.
    */
   contentRectSurface: PixelRect;
+  objectsSurface: CvSurfaceObject[];
+}
+
+export interface CvSurfaceObject {
+  objectId: string;
+  type: StructuralObjectType;
+  bboxSurface: PixelRect;
+  confidence: number;
 }
 
 export interface CvAdapter {

@@ -25,7 +25,20 @@ const validModel: StructuralModel = {
         source: 'cv-content',
         influencedByBBoxCount: 0,
         containsAllSavedBBoxes: true
-      }
+      },
+      objectHierarchy: {
+        objects: [
+          {
+            objectId: 'obj_1',
+            type: 'container',
+            bbox: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.8, hNorm: 0.8 },
+            parentObjectId: null,
+            childObjectIds: [],
+            confidence: 0.92
+          }
+        ]
+      },
+      fieldRelationships: []
     }
   ],
   createdAtIso: '2026-04-26T00:00:00Z'

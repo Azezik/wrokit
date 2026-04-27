@@ -2,8 +2,10 @@ import type { GeometryFile, NormalizedBoundingBox } from '../../contracts/geomet
 import type { NormalizedPage } from '../../contracts/normalized-page';
 import type {
   StructuralBorder,
+  StructuralFieldRelationship,
   StructuralModel,
   StructuralNormalizedRect,
+  StructuralObjectType,
   StructuralPage,
   StructuralRefinedBorder,
   StructuralRefinedBorderSource
@@ -17,6 +19,7 @@ import {
 
 import type { CvAdapter, CvSurfaceRaster } from './cv/cv-adapter';
 import { loadPageSurfaceRaster, type PageRasterLoaderEnv } from './page-raster-loader';
+import { buildFieldRelationships, buildObjectHierarchy } from './object-hierarchy';
 import type { StructuralEngine, StructuralEngineInput } from './types';
 
 const STRUCTURE_VERSION = 'wrokit/structure/v1' as const;
@@ -117,6 +120,20 @@ const collectGeometryForPage = (
     .map((field) => field.bbox);
 };
 
+const collectGeometryFieldsForPage = (
+  geometry: GeometryFile | null | undefined,
+  pageIndex: number
+): Array<{ fieldId: string; bbox: NormalizedBoundingBox }> => {
+  if (!geometry) {
+    return [];
+  }
+  return geometry.fields
+    .filter((field) => field.pageIndex === pageIndex)
+    .map((field) => ({ fieldId: field.fieldId, bbox: field.bbox }));
+};
+
+const toCanonicalObjectType = (type: StructuralObjectType): StructuralObjectType => type;
+
 interface BuildRefinedBorderInput {
   surface: PageSurface;
   cvContentSurfaceRect: PixelRect;
@@ -201,11 +218,28 @@ export const createStructuralEngine = (
     const cvResult = await options.cvAdapter.detectContentRect(rasterInput);
 
     const bboxes = collectGeometryForPage(geometry, page.pageIndex);
+    const geometryFields = collectGeometryFieldsForPage(geometry, page.pageIndex);
 
     const refinedBorder = buildRefinedBorder({
       surface,
       cvContentSurfaceRect: cvResult.contentRectSurface,
       bboxes
+    });
+
+    const hierarchy = buildObjectHierarchy(
+      cvResult.objectsSurface.map((object) => ({
+        objectId: object.objectId,
+        type: toCanonicalObjectType(object.type),
+        bbox: surfaceRectToStructuralNorm(surface, object.bboxSurface),
+        confidence: object.confidence
+      }))
+    );
+
+    const fieldRelationships: StructuralFieldRelationship[] = buildFieldRelationships({
+      fields: geometryFields,
+      borderRect: FULL_PAGE_RECT,
+      refinedBorderRect: refinedBorder.rectNorm,
+      hierarchy
     });
 
     return {
@@ -216,7 +250,9 @@ export const createStructuralEngine = (
         surfaceHeight: surface.surfaceHeight
       },
       border: buildBorder(),
-      refinedBorder
+      refinedBorder,
+      objectHierarchy: hierarchy,
+      fieldRelationships
     };
   };
 
