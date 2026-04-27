@@ -4,7 +4,7 @@
  * Schema authority rules:
  * - All rects on a structural page are normalized [0, 1] over the same NormalizedPage
  *   surface authority used by Geometry. There is no separate structural pixel space.
- * - StructuralModel is interpretation only. Human-confirmed BBOX geometry remains
+ * - StructuralModel is interpretation only. Human-confirmed Field BBOX geometry remains
  *   authoritative; the structural model never overrides, shrinks, or relocates it.
  * - StructuralModel is persisted separately from GeometryFile.
  *
@@ -43,13 +43,13 @@ export type StructuralRefinedBorderSource =
 export interface StructuralRefinedBorder {
   /**
    * The main useful content area, expressed in normalized coordinates over the
-   * NormalizedPage surface. Must contain every saved BBOX on the page when any
+   * NormalizedPage surface. Must contain every saved Field BBOX on the page when any
    * exist. When uncertain, the Structural Engine expands rather than crops.
    */
   rectNorm: StructuralNormalizedRect;
   source: StructuralRefinedBorderSource;
   /**
-   * Number of saved BBOXes on this page that influenced the refined border. Zero
+   * Number of saved Field BBOXes on this page that influenced the refined border. Zero
    * means the refined border is purely visual/CV-derived.
    */
   influencedByBBoxCount: number;
@@ -67,6 +67,7 @@ export interface StructuralPage {
   border: StructuralBorder;
   refinedBorder: StructuralRefinedBorder;
   objectHierarchy: StructuralObjectHierarchy;
+  pageAnchorRelations: StructuralPageAnchorRelations;
   fieldRelationships: StructuralFieldRelationship[];
 }
 
@@ -84,6 +85,13 @@ export type StructuralObjectType =
 export interface StructuralObjectNode {
   objectId: string;
   type: StructuralObjectType;
+  /**
+   * Machine-detected structural object rect, normalized over the page surface.
+   */
+  objectRectNorm: StructuralNormalizedRect;
+  /**
+   * @deprecated Temporary compatibility alias. Prefer `objectRectNorm`.
+   */
   bbox: StructuralNormalizedRect;
   parentObjectId: string | null;
   childObjectIds: string[];
@@ -99,20 +107,89 @@ export interface StructuralFieldNearestObject {
   distance: number;
 }
 
+/**
+ * Canonical relative anchor geometry using normalized x/y/w/h ratios.
+ */
+export interface StructuralRelativeAnchorRect {
+  xRatio: number;
+  yRatio: number;
+  wRatio: number;
+  hRatio: number;
+}
+
+export type StructuralFieldObjectAnchorRank = 'primary' | 'secondary' | 'tertiary';
+
+export interface StructuralFieldObjectAnchor {
+  rank: StructuralFieldObjectAnchorRank;
+  objectId: string;
+  relativeFieldRect: StructuralRelativeAnchorRect;
+}
+
+export interface StructuralFieldBorderAnchor {
+  relativeFieldRect: StructuralRelativeAnchorRect;
+  distanceToEdge: number;
+}
+
+export interface StructuralFieldAnchors {
+  objectAnchors: StructuralFieldObjectAnchor[];
+  refinedBorderAnchor: StructuralFieldBorderAnchor;
+  borderAnchor: StructuralFieldBorderAnchor;
+}
+
+export interface StructuralObjectToObjectAnchorRelation {
+  fromObjectId: string;
+  toObjectId: string;
+  relativeRect: StructuralRelativeAnchorRect;
+}
+
+export interface StructuralObjectToRefinedBorderAnchorRelation {
+  objectId: string;
+  relativeRect: StructuralRelativeAnchorRect;
+}
+
+export interface StructuralRefinedBorderToBorderAnchorRelation {
+  relativeRect: StructuralRelativeAnchorRect;
+}
+
+export interface StructuralPageAnchorRelations {
+  objectToObject: StructuralObjectToObjectAnchorRelation[];
+  objectToRefinedBorder: StructuralObjectToRefinedBorderAnchorRelation[];
+  refinedBorderToBorder: StructuralRefinedBorderToBorderAnchorRelation;
+}
+
+export interface StructuralFieldRelationship {
+  fieldId: string;
+  fieldAnchors: StructuralFieldAnchors;
+  /**
+   * @deprecated Temporary compatibility fields. Prefer `fieldAnchors`.
+   */
+  containedBy: string | null;
+  /**
+   * @deprecated Temporary compatibility fields. Prefer `fieldAnchors.objectAnchors`.
+   */
+  nearestObjects: StructuralFieldNearestObject[];
+  /**
+   * @deprecated Temporary compatibility fields. Prefer `fieldAnchors.objectAnchors[0].relativeFieldRect`.
+   */
+  relativePositionWithinParent: StructuralFieldRelativePosition | null;
+  /**
+   * @deprecated Temporary compatibility fields. Prefer `fieldAnchors.borderAnchor.distanceToEdge`.
+   */
+  distanceToBorder: number;
+  /**
+   * @deprecated Temporary compatibility fields. Prefer `fieldAnchors.refinedBorderAnchor.distanceToEdge`.
+   */
+  distanceToRefinedBorder: number;
+}
+
+/**
+ * @deprecated Temporary compatibility alias. Prefer `StructuralRelativeAnchorRect`.
+ */
 export interface StructuralFieldRelativePosition {
   xRatio: number;
   yRatio: number;
   widthRatio: number;
   heightRatio: number;
-}
-
-export interface StructuralFieldRelationship {
-  fieldId: string;
-  containedBy: string | null;
-  nearestObjects: StructuralFieldNearestObject[];
-  relativePositionWithinParent: StructuralFieldRelativePosition | null;
-  distanceToBorder: number;
-  distanceToRefinedBorder: number;
 }
 
 export interface StructuralCvAdapterRef {
@@ -122,8 +199,8 @@ export interface StructuralCvAdapterRef {
 
 export interface StructuralModel {
   schema: 'wrokit/structural-model';
-  version: '2.0';
-  structureVersion: 'wrokit/structure/v1';
+  version: '3.0';
+  structureVersion: 'wrokit/structure/v2';
   id: string;
   documentFingerprint: string;
   cvAdapter: StructuralCvAdapterRef;
@@ -187,21 +264,6 @@ const isStructuralRefinedBorder = (value: unknown): value is StructuralRefinedBo
   );
 };
 
-const isStructuralPage = (value: unknown): value is StructuralPage => {
-  if (!isRecord(value)) {
-    return false;
-  }
-  return (
-    isFiniteNumber(value.pageIndex) &&
-    isStructuralPageSurfaceRef(value.pageSurface) &&
-    isStructuralBorder(value.border) &&
-    isStructuralRefinedBorder(value.refinedBorder) &&
-    isStructuralObjectHierarchy(value.objectHierarchy) &&
-    Array.isArray(value.fieldRelationships) &&
-    value.fieldRelationships.every(isStructuralFieldRelationship)
-  );
-};
-
 const isStructuralObjectType = (value: unknown): value is StructuralObjectType =>
   value === 'rectangle' ||
   value === 'container' ||
@@ -217,10 +279,16 @@ const isStructuralObjectNode = (value: unknown): value is StructuralObjectNode =
   if (!isRecord(value)) {
     return false;
   }
+
+  const objectRectNorm = value.objectRectNorm;
+  const bbox = value.bbox;
+  if (!isStructuralNormalizedRect(objectRectNorm) || !isStructuralNormalizedRect(bbox)) {
+    return false;
+  }
+
   return (
     typeof value.objectId === 'string' &&
     isStructuralObjectType(value.type) &&
-    isStructuralNormalizedRect(value.bbox) &&
     (value.parentObjectId === null || typeof value.parentObjectId === 'string') &&
     Array.isArray(value.childObjectIds) &&
     value.childObjectIds.every((id) => typeof id === 'string') &&
@@ -233,6 +301,112 @@ const isStructuralObjectHierarchy = (value: unknown): value is StructuralObjectH
     return false;
   }
   return Array.isArray(value.objects) && value.objects.every(isStructuralObjectNode);
+};
+
+const isStructuralRelativeAnchorRect = (value: unknown): value is StructuralRelativeAnchorRect => {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    isFiniteNumber(value.xRatio) &&
+    isFiniteNumber(value.yRatio) &&
+    isFiniteNumber(value.wRatio) &&
+    isFiniteNumber(value.hRatio)
+  );
+};
+
+const isStructuralFieldObjectAnchorRank = (value: unknown): value is StructuralFieldObjectAnchorRank =>
+  value === 'primary' || value === 'secondary' || value === 'tertiary';
+
+const isStructuralFieldObjectAnchor = (value: unknown): value is StructuralFieldObjectAnchor => {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    isStructuralFieldObjectAnchorRank(value.rank) &&
+    typeof value.objectId === 'string' &&
+    isStructuralRelativeAnchorRect(value.relativeFieldRect)
+  );
+};
+
+const isStructuralFieldBorderAnchor = (value: unknown): value is StructuralFieldBorderAnchor => {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    isStructuralRelativeAnchorRect(value.relativeFieldRect) && isFiniteNumber(value.distanceToEdge)
+  );
+};
+
+const isStructuralFieldAnchors = (value: unknown): value is StructuralFieldAnchors => {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  if (
+    !Array.isArray(value.objectAnchors) ||
+    value.objectAnchors.length === 0 ||
+    value.objectAnchors.length > 3 ||
+    !value.objectAnchors.every(isStructuralFieldObjectAnchor)
+  ) {
+    return false;
+  }
+
+  const expectedRanks: StructuralFieldObjectAnchorRank[] = ['primary', 'secondary', 'tertiary'];
+  for (let i = 0; i < value.objectAnchors.length; i += 1) {
+    if (value.objectAnchors[i].rank !== expectedRanks[i]) {
+      return false;
+    }
+  }
+
+  return (
+    isStructuralFieldBorderAnchor(value.refinedBorderAnchor) &&
+    isStructuralFieldBorderAnchor(value.borderAnchor)
+  );
+};
+
+const isStructuralObjectToObjectAnchorRelation = (
+  value: unknown
+): value is StructuralObjectToObjectAnchorRelation => {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    typeof value.fromObjectId === 'string' &&
+    typeof value.toObjectId === 'string' &&
+    isStructuralRelativeAnchorRect(value.relativeRect)
+  );
+};
+
+const isStructuralObjectToRefinedBorderAnchorRelation = (
+  value: unknown
+): value is StructuralObjectToRefinedBorderAnchorRelation => {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return typeof value.objectId === 'string' && isStructuralRelativeAnchorRect(value.relativeRect);
+};
+
+const isStructuralRefinedBorderToBorderAnchorRelation = (
+  value: unknown
+): value is StructuralRefinedBorderToBorderAnchorRelation => {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return isStructuralRelativeAnchorRect(value.relativeRect);
+};
+
+const isStructuralPageAnchorRelations = (value: unknown): value is StructuralPageAnchorRelations => {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    Array.isArray(value.objectToObject) &&
+    value.objectToObject.every(isStructuralObjectToObjectAnchorRelation) &&
+    Array.isArray(value.objectToRefinedBorder) &&
+    value.objectToRefinedBorder.every(isStructuralObjectToRefinedBorderAnchorRelation) &&
+    isStructuralRefinedBorderToBorderAnchorRelation(value.refinedBorderToBorder)
+  );
 };
 
 const isStructuralFieldNearestObject = (value: unknown): value is StructuralFieldNearestObject => {
@@ -260,15 +434,37 @@ const isStructuralFieldRelationship = (value: unknown): value is StructuralField
   if (!isRecord(value)) {
     return false;
   }
-  return (
-    typeof value.fieldId === 'string' &&
+
+  const hasLegacyShape =
     (value.containedBy === null || typeof value.containedBy === 'string') &&
     Array.isArray(value.nearestObjects) &&
     value.nearestObjects.every(isStructuralFieldNearestObject) &&
     (value.relativePositionWithinParent === null ||
       isStructuralFieldRelativePosition(value.relativePositionWithinParent)) &&
     isFiniteNumber(value.distanceToBorder) &&
-    isFiniteNumber(value.distanceToRefinedBorder)
+    isFiniteNumber(value.distanceToRefinedBorder);
+
+  return (
+    typeof value.fieldId === 'string' &&
+    isStructuralFieldAnchors(value.fieldAnchors) &&
+    // Legacy properties are retained temporarily and still required for compatibility.
+    hasLegacyShape
+  );
+};
+
+const isStructuralPage = (value: unknown): value is StructuralPage => {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    isFiniteNumber(value.pageIndex) &&
+    isStructuralPageSurfaceRef(value.pageSurface) &&
+    isStructuralBorder(value.border) &&
+    isStructuralRefinedBorder(value.refinedBorder) &&
+    isStructuralObjectHierarchy(value.objectHierarchy) &&
+    isStructuralPageAnchorRelations(value.pageAnchorRelations) &&
+    Array.isArray(value.fieldRelationships) &&
+    value.fieldRelationships.every(isStructuralFieldRelationship)
   );
 };
 
@@ -286,8 +482,8 @@ export const isStructuralModel = (value: unknown): value is StructuralModel => {
 
   if (
     value.schema !== 'wrokit/structural-model' ||
-    value.version !== '2.0' ||
-    value.structureVersion !== 'wrokit/structure/v1' ||
+    value.version !== '3.0' ||
+    value.structureVersion !== 'wrokit/structure/v2' ||
     typeof value.id !== 'string' ||
     typeof value.documentFingerprint !== 'string' ||
     typeof value.createdAtIso !== 'string' ||
