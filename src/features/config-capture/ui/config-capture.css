@@ -148,9 +148,15 @@
 
 .config-capture__structural-object {
   position: absolute;
-  border: 1px solid rgb(14 116 144 / 0.9);
-  background: rgb(14 116 144 / 0.08);
+  border: 1px solid rgb(14 116 144 / 0.75);
+  background: transparent;
   pointer-events: none;
+}
+
+.config-capture__structural-object[data-object-type='line-horizontal'],
+.config-capture__structural-object[data-object-type='line-vertical'] {
+  border-color: rgb(8 145 178 / 0.35);
+  background: transparent;
 }
 
 .config-capture__structural-object-label {
