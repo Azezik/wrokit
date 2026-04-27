@@ -198,6 +198,24 @@ export function ConfigCapture() {
     if (!surfaceTransform || !activeStructuralPage) {
       return null;
     }
+    const objectById = new Map(
+      activeStructuralPage.objectHierarchy.objects.map((object) => [object.objectId, object])
+    );
+    const buildContainmentChainText = (objectId: string): string => {
+      const chain: string[] = [];
+      const visited = new Set<string>();
+      let current = objectById.get(objectId) ?? null;
+      while (current) {
+        if (visited.has(current.objectId)) {
+          chain.push('[cycle]');
+          break;
+        }
+        visited.add(current.objectId);
+        chain.unshift(current.objectId);
+        current = current.parentObjectId ? objectById.get(current.parentObjectId) ?? null : null;
+      }
+      return chain.join(' > ');
+    };
     return {
       border: normalizedRectToScreen(surfaceTransform, activeStructuralPage.border.rectNorm),
       refinedBorder: normalizedRectToScreen(
@@ -207,6 +225,9 @@ export function ConfigCapture() {
       objects: activeStructuralPage.objectHierarchy.objects.map((object) => ({
         objectId: object.objectId,
         type: object.type,
+        parentObjectId: object.parentObjectId,
+        confidence: object.confidence,
+        containmentChainText: buildContainmentChainText(object.objectId),
         rect: normalizedRectToScreen(surfaceTransform, object.bbox)
       })),
       source: activeStructuralPage.refinedBorder.source,
@@ -558,7 +579,11 @@ export function ConfigCapture() {
                     }}
                   >
                     <span className="config-capture__structural-object-label">
-                      {object.type} · {object.objectId}
+                      {object.type} · {object.objectId} · parent:{' '}
+                      {object.parentObjectId ?? 'root'} · conf: {object.confidence.toFixed(2)}
+                    </span>
+                    <span className="config-capture__structural-object-chain">
+                      chain: {object.containmentChainText}
                     </span>
                   </div>
                 ))}
