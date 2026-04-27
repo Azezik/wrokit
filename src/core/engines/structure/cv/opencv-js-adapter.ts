@@ -60,6 +60,13 @@ const DEFAULT_BACKGROUND_THRESHOLD = 245;
 const DEFAULT_MIN_SIDE_PX = 4;
 const MIN_OBJECT_AREA_PX = 36;
 const MIN_LINE_LENGTH_PX = 24;
+// A real horizontal/vertical rule is a *thin* contiguous run of high-density
+// rows/cols. Thicker runs are dense regions already captured by the connected-
+// components detector — emitting them again as "lines" produces thousands of
+// overlapping per-row objects (overlay overwhelm + hierarchy noise).
+const MAX_LINE_THICKNESS_PX = 4;
+// Hard safety cap so no pathological raster can emit thousands of line nodes.
+const MAX_LINE_OBJECTS_PER_AXIS = 64;
 
 const isLikelyOpenCvRuntime = (value: unknown): value is OpenCvLikeRuntime => {
   return typeof value === 'object' && value !== null && 'Mat' in (value as Record<string, unknown>);
@@ -224,54 +231,101 @@ const detectConnectedBounds = (
 
 const buildLineObjects = (pixels: ImageData, backgroundThreshold: number): CvSurfaceObject[] => {
   const { width, height, data } = pixels;
-  const objects: CvSurfaceObject[] = [];
-  let lineId = 0;
   const densityCutoff = 0.95;
 
+  const isBgAt = (i: number): boolean =>
+    data[i + 3] < 8 ||
+    (data[i] >= backgroundThreshold &&
+      data[i + 1] >= backgroundThreshold &&
+      data[i + 2] >= backgroundThreshold);
+
+  const rowForeground = new Uint32Array(height);
   for (let y = 0; y < height; y += 1) {
-    let darkCount = 0;
+    let count = 0;
+    const rowBase = y * width * 4;
     for (let x = 0; x < width; x += 1) {
-      const i = (y * width + x) * 4;
-      const isBg =
-        data[i + 3] < 8 ||
-        (data[i] >= backgroundThreshold &&
-          data[i + 1] >= backgroundThreshold &&
-          data[i + 2] >= backgroundThreshold);
-      if (!isBg) darkCount += 1;
+      if (!isBgAt(rowBase + x * 4)) count += 1;
     }
-    if (darkCount >= MIN_LINE_LENGTH_PX && darkCount / width >= densityCutoff) {
-      objects.push({
-        objectId: `obj_hline_${lineId++}`,
-        type: 'line-horizontal',
-        bboxSurface: { x: 0, y, width, height: 1 },
-        confidence: Math.min(1, 0.75 + darkCount / width * 0.25)
-      });
-    }
+    rowForeground[y] = count;
   }
 
-  lineId = 0;
+  const colForeground = new Uint32Array(width);
   for (let x = 0; x < width; x += 1) {
-    let darkCount = 0;
+    let count = 0;
     for (let y = 0; y < height; y += 1) {
-      const i = (y * width + x) * 4;
-      const isBg =
-        data[i + 3] < 8 ||
-        (data[i] >= backgroundThreshold &&
-          data[i + 1] >= backgroundThreshold &&
-          data[i + 2] >= backgroundThreshold);
-      if (!isBg) darkCount += 1;
+      if (!isBgAt((y * width + x) * 4)) count += 1;
     }
-    if (darkCount >= MIN_LINE_LENGTH_PX && darkCount / height >= densityCutoff) {
-      objects.push({
-        objectId: `obj_vline_${lineId++}`,
-        type: 'line-vertical',
-        bboxSurface: { x, y: 0, width: 1, height },
-        confidence: Math.min(1, 0.75 + darkCount / height * 0.25)
-      });
+    colForeground[x] = count;
+  }
+
+  const horizontals: CvSurfaceObject[] = [];
+  const verticals: CvSurfaceObject[] = [];
+
+  // Merge consecutive high-density rows into a single horizontal-line object.
+  // Only emit when the resulting run is thin (a real rule). Thicker runs are
+  // dense regions and are already covered by detectConnectedBounds — emitting
+  // them here would re-spawn the per-row overlay overwhelm.
+  let runStart = -1;
+  let runMaxCount = 0;
+  let hLineId = 0;
+  for (let y = 0; y <= height; y += 1) {
+    const isHigh =
+      y < height &&
+      rowForeground[y] >= MIN_LINE_LENGTH_PX &&
+      rowForeground[y] / width >= densityCutoff;
+    if (isHigh) {
+      if (runStart < 0) {
+        runStart = y;
+        runMaxCount = rowForeground[y];
+      } else if (rowForeground[y] > runMaxCount) {
+        runMaxCount = rowForeground[y];
+      }
+    } else if (runStart >= 0) {
+      const thickness = y - runStart;
+      if (thickness <= MAX_LINE_THICKNESS_PX && horizontals.length < MAX_LINE_OBJECTS_PER_AXIS) {
+        horizontals.push({
+          objectId: `obj_hline_${hLineId++}`,
+          type: 'line-horizontal',
+          bboxSurface: { x: 0, y: runStart, width, height: thickness },
+          confidence: Math.min(1, 0.75 + (runMaxCount / width) * 0.25)
+        });
+      }
+      runStart = -1;
+      runMaxCount = 0;
     }
   }
 
-  return objects;
+  runStart = -1;
+  runMaxCount = 0;
+  let vLineId = 0;
+  for (let x = 0; x <= width; x += 1) {
+    const isHigh =
+      x < width &&
+      colForeground[x] >= MIN_LINE_LENGTH_PX &&
+      colForeground[x] / height >= densityCutoff;
+    if (isHigh) {
+      if (runStart < 0) {
+        runStart = x;
+        runMaxCount = colForeground[x];
+      } else if (colForeground[x] > runMaxCount) {
+        runMaxCount = colForeground[x];
+      }
+    } else if (runStart >= 0) {
+      const thickness = x - runStart;
+      if (thickness <= MAX_LINE_THICKNESS_PX && verticals.length < MAX_LINE_OBJECTS_PER_AXIS) {
+        verticals.push({
+          objectId: `obj_vline_${vLineId++}`,
+          type: 'line-vertical',
+          bboxSurface: { x: runStart, y: 0, width: thickness, height },
+          confidence: Math.min(1, 0.75 + (runMaxCount / height) * 0.25)
+        });
+      }
+      runStart = -1;
+      runMaxCount = 0;
+    }
+  }
+
+  return [...horizontals, ...verticals];
 };
 
 const detectSurfaceObjects = (

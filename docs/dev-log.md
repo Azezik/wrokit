@@ -1,3 +1,44 @@
+## 2026-04-27 — Phase 1 fix: Config Capture structural overlay overwhelm
+
+### Why this step
+- Config Capture's "Show Structural Debug Overlay" was producing a near-solid teal/blue blanket over the document preview — even after a prior CSS-only patch made object overlays `background: transparent` with thin borders.
+- Visible labels in the field-report screenshot (e.g. `obj_vline_2939`, `obj_hline_1896`) revealed that thousands of single-pixel "line" objects were being emitted per page, fusing into a solid mass through accumulated 75%-opacity teal borders.
+
+### Root cause
+- `buildLineObjects` in `src/core/engines/structure/cv/opencv-js-adapter.ts` emitted **one `line-horizontal` object per row** and **one `line-vertical` object per column** whose foreground-pixel density exceeded `0.95`, with no merging of adjacent rows/cols.
+- For documents whose foreground is not near-white (teal/blue UI mockups, dark page backgrounds, screenshots, heavy ink), most rows and most columns pass that threshold. Each emitted row/col was a full-span 1-px-thin `<div>` carrying a 1-px teal border on every side. ~5000 such overlapping divs visually fuse into a solid teal overlay even though each div has `background: transparent` — the earlier CSS patch addressed fill but not border-bloat.
+- It was also a structural-correctness bug: a "line at row 5" and a "line at row 6" are not two separate lines — they're one line of thickness 2. The hierarchy and `fieldRelationships` were polluted with thousands of duplicate single-row "lines", harming downstream localization.
+
+### Fix
+- `buildLineObjects` rewritten to compute per-row and per-col foreground counts once, then merge consecutive high-density rows/cols into runs and emit **one** line object per run.
+- Only emit a line when the run is thin (`thickness <= MAX_LINE_THICKNESS_PX = 4`) — thick runs are dense regions and are already covered by `detectConnectedBounds`.
+- Added a hard safety cap (`MAX_LINE_OBJECTS_PER_AXIS = 64`) so no pathological raster can ever re-spawn the overwhelm.
+- Result: a fully-dark or fully-teal page emits zero spam line objects (the dense region falls through to connected-components classification). A document with two real horizontal rules produces two horizontal-line objects, not thousands.
+
+### Boundaries preserved
+- No change to the `CvAdapter` contract, no change to `StructuralModel` contract, no change to `page-surface` authority, no OpenCV.js leakage outside the adapter.
+- No new product features. No UI behavior changes beyond the overlay no longer overwhelming the document.
+- The CSS overlay path is unchanged — the root cause was object-count, not styling.
+
+### Files modified
+- `src/core/engines/structure/cv/opencv-js-adapter.ts`
+- `tests/unit/cv-opencv-js-adapter.test.ts`
+- `docs/dev-log.md`
+
+### Tests added
+- `merges adjacent dense rows/cols into single line objects (no per-row spam)` — confirms two thin horizontal rules and one thin vertical rule produce exactly 2 + 1 line objects with the expected merged bboxes.
+- `does not emit line objects for dense regions (those belong to connected components)` — confirms a fully-dark raster produces zero line objects (the ink-heavy regression case).
+
+### Checks run
+- `npm run check` — clean.
+- `npm test` — 53/53 passing (51 prior + 2 new).
+- `npm run build` — clean.
+
+### Remaining risks / next checkpoint
+- Awaiting user confirmation on the visual fix in the running app before proceeding to the broader Phase 2 architectural-cleanup pass described in the issue (GeometryFile vs StructuralModel separation, fieldRelationships meaningful for Run Mode, parallel-coordinate-system audit, etc.).
+
+---
+
 ## 2026-04-27 — Step: Structural Object Hierarchy layer in Structural Engine
 
 ### Why this step
