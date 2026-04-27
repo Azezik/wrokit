@@ -1,3 +1,49 @@
+## 2026-04-26 — Step: Run Mode upload status visibility + runtime structural overlay parity
+
+### Why this step
+- Run Mode uploads were functionally parsed/loaded, but status feedback was too implicit and errors were collapsed into one generic message area.
+- Run Mode already computed runtime structure through `structural-runner`, but the viewport only displayed predicted BBOX overlays, making structural parity with Config Capture difficult to visually prove.
+- Goal: make all Run Mode intake inputs explicit, prove runtime structural compute parity, and show border/refined-border overlays on the same normalized page transform authority.
+
+### What changed
+- **Run Mode status authority** (`src/features/run-mode/ui/RunMode.tsx`):
+  - Added explicit per-input status + metadata:
+    - WizardFile loaded/not loaded (+ wizard name),
+    - GeometryFile loaded/not loaded (+ field count),
+    - Config StructuralModel loaded/not loaded (+ page count),
+    - Runtime document normalized/not normalized (+ runtime page count),
+    - Selected runtime page,
+    - Runtime structure computed/not computed (+ CV adapter provenance when available).
+  - Added per-input parse/validation error surfaces (`wizardError`, `geometryError`, `configStructuralError`, `runtimeNormalizationError`) plus a separate run-execution error (`runError`) so failures do not overwrite each other.
+- **Runtime structural parity overlays** (`src/features/run-mode/ui/RunMode.tsx`, `src/features/run-mode/ui/run-mode.css`):
+  - Added **Show Runtime Structural Debug Overlay** toggle.
+  - Added runtime structural state capture (`runtimeStructuralModel`) from `structuralRunner.compute(...)`.
+  - Added visual overlays for runtime Border and runtime Refined Border (including refined-border source label).
+  - Overlay now shows runtime Border + runtime Refined Border + predicted BBOXes together when the debug toggle is enabled.
+  - Added Runtime StructuralModel JSON preview panel so runtime structural output is inspectable directly in Run Mode.
+- **Transform/surface authority preserved**:
+  - Runtime overlay rendering is done with the same `page-surface` transform chain used by Config Capture:
+    - `getPageSurface(selectedPage)`,
+    - `buildSurfaceTransform(surface, displayRect)`,
+    - `normalizedRectToScreen(transform, rectNorm)`.
+  - No runtime-only coordinate system was introduced.
+
+### Parity audit outcome
+- Run Mode was **already** recomputing runtime structure via the shared `createStructuralRunner().compute(...)` path (same authority used by Config Capture).
+- This change does **not** introduce any duplicate runtime-only structural computation logic.
+- OpenCV/CV detection remains executed by the shared structural engine stack through `structural-runner` on runtime `NormalizedPage` input.
+
+### Files modified
+- `src/features/run-mode/ui/RunMode.tsx`
+- `src/features/run-mode/ui/run-mode.css`
+- `docs/architecture.md`
+- `docs/dev-log.md`
+
+### Checks run
+- `npm run check` (`tsc --noEmit`): passed.
+- `npm test` (vitest): passed.
+- `npm run build` (`tsc -b && vite build`): passed.
+
 ## 2026-04-26 — Step: Structural Engine v1 (Border + Refined Border)
 
 ### Why this step

@@ -155,8 +155,11 @@ Not yet implemented:
 ## Run Mode (Basic Transform Matching)
 - Run Mode UI lives in `src/features/run-mode/ui/RunMode.tsx` and is mounted via `src/app/pages/RunModePage.tsx`.
 - Inputs: WizardFile, GeometryFile, Config StructuralModel, runtime document upload. Runtime upload always flows through the normalization engine (`NormalizedPage[]` authority preserved).
-- Runtime structure is computed by reusing `structural-runner`; no border/refined-border logic is duplicated in UI.
+- Run Mode now publishes explicit input/status confirmations for each authority artifact: WizardFile loaded/not loaded (wizard name), GeometryFile loaded/not loaded (field count), Config StructuralModel loaded/not loaded (page count), runtime normalized/not normalized (runtime page count + selected page), and parse/validation errors per input.
+- Runtime structure is computed by reusing `structural-runner` (same composition path used by Config Capture); no border/refined-border logic is duplicated in UI.
 - Structural comparison basis: config `refinedBorder.rectNorm` vs runtime `refinedBorder.rectNorm` per page.
 - Transform solve: `scaleX = runtime.w/config.w`, `scaleY = runtime.h/config.h`, `translateX = runtime.x - config.x*scaleX`, `translateY = runtime.y - config.y*scaleY`.
 - Transform apply: each saved GeometryFile normalized bbox is transformed in normalized space and clamped to `[0,1]`, then rendered as predicted overlay and emitted in a predicted-geometry JSON artifact with transform metadata.
+- Run Mode includes a **Show Runtime Structural Debug Overlay** toggle that displays runtime Border, runtime Refined Border, and predicted BBOX overlays together on the runtime normalized page surface.
+- Runtime Border, runtime Refined Border, and predicted BBOX overlays all render through the same `page-surface` transform path (`getPageSurface` → `buildSurfaceTransform` → `normalizedRectToScreen`) used in Config Capture, so overlay parity is explicit and single-authority.
 - Ground truth remains primary: Run Mode does not discover fields or reinterpret meaning; it relocates existing field geometry by `fieldId`/`pageIndex`.
