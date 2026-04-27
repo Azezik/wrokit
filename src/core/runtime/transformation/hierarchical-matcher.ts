@@ -16,20 +16,17 @@
  */
 
 import type {
-  StructuralNormalizedRect,
   StructuralObjectNode,
   StructuralPage
 } from '../../contracts/structural-model';
-import type {
-  TransformationAffine,
-  TransformationObjectMatch
-} from '../../contracts/transformation-model';
+import type { TransformationObjectMatch } from '../../contracts/transformation-model';
 import {
   computeObjectSimilarity,
   DEFAULT_SIMILARITY_WEIGHTS,
   type SimilarityContext,
   type SimilarityWeights
 } from './similarity';
+import { affineFromRects } from './transform-math';
 
 export interface MatcherOptions {
   /**
@@ -57,20 +54,6 @@ export interface PageMatchResult {
   notes: string[];
   warnings: string[];
 }
-
-const affineFromRects = (
-  config: StructuralNormalizedRect,
-  runtime: StructuralNormalizedRect
-): TransformationAffine => {
-  const scaleX = config.wNorm > 1e-9 ? runtime.wNorm / config.wNorm : 1;
-  const scaleY = config.hNorm > 1e-9 ? runtime.hNorm / config.hNorm : 1;
-  return {
-    scaleX,
-    scaleY,
-    translateX: runtime.xNorm - config.xNorm * scaleX,
-    translateY: runtime.yNorm - config.yNorm * scaleY
-  };
-};
 
 interface CandidatePair {
   configId: string;

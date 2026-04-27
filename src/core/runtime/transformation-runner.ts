@@ -1,9 +1,18 @@
 import type { StructuralModel, StructuralPage } from '../contracts/structural-model';
 import {
   createEmptyTransformationModel,
+  type TransformationLevelSummary,
   type TransformationModel,
   type TransformationPage
 } from '../contracts/transformation-model';
+import {
+  computeBorderLevelSummary,
+  computeConsensus,
+  computeObjectLevelSummary,
+  computeParentChainLevelSummary,
+  computeRefinedBorderLevelSummary,
+  type ConsensusOptions
+} from './transformation/consensus';
 import { matchPage, type MatcherOptions } from './transformation/hierarchical-matcher';
 
 export interface TransformationRunnerInput {
@@ -30,6 +39,11 @@ export interface CreateTransformationRunnerOptions {
    * Optional matcher overrides (thresholds, weights). Useful for tests.
    */
   matcherOptions?: MatcherOptions;
+  /**
+   * Optional consensus tuning (outlier tolerances, min match count). Useful
+   * for tests and for stricter alignment regimes.
+   */
+  consensusOptions?: ConsensusOptions;
 }
 
 const defaultGenerateId = (): string =>
@@ -42,15 +56,28 @@ const findRuntimePage = (
   pageIndex: number
 ): StructuralPage | undefined => runtime.pages.find((p) => p.pageIndex === pageIndex);
 
+const buildLevelSummaries = (
+  configPage: StructuralPage,
+  runtimePage: StructuralPage,
+  matches: TransformationPage['objectMatches'],
+  consensusOptions: ConsensusOptions | undefined
+): TransformationLevelSummary[] => [
+  computeBorderLevelSummary(configPage, runtimePage),
+  computeRefinedBorderLevelSummary(configPage, runtimePage),
+  computeObjectLevelSummary(matches, configPage, runtimePage, consensusOptions ?? {}),
+  computeParentChainLevelSummary(matches, configPage, runtimePage, consensusOptions ?? {})
+];
+
 /**
  * The Transformation Runner produces a TransformationModel that compares a
  * Config StructuralModel against a Runtime StructuralModel. It does not mutate
  * either input.
  *
- * Phase 2 wiring: hierarchical matcher populates each page's objectMatches,
- * unmatchedConfigObjectIds, and unmatchedRuntimeObjectIds. Level summaries,
- * consensus, field alignments, and overallConfidence remain at their Phase 1
- * empty defaults until Phase 3.
+ * Phase 3 wiring: in addition to the Phase 2 matcher output, the runner now
+ * derives per-page level summaries (border, refined-border, object,
+ * parent-chain) and a single consensus block per page. overallConfidence is
+ * the match-count-weighted average of per-page consensus confidences. Field
+ * alignments still default to empty until Phase 4.
  */
 export const createTransformationRunner = (
   options: CreateTransformationRunnerOptions = {}
@@ -58,6 +85,7 @@ export const createTransformationRunner = (
   const generateId = options.generateId ?? defaultGenerateId;
   const now = options.now ?? defaultNow;
   const matcherOptions = options.matcherOptions;
+  const consensusOptions = options.consensusOptions;
 
   return {
     compute: ({ config, runtime, id, nowIso }) => {
@@ -85,11 +113,26 @@ export const createTransformationRunner = (
         }
 
         const result = matchPage(configPage, runtimePage, matcherOptions);
+        const levelSummaries = buildLevelSummaries(
+          configPage,
+          runtimePage,
+          result.matches,
+          consensusOptions
+        );
+        const consensus = computeConsensus(
+          result.matches,
+          configPage,
+          runtimePage,
+          consensusOptions ?? {}
+        );
+
         return {
           ...emptyPage,
           objectMatches: result.matches,
           unmatchedConfigObjectIds: result.unmatchedConfigObjectIds,
           unmatchedRuntimeObjectIds: result.unmatchedRuntimeObjectIds,
+          levelSummaries,
+          consensus,
           notes: [...emptyPage.notes, ...result.notes],
           warnings: [...emptyPage.warnings, ...result.warnings]
         };
@@ -104,9 +147,21 @@ export const createTransformationRunner = (
         }
       }
 
+      let totalWeight = 0;
+      let weightedConfidence = 0;
+      for (const page of populatedPages) {
+        const weight = page.consensus.contributingMatchCount;
+        if (weight > 0) {
+          totalWeight += weight;
+          weightedConfidence += page.consensus.confidence * weight;
+        }
+      }
+      const overallConfidence = totalWeight > 0 ? weightedConfidence / totalWeight : 0;
+
       return {
         ...base,
         pages: populatedPages,
+        overallConfidence,
         warnings: [...base.warnings, ...documentWarnings]
       };
     }
