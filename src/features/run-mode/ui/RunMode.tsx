@@ -44,9 +44,15 @@ export function RunMode() {
   const [selectedPageIndex, setSelectedPageIndex] = useState(0);
 
   const [predicted, setPredicted] = useState<PredictedGeometryFile | null>(null);
+  const [runtimeStructuralModel, setRuntimeStructuralModel] = useState<StructuralModel | null>(null);
   const [isNormalizing, setIsNormalizing] = useState(false);
   const [isComputingPredictions, setIsComputingPredictions] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [runError, setRunError] = useState<string | null>(null);
+  const [wizardError, setWizardError] = useState<string | null>(null);
+  const [geometryError, setGeometryError] = useState<string | null>(null);
+  const [configStructuralError, setConfigStructuralError] = useState<string | null>(null);
+  const [runtimeNormalizationError, setRuntimeNormalizationError] = useState<string | null>(null);
+  const [showRuntimeStructuralOverlay, setShowRuntimeStructuralOverlay] = useState<boolean>(true);
 
   const imageRef = useRef<HTMLImageElement | null>(null);
   const [displayRect, setDisplayRect] = useState<{ width: number; height: number } | null>(null);
@@ -74,6 +80,15 @@ export function RunMode() {
     return predicted.fields.filter((field) => field.pageIndex === selectedPage.pageIndex);
   }, [predicted, selectedPage]);
 
+  const runtimeStructuralPage = useMemo(() => {
+    if (!runtimeStructuralModel || !selectedPage) {
+      return null;
+    }
+    return (
+      runtimeStructuralModel.pages.find((page) => page.pageIndex === selectedPage.pageIndex) ?? null
+    );
+  }, [runtimeStructuralModel, selectedPage]);
+
   const surfaceTransform = useMemo(() => {
     if (!selectedPage || !displayRect) {
       return null;
@@ -86,6 +101,25 @@ export function RunMode() {
     () => (predicted ? JSON.stringify(predicted, null, 2) : ''),
     [predicted]
   );
+
+  const runtimeStructuralPreview = useMemo(
+    () => (runtimeStructuralModel ? JSON.stringify(runtimeStructuralModel, null, 2) : ''),
+    [runtimeStructuralModel]
+  );
+
+  const runtimeStructuralOverlay = useMemo(() => {
+    if (!surfaceTransform || !runtimeStructuralPage) {
+      return null;
+    }
+    return {
+      border: normalizedRectToScreen(surfaceTransform, runtimeStructuralPage.border.rectNorm),
+      refinedBorder: normalizedRectToScreen(
+        surfaceTransform,
+        runtimeStructuralPage.refinedBorder.rectNorm
+      ),
+      source: runtimeStructuralPage.refinedBorder.source
+    };
+  }, [surfaceTransform, runtimeStructuralPage]);
 
   const measureFrame = useCallback(() => {
     if (!imageRef.current) {
@@ -116,9 +150,13 @@ export function RunMode() {
 
     try {
       setWizard(parseWizardFile(await file.text()));
-      setError(null);
+      setWizardError(null);
+      setRunError(null);
     } catch (uploadError) {
-      setError(uploadError instanceof WizardFileParseError ? uploadError.message : 'Could not load WizardFile.');
+      setWizardError(
+        uploadError instanceof WizardFileParseError ? uploadError.message : 'Could not load WizardFile.'
+      );
+      setWizard(null);
     }
   };
 
@@ -131,9 +169,13 @@ export function RunMode() {
 
     try {
       setGeometry(parseGeometryFile(await file.text()));
-      setError(null);
+      setGeometryError(null);
+      setRunError(null);
     } catch (uploadError) {
-      setError(uploadError instanceof GeometryFileParseError ? uploadError.message : 'Could not load GeometryFile.');
+      setGeometryError(
+        uploadError instanceof GeometryFileParseError ? uploadError.message : 'Could not load GeometryFile.'
+      );
+      setGeometry(null);
     }
   };
 
@@ -146,13 +188,15 @@ export function RunMode() {
 
     try {
       setConfigStructuralModel(parseStructuralModel(await file.text()));
-      setError(null);
+      setConfigStructuralError(null);
+      setRunError(null);
     } catch (uploadError) {
-      setError(
+      setConfigStructuralError(
         uploadError instanceof StructuralModelParseError
           ? uploadError.message
           : 'Could not load Config StructuralModel.'
       );
+      setConfigStructuralModel(null);
     }
   };
 
@@ -164,8 +208,10 @@ export function RunMode() {
     }
 
     setIsNormalizing(true);
-    setError(null);
+    setRunError(null);
+    setRuntimeNormalizationError(null);
     setPredicted(null);
+    setRuntimeStructuralModel(null);
 
     try {
       const result = await normalizationEngineRef.current.normalize(file);
@@ -178,7 +224,9 @@ export function RunMode() {
     } catch (uploadError) {
       setRuntimePages([]);
       setRuntimeDocumentFingerprint('');
-      setError(uploadError instanceof Error ? uploadError.message : 'Runtime normalization failed.');
+      setRuntimeNormalizationError(
+        uploadError instanceof Error ? uploadError.message : 'Runtime normalization failed.'
+      );
     } finally {
       setIsNormalizing(false);
     }
@@ -186,12 +234,12 @@ export function RunMode() {
 
   const handleRunPrediction = async () => {
     if (!wizard || !geometry || !configStructuralModel || runtimePages.length === 0) {
-      setError('Load WizardFile, GeometryFile, StructuralModel, and runtime document before matching.');
+      setRunError('Load WizardFile, GeometryFile, StructuralModel, and runtime document before matching.');
       return;
     }
 
     setIsComputingPredictions(true);
-    setError(null);
+    setRunError(null);
 
     try {
       const runtimeStructuralModel = await structuralRunnerRef.current.compute({
@@ -199,6 +247,7 @@ export function RunMode() {
         documentFingerprint: runtimeDocumentFingerprint,
         geometry: null
       });
+      setRuntimeStructuralModel(runtimeStructuralModel);
 
       const result = await localizationRunnerRef.current.run({
         wizardId: wizard.wizardName,
@@ -210,8 +259,9 @@ export function RunMode() {
 
       setPredicted(result);
     } catch (runError) {
+      setRuntimeStructuralModel(null);
       setPredicted(null);
-      setError(runError instanceof Error ? runError.message : 'Run Mode matching failed.');
+      setRunError(runError instanceof Error ? runError.message : 'Run Mode matching failed.');
     } finally {
       setIsComputingPredictions(false);
     }
@@ -262,6 +312,17 @@ export function RunMode() {
           </label>
 
           <div className="run-mode__toolbar">
+            <label className="run-mode__toggle">
+              <input
+                type="checkbox"
+                checked={showRuntimeStructuralOverlay}
+                onChange={(event) => setShowRuntimeStructuralOverlay(event.target.checked)}
+              />{' '}
+              Show Runtime Structural Debug Overlay
+            </label>
+          </div>
+
+          <div className="run-mode__toolbar">
             <Button type="button" variant="primary" onClick={handleRunPrediction}>
               Match Runtime Document
             </Button>
@@ -271,15 +332,45 @@ export function RunMode() {
           </div>
 
           <ul className="run-mode__status-list">
-            <li>Wizard: {wizard ? wizard.wizardName : 'not loaded'}</li>
-            <li>Geometry fields: {geometry ? geometry.fields.length : 0}</li>
-            <li>Config structural pages: {configStructuralModel ? configStructuralModel.pages.length : 0}</li>
-            <li>Runtime pages: {runtimePages.length}</li>
+            <li>
+              WizardFile: {wizard ? 'loaded' : 'not loaded'}
+              {wizard ? ` (${wizard.wizardName})` : ''}
+            </li>
+            <li>
+              GeometryFile: {geometry ? 'loaded' : 'not loaded'}
+              {geometry ? ` (${geometry.fields.length} fields)` : ''}
+            </li>
+            <li>
+              Config StructuralModel: {configStructuralModel ? 'loaded' : 'not loaded'}
+              {configStructuralModel ? ` (${configStructuralModel.pages.length} pages)` : ''}
+            </li>
+            <li>
+              Runtime document: {runtimePages.length > 0 ? 'normalized' : 'not normalized'}
+              {runtimePages.length > 0 ? ` (${runtimePages.length} pages)` : ''}
+            </li>
+            <li>
+              Selected runtime page:{' '}
+              {selectedPage ? `${selectedPage.pageIndex + 1} of ${runtimePages.length}` : 'none'}
+            </li>
+            <li>
+              Runtime structure status:{' '}
+              {runtimeStructuralModel
+                ? `computed via ${runtimeStructuralModel.cvAdapter.name}@${runtimeStructuralModel.cvAdapter.version}`
+                : 'not computed'}
+            </li>
           </ul>
 
           {isNormalizing ? <p className="run-mode__meta">Normalizing runtime upload…</p> : null}
           {isComputingPredictions ? <p className="run-mode__meta">Building runtime structure + predictions…</p> : null}
-          {error ? <p className="run-mode__error">{error}</p> : null}
+          {wizardError ? <p className="run-mode__error">WizardFile error: {wizardError}</p> : null}
+          {geometryError ? <p className="run-mode__error">GeometryFile error: {geometryError}</p> : null}
+          {configStructuralError ? (
+            <p className="run-mode__error">Config StructuralModel error: {configStructuralError}</p>
+          ) : null}
+          {runtimeNormalizationError ? (
+            <p className="run-mode__error">Runtime normalization error: {runtimeNormalizationError}</p>
+          ) : null}
+          {runError ? <p className="run-mode__error">Run Mode error: {runError}</p> : null}
         </Panel>
 
         <Panel className="run-mode__column">
@@ -309,25 +400,55 @@ export function RunMode() {
               />
               {surfaceTransform ? (
                 <div className="run-mode__overlay" aria-hidden="true">
-                  {predictedBoxesForPage.map((field) => {
-                    const screenRect = normalizedRectToScreen(surfaceTransform, field.bbox);
-                    return (
+                  {showRuntimeStructuralOverlay && runtimeStructuralOverlay ? (
+                    <>
                       <div
-                        key={`${field.fieldId}-${field.pageIndex}`}
-                        className="run-mode__overlay-box"
+                        className="run-mode__structural-border"
                         style={{
-                          left: `${screenRect.x}px`,
-                          top: `${screenRect.y}px`,
-                          width: `${screenRect.width}px`,
-                          height: `${screenRect.height}px`
+                          left: `${runtimeStructuralOverlay.border.x}px`,
+                          top: `${runtimeStructuralOverlay.border.y}px`,
+                          width: `${runtimeStructuralOverlay.border.width}px`,
+                          height: `${runtimeStructuralOverlay.border.height}px`
+                        }}
+                      >
+                        <span className="run-mode__overlay-label">Runtime Border</span>
+                      </div>
+                      <div
+                        className="run-mode__structural-refined"
+                        style={{
+                          left: `${runtimeStructuralOverlay.refinedBorder.x}px`,
+                          top: `${runtimeStructuralOverlay.refinedBorder.y}px`,
+                          width: `${runtimeStructuralOverlay.refinedBorder.width}px`,
+                          height: `${runtimeStructuralOverlay.refinedBorder.height}px`
                         }}
                       >
                         <span className="run-mode__overlay-label">
-                          {fieldLabels.get(field.fieldId) ?? field.fieldId}
+                          Runtime Refined ({runtimeStructuralOverlay.source})
                         </span>
                       </div>
-                    );
-                  })}
+                    </>
+                  ) : null}
+                  {showRuntimeStructuralOverlay
+                    ? predictedBoxesForPage.map((field) => {
+                        const screenRect = normalizedRectToScreen(surfaceTransform, field.bbox);
+                        return (
+                          <div
+                            key={`${field.fieldId}-${field.pageIndex}`}
+                            className="run-mode__overlay-box"
+                            style={{
+                              left: `${screenRect.x}px`,
+                              top: `${screenRect.y}px`,
+                              width: `${screenRect.width}px`,
+                              height: `${screenRect.height}px`
+                            }}
+                          >
+                            <span className="run-mode__overlay-label">
+                              {fieldLabels.get(field.fieldId) ?? field.fieldId}
+                            </span>
+                          </div>
+                        );
+                      })
+                    : null}
                 </div>
               ) : null}
             </div>
@@ -337,6 +458,10 @@ export function RunMode() {
 
           <h4>Predicted Geometry JSON</h4>
           <pre className="run-mode__json">{jsonPreview || 'Run matching to preview predicted geometry JSON.'}</pre>
+          <h4>Runtime StructuralModel JSON</h4>
+          <pre className="run-mode__json">
+            {runtimeStructuralPreview || 'Run matching to preview runtime StructuralModel JSON.'}
+          </pre>
         </Panel>
       </div>
     </Section>
