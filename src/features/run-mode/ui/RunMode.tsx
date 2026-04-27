@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
+import { useMemo, useRef, useState, type ChangeEvent } from 'react';
 
 import type { GeometryFile } from '../../../core/contracts/geometry';
 import type { NormalizedPage } from '../../../core/contracts/normalized-page';
@@ -15,10 +15,10 @@ import {
 } from '../../../core/io/structural-model-io';
 import { parseWizardFile, WizardFileParseError } from '../../../core/io/wizard-file-io';
 import {
-  buildSurfaceTransform,
-  getPageSurface,
-  normalizedRectToScreen
+  normalizedRectToScreen,
+  type SurfaceTransform
 } from '../../../core/page-surface/page-surface';
+import { NormalizedPageViewport } from '../../../core/page-surface/ui';
 import { createLocalizationRunner, type PredictedGeometryFile } from '../../../core/runtime/localization-runner';
 import { createStructuralRunner } from '../../../core/runtime/structural-runner';
 import { Button } from '../../../core/ui/components/Button';
@@ -54,8 +54,7 @@ export function RunMode() {
   const [runtimeNormalizationError, setRuntimeNormalizationError] = useState<string | null>(null);
   const [showRuntimeStructuralOverlay, setShowRuntimeStructuralOverlay] = useState<boolean>(true);
 
-  const imageRef = useRef<HTMLImageElement | null>(null);
-  const [displayRect, setDisplayRect] = useState<{ width: number; height: number } | null>(null);
+  const [surfaceTransform, setSurfaceTransform] = useState<SurfaceTransform | null>(null);
 
   const selectedPage = useMemo(
     () => runtimePages.find((page) => page.pageIndex === selectedPageIndex) ?? null,
@@ -89,14 +88,6 @@ export function RunMode() {
     );
   }, [runtimeStructuralModel, selectedPage]);
 
-  const surfaceTransform = useMemo(() => {
-    if (!selectedPage || !displayRect) {
-      return null;
-    }
-    const surface = getPageSurface(selectedPage);
-    return buildSurfaceTransform(surface, displayRect);
-  }, [selectedPage, displayRect]);
-
   const jsonPreview = useMemo(
     () => (predicted ? JSON.stringify(predicted, null, 2) : ''),
     [predicted]
@@ -120,26 +111,6 @@ export function RunMode() {
       source: runtimeStructuralPage.refinedBorder.source
     };
   }, [surfaceTransform, runtimeStructuralPage]);
-
-  const measureFrame = useCallback(() => {
-    if (!imageRef.current) {
-      return;
-    }
-    const rect = imageRef.current.getBoundingClientRect();
-    if (rect.width > 0 && rect.height > 0) {
-      setDisplayRect({ width: rect.width, height: rect.height });
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!imageRef.current) {
-      return;
-    }
-    const observer = new ResizeObserver(measureFrame);
-    observer.observe(imageRef.current);
-    measureFrame();
-    return () => observer.disconnect();
-  }, [measureFrame, selectedPage]);
 
   const handleWizardImport = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -390,71 +361,67 @@ export function RunMode() {
             </div>
           ) : null}
 
-          {selectedPage?.imageDataUrl ? (
-            <div className="run-mode__viewport-frame">
-              <img
-                ref={imageRef}
-                src={selectedPage.imageDataUrl}
-                alt={`Runtime normalized page ${selectedPage.pageIndex + 1}`}
-                className="run-mode__viewport-image"
-              />
-              {surfaceTransform ? (
-                <div className="run-mode__overlay" aria-hidden="true">
-                  {showRuntimeStructuralOverlay && runtimeStructuralOverlay ? (
-                    <>
-                      <div
-                        className="run-mode__structural-border"
-                        style={{
-                          left: `${runtimeStructuralOverlay.border.x}px`,
-                          top: `${runtimeStructuralOverlay.border.y}px`,
-                          width: `${runtimeStructuralOverlay.border.width}px`,
-                          height: `${runtimeStructuralOverlay.border.height}px`
-                        }}
-                      >
-                        <span className="run-mode__overlay-label">Runtime Border</span>
-                      </div>
-                      <div
-                        className="run-mode__structural-refined"
-                        style={{
-                          left: `${runtimeStructuralOverlay.refinedBorder.x}px`,
-                          top: `${runtimeStructuralOverlay.refinedBorder.y}px`,
-                          width: `${runtimeStructuralOverlay.refinedBorder.width}px`,
-                          height: `${runtimeStructuralOverlay.refinedBorder.height}px`
-                        }}
-                      >
-                        <span className="run-mode__overlay-label">
-                          Runtime Refined ({runtimeStructuralOverlay.source})
-                        </span>
-                      </div>
-                    </>
-                  ) : null}
-                  {showRuntimeStructuralOverlay
-                    ? predictedBoxesForPage.map((field) => {
-                        const screenRect = normalizedRectToScreen(surfaceTransform, field.bbox);
-                        return (
-                          <div
-                            key={`${field.fieldId}-${field.pageIndex}`}
-                            className="run-mode__overlay-box"
-                            style={{
-                              left: `${screenRect.x}px`,
-                              top: `${screenRect.y}px`,
-                              width: `${screenRect.width}px`,
-                              height: `${screenRect.height}px`
-                            }}
-                          >
-                            <span className="run-mode__overlay-label">
-                              {fieldLabels.get(field.fieldId) ?? field.fieldId}
-                            </span>
-                          </div>
-                        );
-                      })
-                    : null}
+          <NormalizedPageViewport
+            page={selectedPage}
+            imageAlt={
+              selectedPage ? `Runtime normalized page ${selectedPage.pageIndex + 1}` : undefined
+            }
+            overlayAriaLabel="Runtime structural and predicted overlays"
+            onSurfaceTransformChange={setSurfaceTransform}
+            emptyState={
+              <p className="run-mode__meta">Runtime normalized page preview appears here.</p>
+            }
+          >
+            {showRuntimeStructuralOverlay && runtimeStructuralOverlay ? (
+              <>
+                <div
+                  className="run-mode__structural-border"
+                  style={{
+                    left: `${runtimeStructuralOverlay.border.x}px`,
+                    top: `${runtimeStructuralOverlay.border.y}px`,
+                    width: `${runtimeStructuralOverlay.border.width}px`,
+                    height: `${runtimeStructuralOverlay.border.height}px`
+                  }}
+                >
+                  <span className="run-mode__overlay-label">Runtime Border</span>
                 </div>
-              ) : null}
-            </div>
-          ) : (
-            <p className="run-mode__meta">Runtime normalized page preview appears here.</p>
-          )}
+                <div
+                  className="run-mode__structural-refined"
+                  style={{
+                    left: `${runtimeStructuralOverlay.refinedBorder.x}px`,
+                    top: `${runtimeStructuralOverlay.refinedBorder.y}px`,
+                    width: `${runtimeStructuralOverlay.refinedBorder.width}px`,
+                    height: `${runtimeStructuralOverlay.refinedBorder.height}px`
+                  }}
+                >
+                  <span className="run-mode__overlay-label">
+                    Runtime Refined ({runtimeStructuralOverlay.source})
+                  </span>
+                </div>
+              </>
+            ) : null}
+            {showRuntimeStructuralOverlay && surfaceTransform
+              ? predictedBoxesForPage.map((field) => {
+                  const screenRect = normalizedRectToScreen(surfaceTransform, field.bbox);
+                  return (
+                    <div
+                      key={`${field.fieldId}-${field.pageIndex}`}
+                      className="run-mode__overlay-box"
+                      style={{
+                        left: `${screenRect.x}px`,
+                        top: `${screenRect.y}px`,
+                        width: `${screenRect.width}px`,
+                        height: `${screenRect.height}px`
+                      }}
+                    >
+                      <span className="run-mode__overlay-label">
+                        {fieldLabels.get(field.fieldId) ?? field.fieldId}
+                      </span>
+                    </div>
+                  );
+                })
+              : null}
+          </NormalizedPageViewport>
 
           <h4>Predicted Geometry JSON</h4>
           <pre className="run-mode__json">{jsonPreview || 'Run matching to preview predicted geometry JSON.'}</pre>

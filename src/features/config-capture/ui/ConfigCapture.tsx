@@ -25,15 +25,19 @@ import {
 } from '../../../core/io/structural-model-io';
 import { parseWizardFile, WizardFileParseError } from '../../../core/io/wizard-file-io';
 import {
-  buildSurfaceTransform,
-  getPageSurface,
   isNormalizedRectInBounds,
   normalizedRectToScreen,
   normalizeRectFromCorners,
   screenToSurface,
   surfaceRectToNormalized,
-  type PixelRect
+  type PixelRect,
+  type SurfaceTransform
 } from '../../../core/page-surface/page-surface';
+import {
+  NormalizedPageViewport,
+  pointerToImageRect,
+  type NormalizedPageViewportHandle
+} from '../../../core/page-surface/ui';
 import { createConfigRunner } from '../../../core/runtime/config-runner';
 import { createStructuralRunner } from '../../../core/runtime/structural-runner';
 import { createGeometryBuilderStore } from '../../../core/storage/geometry-builder-store';
@@ -85,9 +89,8 @@ export function ConfigCapture() {
   const [isComputingStructure, setIsComputingStructure] = useState<boolean>(false);
   const [activeStructuralModelId, setActiveStructuralModelId] = useState<string | null>(null);
 
-  const imageRef = useRef<HTMLImageElement | null>(null);
-  const frameRef = useRef<HTMLDivElement | null>(null);
-  const [displayRect, setDisplayRect] = useState<{ width: number; height: number } | null>(null);
+  const viewportRef = useRef<NormalizedPageViewportHandle | null>(null);
+  const [surfaceTransform, setSurfaceTransform] = useState<SurfaceTransform | null>(null);
 
   const selectedPage = useMemo(
     () => pageSession.pages.find((page) => page.pageIndex === pageSession.selectedPageIndex) ?? null,
@@ -116,36 +119,6 @@ export function ConfigCapture() {
       setActiveFieldId(firstUnsaved?.fieldId ?? wizard.fields[0].fieldId);
     }
   }, [wizard, activeFieldId, builderState.fields]);
-
-  const measureFrame = useCallback(() => {
-    if (!imageRef.current) {
-      return;
-    }
-    const rect = imageRef.current.getBoundingClientRect();
-    if (rect.width > 0 && rect.height > 0) {
-      setDisplayRect({ width: rect.width, height: rect.height });
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!imageRef.current) {
-      return;
-    }
-    const observer = new ResizeObserver(measureFrame);
-    observer.observe(imageRef.current);
-    measureFrame();
-    return () => {
-      observer.disconnect();
-    };
-  }, [measureFrame, selectedPage]);
-
-  const surfaceTransform = useMemo(() => {
-    if (!selectedPage || !displayRect) {
-      return null;
-    }
-    const surface = getPageSurface(selectedPage);
-    return buildSurfaceTransform(surface, displayRect);
-  }, [selectedPage, displayRect]);
 
   const geometryFileSnapshot: GeometryFile = useMemo(
     () => builderStore.toGeometryFile(),
@@ -309,15 +282,8 @@ export function ConfigCapture() {
 
   const screenPointFromEvent = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>): { x: number; y: number } | null => {
-      if (!imageRef.current) {
-        return null;
-      }
-      const rect = imageRef.current.getBoundingClientRect();
-      const x = event.clientX - rect.left;
-      const y = event.clientY - rect.top;
-      const clampedX = Math.max(0, Math.min(rect.width, x));
-      const clampedY = Math.max(0, Math.min(rect.height, y));
-      return { x: clampedX, y: clampedY };
+      const image = viewportRef.current?.getImageElement() ?? null;
+      return pointerToImageRect(image, event);
     },
     []
   );
@@ -538,109 +504,96 @@ export function ConfigCapture() {
                 : 'Load a WizardFile and a document to begin.'}
           </p>
 
-          <div
-            ref={frameRef}
-            className="config-capture__viewport-frame"
-            style={{ display: selectedPage ? 'inline-block' : 'none' }}
+          <NormalizedPageViewport
+            ref={viewportRef}
+            page={selectedPage}
+            interactive
+            overlayRole="application"
+            overlayAriaLabel="Draw bounding box on normalized page"
+            onSurfaceTransformChange={setSurfaceTransform}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerCancel}
           >
-            {selectedPage?.imageDataUrl ? (
-              <img
-                ref={imageRef}
-                className="config-capture__viewport-image"
-                src={selectedPage.imageDataUrl}
-                alt={`Normalized page ${selectedPage.pageIndex + 1}`}
-                onLoad={measureFrame}
-              />
-            ) : null}
-
-            <div
-              className="config-capture__overlay"
-              onPointerDown={handlePointerDown}
-              onPointerMove={handlePointerMove}
-              onPointerUp={handlePointerUp}
-              onPointerCancel={handlePointerCancel}
-              role="application"
-              aria-label="Draw bounding box on normalized page"
-            >
-              {showStructuralOverlay && structuralOverlay ? (
-                <>
-                  <div
-                    className="config-capture__structural-border"
-                    aria-hidden="true"
-                    style={{
-                      left: `${structuralOverlay.border.x}px`,
-                      top: `${structuralOverlay.border.y}px`,
-                      width: `${structuralOverlay.border.width}px`,
-                      height: `${structuralOverlay.border.height}px`
-                    }}
-                  >
-                    <span className="config-capture__structural-label">Border</span>
-                  </div>
-                  <div
-                    className="config-capture__structural-refined"
-                    aria-hidden="true"
-                    style={{
-                      left: `${structuralOverlay.refinedBorder.x}px`,
-                      top: `${structuralOverlay.refinedBorder.y}px`,
-                      width: `${structuralOverlay.refinedBorder.width}px`,
-                      height: `${structuralOverlay.refinedBorder.height}px`
-                    }}
-                  >
-                    <span className="config-capture__structural-label">
-                      Refined ({structuralOverlay.source})
-                    </span>
-                  </div>
-                  {structuralOverlay.objects.map((object) => (
-                    <div
-                      key={object.objectId}
-                      className="config-capture__structural-object"
-                      data-object-type={object.type}
-                      aria-hidden="true"
-                      style={{
-                        left: `${object.rect.x}px`,
-                        top: `${object.rect.y}px`,
-                        width: `${object.rect.width}px`,
-                        height: `${object.rect.height}px`
-                      }}
-                    >
-                      <span className="config-capture__structural-object-label">
-                        {object.type} · {object.objectId}
-                      </span>
-                    </div>
-                  ))}
-                </>
-              ) : null}
-
-              {overlayBoxes.map((overlay) => (
+            {showStructuralOverlay && structuralOverlay ? (
+              <>
                 <div
-                  key={overlay.fieldId}
-                  className="config-capture__overlay-box"
-                  data-saved="true"
-                  data-active={overlay.fieldId === activeFieldId ? 'true' : 'false'}
+                  className="config-capture__structural-border"
+                  aria-hidden="true"
                   style={{
-                    left: `${overlay.rect.x}px`,
-                    top: `${overlay.rect.y}px`,
-                    width: `${overlay.rect.width}px`,
-                    height: `${overlay.rect.height}px`
+                    left: `${structuralOverlay.border.x}px`,
+                    top: `${structuralOverlay.border.y}px`,
+                    width: `${structuralOverlay.border.width}px`,
+                    height: `${structuralOverlay.border.height}px`
                   }}
                 >
-                  <span className="config-capture__overlay-label">{overlay.fieldId}</span>
+                  <span className="config-capture__structural-label">Border</span>
                 </div>
-              ))}
-
-              {draftScreenRect ? (
                 <div
-                  className="config-capture__draft"
+                  className="config-capture__structural-refined"
+                  aria-hidden="true"
                   style={{
-                    left: `${draftScreenRect.x}px`,
-                    top: `${draftScreenRect.y}px`,
-                    width: `${draftScreenRect.width}px`,
-                    height: `${draftScreenRect.height}px`
+                    left: `${structuralOverlay.refinedBorder.x}px`,
+                    top: `${structuralOverlay.refinedBorder.y}px`,
+                    width: `${structuralOverlay.refinedBorder.width}px`,
+                    height: `${structuralOverlay.refinedBorder.height}px`
                   }}
-                />
-              ) : null}
-            </div>
-          </div>
+                >
+                  <span className="config-capture__structural-label">
+                    Refined ({structuralOverlay.source})
+                  </span>
+                </div>
+                {structuralOverlay.objects.map((object) => (
+                  <div
+                    key={object.objectId}
+                    className="config-capture__structural-object"
+                    data-object-type={object.type}
+                    aria-hidden="true"
+                    style={{
+                      left: `${object.rect.x}px`,
+                      top: `${object.rect.y}px`,
+                      width: `${object.rect.width}px`,
+                      height: `${object.rect.height}px`
+                    }}
+                  >
+                    <span className="config-capture__structural-object-label">
+                      {object.type} · {object.objectId}
+                    </span>
+                  </div>
+                ))}
+              </>
+            ) : null}
+
+            {overlayBoxes.map((overlay) => (
+              <div
+                key={overlay.fieldId}
+                className="config-capture__overlay-box"
+                data-saved="true"
+                data-active={overlay.fieldId === activeFieldId ? 'true' : 'false'}
+                style={{
+                  left: `${overlay.rect.x}px`,
+                  top: `${overlay.rect.y}px`,
+                  width: `${overlay.rect.width}px`,
+                  height: `${overlay.rect.height}px`
+                }}
+              >
+                <span className="config-capture__overlay-label">{overlay.fieldId}</span>
+              </div>
+            ))}
+
+            {draftScreenRect ? (
+              <div
+                className="config-capture__draft"
+                style={{
+                  left: `${draftScreenRect.x}px`,
+                  top: `${draftScreenRect.y}px`,
+                  width: `${draftScreenRect.width}px`,
+                  height: `${draftScreenRect.height}px`
+                }}
+              />
+            ) : null}
+          </NormalizedPageViewport>
 
           <div className="config-capture__toolbar">
             <Button

@@ -1,0 +1,44 @@
+/*
+ * Shared NormalizedPage viewport — the single authority for image-plane =
+ * overlay-plane alignment in the app. Used by Config Capture and Run Mode.
+ *
+ * Critical invariant: the rendered <img> bounding rect IS the overlay
+ * coordinate plane. The frame shrink-wraps to the rendered image, so the
+ * frame, image, and overlay all share one rect by construction.
+ *
+ * Do not add object-fit, padding, fixed widths, or centering layout here —
+ * any of those break image-plane = overlay-plane and re-introduce the
+ * Wrokit 1 alignment regression.
+ */
+
+.normalized-page-viewport {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  border: var(--border-default);
+  border-radius: var(--radius-sm);
+  background: white;
+  user-select: none;
+  touch-action: none;
+  overflow: hidden;
+  line-height: 0;
+}
+
+.normalized-page-viewport__image {
+  display: block;
+  max-width: 100%;
+  max-height: 80vh;
+  width: auto;
+  height: auto;
+  pointer-events: none;
+}
+
+.normalized-page-viewport__overlay {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+
+.normalized-page-viewport__overlay--interactive {
+  cursor: crosshair;
+}
