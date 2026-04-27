@@ -99,6 +99,8 @@ export function StructuralDebugOverlay({
     return {
       border: normalizedRectToScreen(surfaceTransform, page.border.rectNorm),
       refinedBorder: normalizedRectToScreen(surfaceTransform, page.refinedBorder.rectNorm),
+      refinedBorderSource: page.refinedBorder.source,
+      cvExecutionMode: page.cvExecutionMode,
       objects: filteredObjects.map((object) => ({
         ...object,
         screenRect: normalizedRectToScreen(surfaceTransform, object.objectRectNorm),
@@ -138,7 +140,7 @@ export function StructuralDebugOverlay({
         }}
       >
         <span className="structural-debug-overlay__label">
-          Refined ({page.refinedBorder.source}) · CV {page.cvExecutionMode}
+          Refined ({overlay.refinedBorderSource}) · CV {overlay.cvExecutionMode}
         </span>
       </div>
 
