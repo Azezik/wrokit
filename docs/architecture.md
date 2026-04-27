@@ -114,8 +114,19 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
   - When both contribute, the refined border is the union (`cv-and-bbox-union`).
   - Each `RefinedBorder` carries `source`, `influencedByBBoxCount`, and `containsAllSavedBBoxes` so downstream readers can verify ground-truth protection without recomputing.
 - Auto-compute timing: `ConfigCapture` triggers structural compute as soon as `NormalizedPage[]` exists in the canonical session store. The user does not need to draw any BBOX before seeing the Border / Refined Border debug overlay. When BBOXes are drawn or imported, the engine recomputes with them honored as ground truth.
-- Debug overlay is now unified in `src/core/page-surface/ui/StructuralDebugOverlay.tsx` and consumed by both Config Capture and Run Mode. It renders Border, Refined Border, object hierarchy, optional object labels/containment chains, and optional field boxes (saved/predicted) from the same `StructuralModel` contract.
-- Shared debug controls exist in both screens with the same option set: show objects, show line objects, show labels, show containment chains, show all vs filtered objects. Defaults are readability-first (labels/chains off, line objects off, filtered objects on).
+- Debug overlay is unified in `src/core/page-surface/ui/StructuralDebugOverlay.tsx` and consumed by both Config Capture and Run Mode. It renders Border, Refined Border, object hierarchy (filtered by confidence + always-visible types), optional object labels/containment chains, optional field-anchor badges (objects that serve as the primary anchor for a saved field), optional TransformationModel match badges (in Run Mode only), and field boxes (saved/predicted) — all from the same `StructuralModel` (and optional `TransformationPage`) contracts.
+- Overlay options are a single shared contract in `src/core/page-surface/ui/structural-overlay-options.ts` with two named presets:
+  - `SIMPLE_OVERLAY_OPTIONS` — first-paint friendly: filtered objects (always-visible types + confidence ≥ 0.75), no labels, no chains, no lines, no anchors, no matches.
+  - `ADVANCED_OVERLAY_OPTIONS` — full debug: every overlay surface enabled, no confidence filter.
+- `DEFAULT_STRUCTURAL_OVERLAY_OPTIONS` aliases `SIMPLE_OVERLAY_OPTIONS` so existing callers continue to work.
+- Pure helpers `filterStructuralObjects`, `objectPassesOverlayFilter`, and `optionsMatchPreset` are exported from the same module so the filter logic and Custom-vs-Preset detection are unit-testable without rendering.
+- Shared debug controls live in `src/core/page-surface/ui/StructuralOverlayControls.tsx`. Both Config Capture and Run Mode render this single component with their own option state — there is no inline toggle JSX in either feature. The component exposes:
+  - master "Show Overlay" toggle
+  - Simple/Advanced preset buttons (and a "Custom" pill when the live options diverge from either preset)
+  - per-feature toggles: Objects, Lines, Show All, Labels, Chains, Field Anchors, Transformation Matches (Transformation Matches is hidden in Config Mode via `transformationAvailable={false}`)
+  - min-object-confidence slider
+  - inline color legend keyed to the actual overlay swatches
+- Per-object-type colors are applied via `data-object-type` attributes so a `container`, `rectangle`, `table-like`, `header`, `footer`, and `line-*` are visually distinguishable. Hovering an object highlights it in place (white inset ring) and reveals its label/chain even when those toggles are off, so dense pages can be inspected without flipping every switch.
 - StructuralModel does not carry: OCR, runtime extraction, semantic understanding, automatic field relocation, or global confidence systems. The new object hierarchy adds structural measurement context only.
 
 ## Ground Truth Rule

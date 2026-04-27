@@ -1,3 +1,63 @@
+## 2026-04-27 — UI: Shared structural overlay controls, presets, anchor + match visibility
+
+### What overlay/UI problems were found
+- Config Capture and Run Mode each defined the same six toggle inputs (Show Overlay, Show Structural Objects, Show Line Objects, Show All Objects, Show Object Labels, Show Containment Chains) inline in their own JSX. Identical UI, two source files — adding any new toggle required editing both, with risk of drift.
+- Field anchors (the primary-anchor object recorded on each `StructuralFieldRelationship`) were not visualised at all. The relationship between fields and the structural objects they actually anchor to was only visible in raw JSON.
+- TransformationModel object matches were not visualised at all in Run Mode. The `objectMatches` list was only visible in the JSON preview.
+- The "filter or show-all" binary was the only confidence control — there was no way to tune the threshold for which objects render.
+- Every non-line structural object rendered with the same teal stroke regardless of type, so a page full of `container`, `rectangle`, `table-like`, `header`, and `footer` objects was visually homogeneous.
+- Object labels were positioned at a fixed `top: -1.4rem` for every object and overlapped each other on dense pages.
+- No legend, no hover state, no Simple/Advanced presets — power-user controls were front-loaded onto the first paint.
+
+### What was improved
+- New shared overlay-options module `src/core/page-surface/ui/structural-overlay-options.ts` owning the option contract, two named presets (`SIMPLE_OVERLAY_OPTIONS`, `ADVANCED_OVERLAY_OPTIONS`), and pure helpers (`filterStructuralObjects`, `objectPassesOverlayFilter`, `overlayPresetForMode`, `optionsMatchPreset`). The filter logic and preset detection are now unit-testable without rendering.
+- New shared controls component `src/core/page-surface/ui/StructuralOverlayControls.tsx` rendered by both Config Capture and Run Mode. Replaces ~150 lines of duplicated toggle JSX across the two features.
+- The shared overlay (`StructuralDebugOverlay`) now:
+  - applies the Simple-mode confidence filter (always-visible types still bypass) and respects a tunable threshold;
+  - renders an `⚓` badge on each object that serves as the primary anchor for one or more saved fields, with the field IDs in the tooltip;
+  - renders an `↔` badge with confidence on each runtime object that has a matched config object (Run Mode only — Config Mode passes `transformationAvailable={false}` and the toggle is hidden);
+  - distinguishes object types via per-`data-object-type` colors;
+  - reveals labels/chains on hover even when the always-on toggles are off;
+  - lifts the hovered object visually with an inset ring so it can be isolated in a busy page.
+
+### How Config and Run remain unified
+- Both features import the same `StructuralOverlayControls`, the same `StructuralDebugOverlay`, the same `StructuralOverlayOptions` contract, and the same presets.
+- There is no inline toggle JSX in either feature anymore. Behavioural changes to overlay controls now ship in exactly one component and apply to both screens.
+- Both screens consume the same `surfaceTransform` path (`page-surface`), so coordinate authority is unchanged.
+
+### New controls / default views
+- Simple preset (default first paint): filtered objects (always-visible types + confidence ≥ 0.75), no labels, no chains, no lines, no anchors, no matches. Clean and approachable.
+- Advanced preset: every overlay surface enabled, no confidence filter — full debug.
+- Min-object-confidence slider (0—1, step 0.05) — always editable, slides through the threshold live.
+- Toggles: Objects, Lines, Show All (no confidence filter), Labels, Chains, Field Anchors, Transformation Matches.
+- Touching any sub-toggle leaves preset territory and shows a "Custom" pill next to the Simple/Advanced buttons. Clicking Simple/Advanced re-applies the preset.
+- Inline color legend keyed to the actual swatches: Border, Refined Border, Container, Rectangle, Table-like, Line, Saved BBOX, Predicted BBOX, Anchor, Match.
+
+### Honesty preservation
+- No decorative or recomputed overlays are drawn. Anchor badges and match badges reflect existing `StructuralFieldRelationship.fieldAnchors.objectAnchors` and `TransformationPage.objectMatches` data verbatim.
+- StructuralModel, GeometryFile, and the alignment report remain immutable read sources.
+- The confidence filter only hides objects from rendering; it never re-scores or re-classifies them.
+
+### Files added
+- `src/core/page-surface/ui/structural-overlay-options.ts`
+- `src/core/page-surface/ui/StructuralOverlayControls.tsx`
+- `src/core/page-surface/ui/structural-overlay-controls.css`
+- `tests/unit/structural-overlay-options.test.ts`
+
+### Files modified
+- `src/core/page-surface/ui/StructuralDebugOverlay.tsx` — anchor + match rendering, hover state, confidence filter via shared module.
+- `src/core/page-surface/ui/structural-debug-overlay.css` — per-object-type colors, hover/anchor/match data attributes, badge styling.
+- `src/core/page-surface/ui/index.ts` — export new component, options module, and presets.
+- `src/features/config-capture/ui/ConfigCapture.tsx` — replace inline toggles with `<StructuralOverlayControls />`.
+- `src/features/config-capture/ui/config-capture.css` — drop orphaned `.config-capture__toggle` rule.
+- `src/features/run-mode/ui/RunMode.tsx` — replace inline toggles, derive `transformationPage` for the active page, pass it to the overlay.
+- `src/features/run-mode/ui/run-mode.css` — drop orphaned `.run-mode__toggle` rule.
+- `docs/architecture.md` — update the unified-overlay section.
+
+### Checks run
+- `npm run check`
+- `npm test` — 134/134 passing across 16 files (13 new + 121 existing).
+
 ## 2026-04-27 — Feature: Transformation Model (Config↔Runtime alignment report)
 
 ### Why this step

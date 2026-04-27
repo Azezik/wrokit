@@ -1,0 +1,117 @@
+/**
+ * Shared overlay option contract used by both Config Capture and Run Mode.
+ *
+ * Both features render through `StructuralDebugOverlay` and configure it via
+ * `StructuralOverlayOptions`. Keeping the option type, the presets, and the
+ * pure filter/derivation helpers in this module guarantees the two features
+ * stay behaviorally aligned. UI controls live in
+ * `StructuralOverlayControls.tsx` and consume only this contract.
+ */
+
+import type { StructuralObjectNode } from '../../contracts/structural-model';
+
+export type StructuralOverlayMode = 'simple' | 'advanced';
+
+export interface StructuralOverlayOptions {
+  mode: StructuralOverlayMode;
+  showStructuralObjects: boolean;
+  showLineObjects: boolean;
+  showLabels: boolean;
+  showContainmentChains: boolean;
+  showAllObjects: boolean;
+  showFieldAnchors: boolean;
+  showTransformationMatches: boolean;
+  /**
+   * Minimum object confidence to render. Always-visible structural object
+   * types (container, table-like, group/nested-region, header, footer) bypass
+   * this filter so the page skeleton stays readable.
+   */
+  minObjectConfidence: number;
+}
+
+export const SIMPLE_OVERLAY_OPTIONS: StructuralOverlayOptions = {
+  mode: 'simple',
+  showStructuralObjects: true,
+  showLineObjects: false,
+  showLabels: false,
+  showContainmentChains: false,
+  showAllObjects: false,
+  showFieldAnchors: false,
+  showTransformationMatches: false,
+  minObjectConfidence: 0.75
+};
+
+export const ADVANCED_OVERLAY_OPTIONS: StructuralOverlayOptions = {
+  mode: 'advanced',
+  showStructuralObjects: true,
+  showLineObjects: true,
+  showLabels: true,
+  showContainmentChains: true,
+  showAllObjects: true,
+  showFieldAnchors: true,
+  showTransformationMatches: true,
+  minObjectConfidence: 0
+};
+
+/**
+ * Backwards-compatible alias for callers that still import the original
+ * default. The Simple preset is the friendlier first-paint experience.
+ */
+export const DEFAULT_STRUCTURAL_OVERLAY_OPTIONS = SIMPLE_OVERLAY_OPTIONS;
+
+export const overlayPresetForMode = (mode: StructuralOverlayMode): StructuralOverlayOptions =>
+  mode === 'simple' ? SIMPLE_OVERLAY_OPTIONS : ADVANCED_OVERLAY_OPTIONS;
+
+const isLineType = (type: StructuralObjectNode['type']): boolean =>
+  type === 'line-horizontal' || type === 'line-vertical';
+
+const isAlwaysVisibleType = (type: StructuralObjectNode['type']): boolean =>
+  type === 'container' ||
+  type === 'table-like' ||
+  type === 'group-region' ||
+  type === 'nested-region' ||
+  type === 'header' ||
+  type === 'footer';
+
+export const objectPassesOverlayFilter = (
+  object: StructuralObjectNode,
+  options: StructuralOverlayOptions
+): boolean => {
+  if (!options.showLineObjects && isLineType(object.type)) {
+    return false;
+  }
+  if (options.showAllObjects) {
+    return true;
+  }
+  if (isAlwaysVisibleType(object.type)) {
+    return true;
+  }
+  return object.confidence >= options.minObjectConfidence;
+};
+
+export const filterStructuralObjects = (
+  objects: ReadonlyArray<StructuralObjectNode>,
+  options: StructuralOverlayOptions
+): StructuralObjectNode[] => objects.filter((o) => objectPassesOverlayFilter(o, options));
+
+/**
+ * Returns true when the given options exactly match the named preset. Useful
+ * for surfacing a "Custom" badge in the controls UI when the user has tweaked
+ * sub-toggles away from a preset.
+ */
+export const optionsMatchPreset = (
+  options: StructuralOverlayOptions,
+  mode: StructuralOverlayMode
+): boolean => {
+  const preset = overlayPresetForMode(mode);
+  return (
+    options.showStructuralObjects === preset.showStructuralObjects &&
+    options.showLineObjects === preset.showLineObjects &&
+    options.showLabels === preset.showLabels &&
+    options.showContainmentChains === preset.showContainmentChains &&
+    options.showAllObjects === preset.showAllObjects &&
+    options.showFieldAnchors === preset.showFieldAnchors &&
+    options.showTransformationMatches === preset.showTransformationMatches &&
+    options.minObjectConfidence === preset.minObjectConfidence
+  );
+};

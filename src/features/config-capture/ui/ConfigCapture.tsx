@@ -35,6 +35,7 @@ import {
 import {
   NormalizedPageViewport,
   StructuralDebugOverlay,
+  StructuralOverlayControls,
   DEFAULT_STRUCTURAL_OVERLAY_OPTIONS,
   pointerToImageRect,
   type NormalizedPageViewportHandle,
@@ -545,93 +546,26 @@ export function ConfigCapture() {
             </Button>
           </div>
 
-          <div className="config-capture__toolbar">
-            <label className="config-capture__toggle">
-              <input
-                type="checkbox"
-                checked={showStructuralOverlay}
-                onChange={(event) => setShowStructuralOverlay(event.target.checked)}
-              />
-              Show Structural Debug Overlay
-            </label>
-            <label className="config-capture__toggle">
-              <input
-                type="checkbox"
-                checked={structuralOverlayOptions.showStructuralObjects}
-                onChange={(event) =>
-                  setStructuralOverlayOptions((current) => ({
-                    ...current,
-                    showStructuralObjects: event.target.checked
-                  }))
-                }
-              />
-              Show Structural Objects
-            </label>
-            <label className="config-capture__toggle">
-              <input
-                type="checkbox"
-                checked={structuralOverlayOptions.showLineObjects}
-                onChange={(event) =>
-                  setStructuralOverlayOptions((current) => ({
-                    ...current,
-                    showLineObjects: event.target.checked
-                  }))
-                }
-              />
-              Show Line Objects
-            </label>
-            <label className="config-capture__toggle">
-              <input
-                type="checkbox"
-                checked={structuralOverlayOptions.showAllObjects}
-                onChange={(event) =>
-                  setStructuralOverlayOptions((current) => ({
-                    ...current,
-                    showAllObjects: event.target.checked
-                  }))
-                }
-              />
-              Show All Objects
-            </label>
-            <label className="config-capture__toggle">
-              <input
-                type="checkbox"
-                checked={structuralOverlayOptions.showLabels}
-                onChange={(event) =>
-                  setStructuralOverlayOptions((current) => ({
-                    ...current,
-                    showLabels: event.target.checked
-                  }))
-                }
-              />
-              Show Object Labels
-            </label>
-            <label className="config-capture__toggle">
-              <input
-                type="checkbox"
-                checked={structuralOverlayOptions.showContainmentChains}
-                onChange={(event) =>
-                  setStructuralOverlayOptions((current) => ({
-                    ...current,
-                    showContainmentChains: event.target.checked
-                  }))
-                }
-              />
-              Show Containment Chains
-            </label>
-            <span className="config-capture__meta">
-              {isComputingStructure
+          <StructuralOverlayControls
+            visible={showStructuralOverlay}
+            onVisibleChange={setShowStructuralOverlay}
+            options={structuralOverlayOptions}
+            onOptionsChange={setStructuralOverlayOptions}
+            transformationAvailable={false}
+            statusText={
+              isComputingStructure
                 ? 'Computing StructuralModel…'
                 : activeStructuralModel
-                  ? `Structural: ${activeStructuralModel.cvAdapter.name} v${activeStructuralModel.cvAdapter.version} · ${activeStructuralModel.pages.length} page(s) · page CV ${activeStructuralPage?.cvExecutionMode ?? 'n/a'}`
+                  ? `Structural: ${activeStructuralModel.cvAdapter.name} v${activeStructuralModel.cvAdapter.version} · ${activeStructuralModel.pages.length} page(s) · page CV ${activeStructuralPage?.cvExecutionMode ?? 'n/a'}${
+                      structuralRuntimeLoadStatus
+                        ? ` · OpenCV runtime ${structuralRuntimeLoadStatus.status}${structuralRuntimeLoadStatus.reason ? ` (${structuralRuntimeLoadStatus.reason})` : ''}`
+                        : ''
+                    }`
                   : pageSession.pages.length > 0
                     ? 'StructuralModel pending.'
-                    : 'No NormalizedPage loaded.'}
-              {structuralRuntimeLoadStatus
-                ? ` · OpenCV runtime ${structuralRuntimeLoadStatus.status}${structuralRuntimeLoadStatus.reason ? ` (${structuralRuntimeLoadStatus.reason})` : ''}`
-                : ''}
-            </span>
-          </div>
+                    : 'No NormalizedPage loaded.'
+            }
+          />
           {structuralError ? <p className="config-capture__error">{structuralError}</p> : null}
         </Panel>
 

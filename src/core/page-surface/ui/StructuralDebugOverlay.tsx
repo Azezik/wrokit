@@ -1,11 +1,20 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 
-import type { StructuralObjectNode, StructuralPage } from '../../contracts/structural-model';
+import type {
+  StructuralFieldRelationship,
+  StructuralObjectNode,
+  StructuralPage
+} from '../../contracts/structural-model';
+import type { TransformationPage } from '../../contracts/transformation-model';
 import {
   normalizedRectToScreen,
   type NormalizedRect,
   type SurfaceTransform
 } from '../page-surface';
+import {
+  filterStructuralObjects,
+  type StructuralOverlayOptions
+} from './structural-overlay-options';
 
 import './structural-debug-overlay.css';
 
@@ -16,35 +25,20 @@ export interface StructuralOverlayFieldBox {
   variant: 'saved' | 'predicted';
 }
 
-export interface StructuralOverlayOptions {
-  showStructuralObjects: boolean;
-  showLineObjects: boolean;
-  showLabels: boolean;
-  showContainmentChains: boolean;
-  showAllObjects: boolean;
+export interface StructuralDebugOverlayProps {
+  page: StructuralPage | null;
+  surfaceTransform: SurfaceTransform | null;
+  visible: boolean;
+  options: StructuralOverlayOptions;
+  fieldBoxes?: StructuralOverlayFieldBox[];
+  /**
+   * Optional alignment report for the same page. When supplied and the user
+   * has enabled `showTransformationMatches`, the overlay annotates each
+   * matched runtime object with a small confidence badge. When absent the
+   * toggle is a no-op (Config Mode never has a transformation report).
+   */
+  transformationPage?: TransformationPage | null;
 }
-
-export const DEFAULT_STRUCTURAL_OVERLAY_OPTIONS: StructuralOverlayOptions = {
-  showStructuralObjects: true,
-  showLineObjects: false,
-  showLabels: false,
-  showContainmentChains: false,
-  showAllObjects: false
-};
-
-const isLineType = (type: StructuralObjectNode['type']): boolean =>
-  type === 'line-horizontal' || type === 'line-vertical';
-
-const isAlwaysVisibleType = (type: StructuralObjectNode['type']): boolean =>
-  type === 'container' ||
-  type === 'table-like' ||
-  type === 'group-region' ||
-  type === 'nested-region' ||
-  type === 'header' ||
-  type === 'footer';
-
-const objectVisibleWithDefaults = (object: StructuralObjectNode): boolean =>
-  object.confidence >= 0.75 || isAlwaysVisibleType(object.type);
 
 const buildContainmentChainText = (
   objectById: Map<string, StructuralObjectNode>,
@@ -65,36 +59,62 @@ const buildContainmentChainText = (
   return chain.join(' > ');
 };
 
-export interface StructuralDebugOverlayProps {
-  page: StructuralPage | null;
-  surfaceTransform: SurfaceTransform | null;
-  visible: boolean;
-  options: StructuralOverlayOptions;
-  fieldBoxes?: StructuralOverlayFieldBox[];
+const buildAnchorIndex = (
+  fields: ReadonlyArray<StructuralFieldRelationship>
+): Map<string, string[]> => {
+  const map = new Map<string, string[]>();
+  for (const field of fields) {
+    const primary = field.fieldAnchors.objectAnchors.find((a) => a.rank === 'primary');
+    if (!primary) {
+      continue;
+    }
+    const list = map.get(primary.objectId) ?? [];
+    list.push(field.fieldId);
+    map.set(primary.objectId, list);
+  }
+  return map;
+};
+
+interface MatchedRuntimeInfo {
+  configObjectId: string;
+  confidence: number;
 }
+
+const buildMatchedRuntimeIndex = (
+  transformationPage: TransformationPage | null | undefined
+): Map<string, MatchedRuntimeInfo> => {
+  const map = new Map<string, MatchedRuntimeInfo>();
+  if (!transformationPage) {
+    return map;
+  }
+  for (const match of transformationPage.objectMatches) {
+    map.set(match.runtimeObjectId, {
+      configObjectId: match.configObjectId,
+      confidence: match.confidence
+    });
+  }
+  return map;
+};
 
 export function StructuralDebugOverlay({
   page,
   surfaceTransform,
   visible,
   options,
-  fieldBoxes = []
+  fieldBoxes = [],
+  transformationPage = null
 }: StructuralDebugOverlayProps) {
+  const [hoveredObjectId, setHoveredObjectId] = useState<string | null>(null);
+
   const overlay = useMemo(() => {
     if (!page || !surfaceTransform || !visible) {
       return null;
     }
 
-    const objectById = new Map(page.objectHierarchy.objects.map((object) => [object.objectId, object]));
-    const filteredObjects = page.objectHierarchy.objects.filter((object) => {
-      if (!options.showLineObjects && isLineType(object.type)) {
-        return false;
-      }
-      if (!options.showAllObjects && !objectVisibleWithDefaults(object)) {
-        return false;
-      }
-      return true;
-    });
+    const objectById = new Map(page.objectHierarchy.objects.map((o) => [o.objectId, o]));
+    const filteredObjects = filterStructuralObjects(page.objectHierarchy.objects, options);
+    const anchorIndex = buildAnchorIndex(page.fieldRelationships);
+    const matchedRuntimeIndex = buildMatchedRuntimeIndex(transformationPage);
 
     return {
       border: normalizedRectToScreen(surfaceTransform, page.border.rectNorm),
@@ -104,14 +124,16 @@ export function StructuralDebugOverlay({
       objects: filteredObjects.map((object) => ({
         ...object,
         screenRect: normalizedRectToScreen(surfaceTransform, object.objectRectNorm),
-        containmentChainText: buildContainmentChainText(objectById, object.objectId)
+        containmentChainText: buildContainmentChainText(objectById, object.objectId),
+        anchoredFieldIds: anchorIndex.get(object.objectId) ?? [],
+        match: matchedRuntimeIndex.get(object.objectId) ?? null
       })),
       fields: fieldBoxes.map((box) => ({
         ...box,
         screenRect: normalizedRectToScreen(surfaceTransform, box.bbox)
       }))
     };
-  }, [fieldBoxes, options, page, surfaceTransform, visible]);
+  }, [fieldBoxes, options, page, surfaceTransform, visible, transformationPage]);
 
   if (!overlay) {
     return null;
@@ -145,30 +167,60 @@ export function StructuralDebugOverlay({
       </div>
 
       {options.showStructuralObjects
-        ? overlay.objects.map((object) => (
-            <div
-              key={object.objectId}
-              className="structural-debug-overlay__object"
-              data-object-type={object.type}
-              style={{
-                left: `${object.screenRect.x}px`,
-                top: `${object.screenRect.y}px`,
-                width: `${object.screenRect.width}px`,
-                height: `${object.screenRect.height}px`
-              }}
-            >
-              {options.showLabels ? (
-                <span className="structural-debug-overlay__object-label">
-                  {object.type} · {object.objectId} · conf: {object.confidence.toFixed(2)}
-                </span>
-              ) : null}
-              {options.showLabels && options.showContainmentChains ? (
-                <span className="structural-debug-overlay__object-chain">
-                  chain: {object.containmentChainText}
-                </span>
-              ) : null}
-            </div>
-          ))
+        ? overlay.objects.map((object) => {
+            const isHovered = hoveredObjectId === object.objectId;
+            const isAnchorObject =
+              options.showFieldAnchors && object.anchoredFieldIds.length > 0;
+            const isMatched =
+              options.showTransformationMatches && object.match !== null;
+            return (
+              <div
+                key={object.objectId}
+                className="structural-debug-overlay__object"
+                data-object-type={object.type}
+                data-hovered={isHovered ? 'true' : 'false'}
+                data-anchor={isAnchorObject ? 'true' : 'false'}
+                data-matched={isMatched ? 'true' : 'false'}
+                style={{
+                  left: `${object.screenRect.x}px`,
+                  top: `${object.screenRect.y}px`,
+                  width: `${object.screenRect.width}px`,
+                  height: `${object.screenRect.height}px`
+                }}
+                onPointerEnter={() => setHoveredObjectId(object.objectId)}
+                onPointerLeave={() =>
+                  setHoveredObjectId((current) => (current === object.objectId ? null : current))
+                }
+              >
+                {options.showLabels || isHovered ? (
+                  <span className="structural-debug-overlay__object-label">
+                    {object.type} · {object.objectId} · conf {object.confidence.toFixed(2)}
+                  </span>
+                ) : null}
+                {(options.showLabels || isHovered) && options.showContainmentChains ? (
+                  <span className="structural-debug-overlay__object-chain">
+                    chain: {object.containmentChainText}
+                  </span>
+                ) : null}
+                {isAnchorObject ? (
+                  <span
+                    className="structural-debug-overlay__anchor-badge"
+                    title={`Primary anchor for: ${object.anchoredFieldIds.join(', ')}`}
+                  >
+                    ⚓ {object.anchoredFieldIds.length}
+                  </span>
+                ) : null}
+                {isMatched && object.match ? (
+                  <span
+                    className="structural-debug-overlay__match-badge"
+                    title={`Matched config object ${object.match.configObjectId}`}
+                  >
+                    ↔ {object.match.confidence.toFixed(2)}
+                  </span>
+                ) : null}
+              </div>
+            );
+          })
         : null}
 
       {overlay.fields.map((field) => (
