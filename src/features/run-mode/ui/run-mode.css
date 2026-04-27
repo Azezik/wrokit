@@ -23,10 +23,6 @@
   align-items: center;
 }
 
-.run-mode__toggle {
-  font-size: var(--font-size-sm);
-}
-
 .run-mode__status-list {
   margin: 0;
   padding-left: var(--space-4);

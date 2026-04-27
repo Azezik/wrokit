@@ -21,6 +21,7 @@ import {
   DEFAULT_STRUCTURAL_OVERLAY_OPTIONS,
   NormalizedPageViewport,
   StructuralDebugOverlay,
+  StructuralOverlayControls,
   type StructuralOverlayFieldBox,
   type StructuralOverlayOptions
 } from '../../../core/page-surface/ui';
@@ -107,6 +108,15 @@ export function RunMode() {
       runtimeStructuralModel.pages.find((page) => page.pageIndex === selectedPage.pageIndex) ?? null
     );
   }, [runtimeStructuralModel, selectedPage]);
+
+  const transformationPage = useMemo(() => {
+    if (!transformationModel || !selectedPage) {
+      return null;
+    }
+    return (
+      transformationModel.pages.find((page) => page.pageIndex === selectedPage.pageIndex) ?? null
+    );
+  }, [transformationModel, selectedPage]);
 
   const jsonPreview = useMemo(
     () => (predicted ? JSON.stringify(predicted, null, 2) : ''),
@@ -304,81 +314,20 @@ export function RunMode() {
             <Input type="file" accept={ACCEPTED_DOC_FORMATS} onChange={handleRuntimeUpload} />
           </label>
 
-          <div className="run-mode__toolbar">
-            <label className="run-mode__toggle">
-              <input
-                type="checkbox"
-                checked={showRuntimeStructuralOverlay}
-                onChange={(event) => setShowRuntimeStructuralOverlay(event.target.checked)}
-              />{' '}
-              Show Runtime Structural Debug Overlay
-            </label>
-            <label className="run-mode__toggle">
-              <input
-                type="checkbox"
-                checked={structuralOverlayOptions.showStructuralObjects}
-                onChange={(event) =>
-                  setStructuralOverlayOptions((current) => ({
-                    ...current,
-                    showStructuralObjects: event.target.checked
-                  }))
-                }
-              />{' '}
-              Show Structural Objects
-            </label>
-            <label className="run-mode__toggle">
-              <input
-                type="checkbox"
-                checked={structuralOverlayOptions.showLineObjects}
-                onChange={(event) =>
-                  setStructuralOverlayOptions((current) => ({
-                    ...current,
-                    showLineObjects: event.target.checked
-                  }))
-                }
-              />{' '}
-              Show Line Objects
-            </label>
-            <label className="run-mode__toggle">
-              <input
-                type="checkbox"
-                checked={structuralOverlayOptions.showAllObjects}
-                onChange={(event) =>
-                  setStructuralOverlayOptions((current) => ({
-                    ...current,
-                    showAllObjects: event.target.checked
-                  }))
-                }
-              />{' '}
-              Show All Objects
-            </label>
-            <label className="run-mode__toggle">
-              <input
-                type="checkbox"
-                checked={structuralOverlayOptions.showLabels}
-                onChange={(event) =>
-                  setStructuralOverlayOptions((current) => ({
-                    ...current,
-                    showLabels: event.target.checked
-                  }))
-                }
-              />{' '}
-              Show Object Labels
-            </label>
-            <label className="run-mode__toggle">
-              <input
-                type="checkbox"
-                checked={structuralOverlayOptions.showContainmentChains}
-                onChange={(event) =>
-                  setStructuralOverlayOptions((current) => ({
-                    ...current,
-                    showContainmentChains: event.target.checked
-                  }))
-                }
-              />{' '}
-              Show Containment Chains
-            </label>
-          </div>
+          <StructuralOverlayControls
+            visible={showRuntimeStructuralOverlay}
+            onVisibleChange={setShowRuntimeStructuralOverlay}
+            options={structuralOverlayOptions}
+            onOptionsChange={setStructuralOverlayOptions}
+            transformationAvailable
+            statusText={
+              transformationModel
+                ? `TransformationModel · overall confidence ${transformationModel.overallConfidence.toFixed(3)}`
+                : runtimeStructuralModel
+                  ? 'Run matching to produce TransformationModel.'
+                  : 'No runtime structure yet.'
+            }
+          />
 
           <div className="run-mode__toolbar">
             <Button type="button" variant="primary" onClick={handleRunPrediction}>
@@ -474,6 +423,7 @@ export function RunMode() {
               visible={showRuntimeStructuralOverlay}
               options={structuralOverlayOptions}
               fieldBoxes={predictedBoxesForPage}
+              transformationPage={transformationPage}
             />
           </NormalizedPageViewport>
 
