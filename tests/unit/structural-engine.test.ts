@@ -347,4 +347,171 @@ describe('createStructuralEngine', () => {
     expect(anchors.refinedBorderAnchor.distanceToEdge).toBeGreaterThan(0);
     expect(anchors.borderAnchor.distanceToEdge).toBeGreaterThan(0);
   });
+
+  it('builds field anchors A/B/C from the containment chain (deepest container first)', async () => {
+    // Mental model: knife sits inside tray inside drawer inside counter.
+    // After this engine pass, A must be the deepest container, B its parent,
+    // C its grandparent — not whichever 3 objects happen to be closest by
+    // center distance.
+    const geometry: GeometryFile = {
+      schema: 'wrokit/geometry-file',
+      version: '1.1',
+      geometryFileVersion: 'wrokit/geometry/v1',
+      id: 'g_chain',
+      wizardId: 'w_chain',
+      documentFingerprint: 'surface:test#0:1000x2000',
+      fields: [
+        {
+          fieldId: 'knife',
+          pageIndex: 0,
+          bbox: { xNorm: 0.32, yNorm: 0.42, wNorm: 0.04, hNorm: 0.02 },
+          pixelBbox: { x: 320, y: 840, width: 40, height: 40 },
+          pageSurface: { pageIndex: 0, surfaceWidth: 1000, surfaceHeight: 2000 },
+          confirmedAtIso: '2026-04-27T00:00:00Z',
+          confirmedBy: 'user'
+        }
+      ]
+    };
+
+    // Surface is 1000x2000.
+    // counter (huge): (200, 400) 600x1000      → norm (0.20, 0.20, 0.60, 0.50)
+    // drawer (inside counter): (300, 800) 200x300 → norm (0.30, 0.40, 0.20, 0.15)
+    // tray (inside drawer):    (310, 820) 80x60   → norm (0.31, 0.41, 0.08, 0.03)
+    // distractor sibling far away with closer center than counter:
+    // sibling near knife but does not contain it: (340, 836) 8x4 → norm (0.34, 0.418, 0.008, 0.002)
+    const engine = createStructuralEngine({
+      cvAdapter: {
+        name: 'mock-cv',
+        version: '0.3',
+        detectContentRect: async () => ({
+          executionMode: 'opencv-runtime',
+          contentRectSurface: { x: 100, y: 200, width: 800, height: 1600 },
+          objectsSurface: [
+            {
+              objectId: 'obj_counter',
+              type: 'container',
+              bboxSurface: { x: 200, y: 400, width: 600, height: 1000 },
+              confidence: 0.9
+            },
+            {
+              objectId: 'obj_drawer',
+              type: 'container',
+              bboxSurface: { x: 300, y: 800, width: 200, height: 300 },
+              confidence: 0.88
+            },
+            {
+              objectId: 'obj_tray',
+              type: 'container',
+              bboxSurface: { x: 310, y: 820, width: 80, height: 60 },
+              confidence: 0.86
+            },
+            {
+              objectId: 'obj_distractor',
+              type: 'rectangle',
+              bboxSurface: { x: 340, y: 836, width: 8, height: 4 },
+              confidence: 0.7
+            }
+          ]
+        })
+      },
+      rasterLoader: stubLoader
+    });
+
+    const model = await engine.run({
+      pages: [makePage()],
+      geometry,
+      documentFingerprint: geometry.documentFingerprint
+    });
+
+    const relationship = model.pages[0].fieldRelationships[0];
+    expect(relationship.fieldId).toBe('knife');
+    expect(relationship.containedBy).toBe('obj_tray');
+    expect(relationship.fieldAnchors.stableObjectAnchors.map((a) => a.objectId)).toEqual([
+      'obj_tray',
+      'obj_drawer',
+      'obj_counter'
+    ]);
+    expect(relationship.fieldAnchors.objectAnchors.map((a) => a.objectId)).toEqual([
+      'obj_tray',
+      'obj_drawer',
+      'obj_counter'
+    ]);
+
+    // A's relativeFieldRect must place the field strictly inside [0,1] of A.
+    const anchorA = relationship.fieldAnchors.stableObjectAnchors[0];
+    expect(anchorA.relativeFieldRect.xRatio).toBeGreaterThanOrEqual(0);
+    expect(anchorA.relativeFieldRect.yRatio).toBeGreaterThanOrEqual(0);
+    expect(anchorA.relativeFieldRect.xRatio + anchorA.relativeFieldRect.wRatio).toBeLessThanOrEqual(1 + 1e-6);
+    expect(anchorA.relativeFieldRect.yRatio + anchorA.relativeFieldRect.hRatio).toBeLessThanOrEqual(1 + 1e-6);
+  });
+
+  it('falls back to nearest objects only when the containment chain is shorter than 3', async () => {
+    // Field has only ONE genuine container; engine must fill remaining anchor
+    // slots with supplemental nearby objects (without ever putting non-containers
+    // in the A slot).
+    const geometry: GeometryFile = {
+      schema: 'wrokit/geometry-file',
+      version: '1.1',
+      geometryFileVersion: 'wrokit/geometry/v1',
+      id: 'g_short_chain',
+      wizardId: 'w_short_chain',
+      documentFingerprint: 'surface:test#0:1000x2000',
+      fields: [
+        {
+          fieldId: 'lonely',
+          pageIndex: 0,
+          bbox: { xNorm: 0.42, yNorm: 0.5, wNorm: 0.05, hNorm: 0.04 },
+          pixelBbox: { x: 420, y: 1000, width: 50, height: 80 },
+          pageSurface: { pageIndex: 0, surfaceWidth: 1000, surfaceHeight: 2000 },
+          confirmedAtIso: '2026-04-27T00:00:00Z',
+          confirmedBy: 'user'
+        }
+      ]
+    };
+
+    const engine = createStructuralEngine({
+      cvAdapter: {
+        name: 'mock-cv',
+        version: '0.4',
+        detectContentRect: async () => ({
+          executionMode: 'opencv-runtime',
+          contentRectSurface: { x: 100, y: 200, width: 800, height: 1600 },
+          objectsSurface: [
+            {
+              objectId: 'obj_only_container',
+              type: 'container',
+              bboxSurface: { x: 400, y: 980, width: 200, height: 200 },
+              confidence: 0.9
+            },
+            {
+              objectId: 'obj_nearby_sibling',
+              type: 'rectangle',
+              bboxSurface: { x: 650, y: 980, width: 150, height: 150 },
+              confidence: 0.85
+            },
+            {
+              objectId: 'obj_far_block',
+              type: 'rectangle',
+              bboxSurface: { x: 100, y: 200, width: 80, height: 80 },
+              confidence: 0.8
+            }
+          ]
+        })
+      },
+      rasterLoader: stubLoader
+    });
+
+    const model = await engine.run({
+      pages: [makePage()],
+      geometry,
+      documentFingerprint: geometry.documentFingerprint
+    });
+
+    const relationship = model.pages[0].fieldRelationships[0];
+    const anchors = relationship.fieldAnchors.stableObjectAnchors;
+    expect(anchors[0].objectId).toBe('obj_only_container');
+    expect(relationship.containedBy).toBe('obj_only_container');
+    expect(anchors).toHaveLength(3);
+    expect(new Set(anchors.map((a) => a.objectId)).size).toBe(3);
+  });
 });

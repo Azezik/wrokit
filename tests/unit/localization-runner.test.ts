@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import type { GeometryFile } from '../../src/core/contracts/geometry';
 import type { NormalizedPage } from '../../src/core/contracts/normalized-page';
-import type { StructuralModel, StructuralObjectNode, StructuralPage } from '../../src/core/contracts/structural-model';
+import type {
+  StructuralModel,
+  StructuralNormalizedRect,
+  StructuralObjectNode,
+  StructuralPage
+} from '../../src/core/contracts/structural-model';
 import { createLocalizationRunner, __testing } from '../../src/core/runtime/localization-runner';
 
 const runtimePage: NormalizedPage = {
@@ -426,5 +431,340 @@ describe('localization-runner', () => {
     delete (configNoRefined.fieldRelationships[0].fieldAnchors as { refinedBorderAnchor?: unknown }).refinedBorderAnchor;
     const tierBorder = __testing.resolveFieldAnchor(sourceField, configNoRefined as StructuralPage, runtimeNoABC).tier;
     expect(tierBorder).toBe('border');
+  });
+
+  it('relocates a deeply nested field through the containment chain into the runtime container', async () => {
+    // End-to-end proof: when Config holds counter > drawer > tray > field, and
+    // Run Mode sees the same chain but shifted/scaled, the predicted box must
+    // land inside the runtime tray (not at some random page-relative location).
+    const wizardId = 'Kitchen Wizard';
+    const fieldId = 'knife';
+    const configGeo: GeometryFile = {
+      schema: 'wrokit/geometry-file',
+      version: '1.1',
+      geometryFileVersion: 'wrokit/geometry/v1',
+      id: 'geo_chain',
+      wizardId,
+      documentFingerprint: 'surface:config#0:1000x2000',
+      // Field sits at the top-left quarter of the config tray.
+      fields: [
+        {
+          fieldId,
+          pageIndex: 0,
+          bbox: { xNorm: 0.31, yNorm: 0.41, wNorm: 0.02, hNorm: 0.0075 },
+          pixelBbox: { x: 310, y: 820, width: 20, height: 15 },
+          pageSurface: { pageIndex: 0, surfaceWidth: 1000, surfaceHeight: 2000 },
+          confirmedAtIso: '2026-04-27T00:00:00Z',
+          confirmedBy: 'user'
+        }
+      ]
+    };
+
+    const buildModel = (
+      id: string,
+      counter: StructuralNormalizedRect,
+      drawer: StructuralNormalizedRect,
+      tray: StructuralNormalizedRect
+    ): StructuralModel => {
+      const objects: StructuralObjectNode[] = [
+        {
+          objectId: 'obj_counter',
+          type: 'container',
+          objectRectNorm: counter,
+          bbox: counter,
+          parentObjectId: null,
+          childObjectIds: ['obj_drawer'],
+          confidence: 0.9
+        },
+        {
+          objectId: 'obj_drawer',
+          type: 'container',
+          objectRectNorm: drawer,
+          bbox: drawer,
+          parentObjectId: 'obj_counter',
+          childObjectIds: ['obj_tray'],
+          confidence: 0.88
+        },
+        {
+          objectId: 'obj_tray',
+          type: 'container',
+          objectRectNorm: tray,
+          bbox: tray,
+          parentObjectId: 'obj_drawer',
+          childObjectIds: [],
+          confidence: 0.86
+        }
+      ];
+
+      // Field as it appears in this model (used only to compute relativeFieldRect).
+      // For the runtime model we don't need fieldRelationships — the runner reads
+      // the *config* relationship and projects it through the runtime anchor.
+      const trayRelativeForField = (fieldRect: { xNorm: number; yNorm: number; wNorm: number; hNorm: number }) => ({
+        xRatio: (fieldRect.xNorm - tray.xNorm) / tray.wNorm,
+        yRatio: (fieldRect.yNorm - tray.yNorm) / tray.hNorm,
+        wRatio: fieldRect.wNorm / tray.wNorm,
+        hRatio: fieldRect.hNorm / tray.hNorm
+      });
+      const drawerRelativeForField = (fieldRect: { xNorm: number; yNorm: number; wNorm: number; hNorm: number }) => ({
+        xRatio: (fieldRect.xNorm - drawer.xNorm) / drawer.wNorm,
+        yRatio: (fieldRect.yNorm - drawer.yNorm) / drawer.hNorm,
+        wRatio: fieldRect.wNorm / drawer.wNorm,
+        hRatio: fieldRect.hNorm / drawer.hNorm
+      });
+      const counterRelativeForField = (fieldRect: { xNorm: number; yNorm: number; wNorm: number; hNorm: number }) => ({
+        xRatio: (fieldRect.xNorm - counter.xNorm) / counter.wNorm,
+        yRatio: (fieldRect.yNorm - counter.yNorm) / counter.hNorm,
+        wRatio: fieldRect.wNorm / counter.wNorm,
+        hRatio: fieldRect.hNorm / counter.hNorm
+      });
+
+      const fieldRect = configGeo.fields[0].bbox;
+
+      return {
+        schema: 'wrokit/structural-model',
+        version: '3.0',
+        structureVersion: 'wrokit/structure/v2',
+        id,
+        documentFingerprint: `${id}-fingerprint`,
+        cvAdapter: { name: 'mock-cv', version: '1.0' },
+        pages: [
+          {
+            pageIndex: 0,
+            pageSurface: { pageIndex: 0, surfaceWidth: 1000, surfaceHeight: 2000 },
+            cvExecutionMode: 'opencv-runtime',
+            border: { rectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 } },
+            refinedBorder: {
+              rectNorm: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.8, hNorm: 0.8 },
+              source: 'cv-content',
+              influencedByBBoxCount: 0,
+              containsAllSavedBBoxes: true
+            },
+            objectHierarchy: { objects },
+            pageAnchorRelations: {
+              objectToObject: [],
+              objectToRefinedBorder: [],
+              refinedBorderToBorder: {
+                relativeRect: { xRatio: 0.1, yRatio: 0.1, wRatio: 0.8, hRatio: 0.8 }
+              }
+            },
+            fieldRelationships: [
+              {
+                fieldId,
+                fieldAnchors: {
+                  // A=tray (deepest), B=drawer, C=counter — exactly as the
+                  // engine now produces from the containment chain.
+                  objectAnchors: [
+                    { rank: 'primary', objectId: 'obj_tray', relativeFieldRect: trayRelativeForField(fieldRect) },
+                    { rank: 'secondary', objectId: 'obj_drawer', relativeFieldRect: drawerRelativeForField(fieldRect) },
+                    { rank: 'tertiary', objectId: 'obj_counter', relativeFieldRect: counterRelativeForField(fieldRect) }
+                  ],
+                  stableObjectAnchors: [
+                    { label: 'A', objectId: 'obj_tray', distance: 0, relativeFieldRect: trayRelativeForField(fieldRect) },
+                    { label: 'B', objectId: 'obj_drawer', distance: 0, relativeFieldRect: drawerRelativeForField(fieldRect) },
+                    { label: 'C', objectId: 'obj_counter', distance: 0, relativeFieldRect: counterRelativeForField(fieldRect) }
+                  ],
+                  refinedBorderAnchor: {
+                    relativeFieldRect: { xRatio: 0.5, yRatio: 0.5, wRatio: 0.1, hRatio: 0.1 },
+                    distanceToEdge: 0.1
+                  },
+                  borderAnchor: {
+                    relativeFieldRect: { xRatio: 0.5, yRatio: 0.5, wRatio: 0.1, hRatio: 0.1 },
+                    distanceToEdge: 0.1
+                  }
+                },
+                objectAnchorGraph: [],
+                containedBy: 'obj_tray',
+                nearestObjects: [],
+                relativePositionWithinParent: null,
+                distanceToBorder: 0.1,
+                distanceToRefinedBorder: 0.1
+              }
+            ]
+          }
+        ],
+        createdAtIso: '2026-04-27T00:00:00Z'
+      };
+    };
+
+    // Config layout: counter at (0.20,0.20)+0.60×0.50, drawer (0.30,0.40)+0.20×0.15,
+    // tray (0.31,0.41)+0.08×0.03.
+    const configModel = buildModel(
+      'config_chain',
+      { xNorm: 0.20, yNorm: 0.20, wNorm: 0.60, hNorm: 0.50 },
+      { xNorm: 0.30, yNorm: 0.40, wNorm: 0.20, hNorm: 0.15 },
+      { xNorm: 0.31, yNorm: 0.41, wNorm: 0.08, hNorm: 0.03 }
+    );
+
+    // Runtime layout shifted right + slightly larger.
+    const runtimeTray = { xNorm: 0.55, yNorm: 0.43, wNorm: 0.10, hNorm: 0.04 };
+    const runtimeModel = buildModel(
+      'runtime_chain',
+      { xNorm: 0.40, yNorm: 0.20, wNorm: 0.55, hNorm: 0.55 },
+      { xNorm: 0.50, yNorm: 0.40, wNorm: 0.25, hNorm: 0.20 },
+      runtimeTray
+    );
+
+    const runner = createLocalizationRunner();
+    const result = await runner.run({
+      wizardId,
+      configGeometry: { ...configGeo, wizardId },
+      configStructuralModel: configModel,
+      runtimeStructuralModel: runtimeModel,
+      runtimePages: [runtimePage],
+      predictedId: 'pred_chain',
+      nowIso: '2026-04-27T00:00:00Z'
+    });
+
+    expect(result.fields).toHaveLength(1);
+    const predicted = result.fields[0];
+
+    // Anchor tier must be A (the direct container = tray).
+    expect(predicted.anchorTierUsed).toBe('field-object-a');
+    expect(predicted.transform.configObjectId).toBe('obj_tray');
+    expect(predicted.transform.runtimeObjectId).toBe('obj_tray');
+
+    // Predicted box must land INSIDE the runtime tray rect.
+    const predictedRight = predicted.bbox.xNorm + predicted.bbox.wNorm;
+    const predictedBottom = predicted.bbox.yNorm + predicted.bbox.hNorm;
+    const trayRight = runtimeTray.xNorm + runtimeTray.wNorm;
+    const trayBottom = runtimeTray.yNorm + runtimeTray.hNorm;
+    expect(predicted.bbox.xNorm).toBeGreaterThanOrEqual(runtimeTray.xNorm - 1e-6);
+    expect(predicted.bbox.yNorm).toBeGreaterThanOrEqual(runtimeTray.yNorm - 1e-6);
+    expect(predictedRight).toBeLessThanOrEqual(trayRight + 1e-6);
+    expect(predictedBottom).toBeLessThanOrEqual(trayBottom + 1e-6);
+  });
+
+  it('matches runtime objects by ancestor chain when ID matching fails', () => {
+    // Two runtime objects share the config object's type, but only one shares
+    // the full ancestor chain. Run Mode must pick the one whose ancestors
+    // structurally match.
+    const fieldRel = configGeometry.fields[0];
+
+    const buildPage = (objects: StructuralObjectNode[]): StructuralPage => ({
+      pageIndex: 0,
+      pageSurface: { pageIndex: 0, surfaceWidth: 1000, surfaceHeight: 2000 },
+      cvExecutionMode: 'heuristic-fallback',
+      border: { rectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 } },
+      refinedBorder: {
+        rectNorm: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.8, hNorm: 0.8 },
+        source: 'cv-content',
+        influencedByBBoxCount: 0,
+        containsAllSavedBBoxes: true
+      },
+      objectHierarchy: { objects },
+      pageAnchorRelations: {
+        objectToObject: [],
+        objectToRefinedBorder: [],
+        refinedBorderToBorder: {
+          relativeRect: { xRatio: 0.1, yRatio: 0.1, wRatio: 0.8, hRatio: 0.8 }
+        }
+      },
+      fieldRelationships: [
+        {
+          fieldId: fieldRel.fieldId,
+          fieldAnchors: {
+            objectAnchors: [
+              { rank: 'primary', objectId: 'cfg_tray', relativeFieldRect: { xRatio: 0.1, yRatio: 0.1, wRatio: 0.2, hRatio: 0.2 } }
+            ],
+            stableObjectAnchors: [
+              { label: 'A', objectId: 'cfg_tray', distance: 0, relativeFieldRect: { xRatio: 0.1, yRatio: 0.1, wRatio: 0.2, hRatio: 0.2 } }
+            ],
+            refinedBorderAnchor: {
+              relativeFieldRect: { xRatio: 0.2, yRatio: 0.2, wRatio: 0.2, hRatio: 0.1 },
+              distanceToEdge: 0.1
+            },
+            borderAnchor: {
+              relativeFieldRect: { xRatio: 0.2, yRatio: 0.2, wRatio: 0.2, hRatio: 0.1 },
+              distanceToEdge: 0.2
+            }
+          },
+          objectAnchorGraph: [],
+          containedBy: 'cfg_tray',
+          nearestObjects: [],
+          relativePositionWithinParent: null,
+          distanceToBorder: 0.2,
+          distanceToRefinedBorder: 0.1
+        }
+      ]
+    });
+
+    // Config: tray inside drawer inside counter (container types throughout).
+    const configPage = buildPage([
+      {
+        objectId: 'cfg_counter',
+        type: 'container',
+        objectRectNorm: { xNorm: 0.2, yNorm: 0.2, wNorm: 0.6, hNorm: 0.5 },
+        bbox: { xNorm: 0.2, yNorm: 0.2, wNorm: 0.6, hNorm: 0.5 },
+        parentObjectId: null,
+        childObjectIds: ['cfg_drawer'],
+        confidence: 0.9
+      },
+      {
+        objectId: 'cfg_drawer',
+        type: 'container',
+        objectRectNorm: { xNorm: 0.3, yNorm: 0.4, wNorm: 0.2, hNorm: 0.15 },
+        bbox: { xNorm: 0.3, yNorm: 0.4, wNorm: 0.2, hNorm: 0.15 },
+        parentObjectId: 'cfg_counter',
+        childObjectIds: ['cfg_tray'],
+        confidence: 0.88
+      },
+      {
+        objectId: 'cfg_tray',
+        type: 'container',
+        objectRectNorm: { xNorm: 0.31, yNorm: 0.41, wNorm: 0.08, hNorm: 0.03 },
+        bbox: { xNorm: 0.31, yNorm: 0.41, wNorm: 0.08, hNorm: 0.03 },
+        parentObjectId: 'cfg_drawer',
+        childObjectIds: [],
+        confidence: 0.86
+      }
+    ]);
+
+    // Runtime: a "decoy" container with no parent and a real tray nested
+    // inside drawer inside counter. Even though the decoy is geometrically
+    // closer to the config tray, the ancestor chain match must win.
+    const runtimePageStructural = buildPage([
+      {
+        objectId: 'runtime_decoy_tray',
+        type: 'container',
+        objectRectNorm: { xNorm: 0.33, yNorm: 0.41, wNorm: 0.08, hNorm: 0.03 },
+        bbox: { xNorm: 0.33, yNorm: 0.41, wNorm: 0.08, hNorm: 0.03 },
+        parentObjectId: null,
+        childObjectIds: [],
+        confidence: 0.86
+      },
+      {
+        objectId: 'runtime_counter',
+        type: 'container',
+        objectRectNorm: { xNorm: 0.4, yNorm: 0.2, wNorm: 0.55, hNorm: 0.5 },
+        bbox: { xNorm: 0.4, yNorm: 0.2, wNorm: 0.55, hNorm: 0.5 },
+        parentObjectId: null,
+        childObjectIds: ['runtime_drawer'],
+        confidence: 0.9
+      },
+      {
+        objectId: 'runtime_drawer',
+        type: 'container',
+        objectRectNorm: { xNorm: 0.5, yNorm: 0.4, wNorm: 0.2, hNorm: 0.15 },
+        bbox: { xNorm: 0.5, yNorm: 0.4, wNorm: 0.2, hNorm: 0.15 },
+        parentObjectId: 'runtime_counter',
+        childObjectIds: ['runtime_real_tray'],
+        confidence: 0.88
+      },
+      {
+        objectId: 'runtime_real_tray',
+        type: 'container',
+        objectRectNorm: { xNorm: 0.51, yNorm: 0.41, wNorm: 0.08, hNorm: 0.03 },
+        bbox: { xNorm: 0.51, yNorm: 0.41, wNorm: 0.08, hNorm: 0.03 },
+        parentObjectId: 'runtime_drawer',
+        childObjectIds: [],
+        confidence: 0.86
+      }
+    ]);
+
+    const resolution = __testing.resolveFieldAnchor(fieldRel, configPage, runtimePageStructural);
+    expect(resolution.tier).toBe('field-object-a');
+    expect(resolution.transform.configObjectId).toBe('cfg_tray');
+    expect(resolution.transform.runtimeObjectId).toBe('runtime_real_tray');
+    expect(resolution.transform.objectMatchStrategy).toBe('type-hierarchy-geometry');
   });
 });

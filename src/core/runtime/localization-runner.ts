@@ -287,20 +287,65 @@ const geometryDistance = (a: StructuralNormalizedRect, b: StructuralNormalizedRe
   );
 };
 
+const getAncestorTypeChain = (
+  page: StructuralPage,
+  objectId: string
+): StructuralObjectNode['type'][] => {
+  const chain: StructuralObjectNode['type'][] = [];
+  const seen = new Set<string>();
+  let cursor = getObjectById(page, objectId);
+  while (cursor?.parentObjectId) {
+    if (seen.has(cursor.objectId)) {
+      break;
+    }
+    seen.add(cursor.objectId);
+    const parent = getObjectById(page, cursor.parentObjectId);
+    if (!parent) {
+      break;
+    }
+    chain.push(parent.type);
+    cursor = parent;
+  }
+  return chain;
+};
+
+const ancestorChainMismatchCount = (
+  configChain: StructuralObjectNode['type'][],
+  runtimeChain: StructuralObjectNode['type'][]
+): number => {
+  const length = Math.min(configChain.length, runtimeChain.length);
+  let mismatches = 0;
+  for (let i = 0; i < length; i += 1) {
+    if (configChain[i] !== runtimeChain[i]) {
+      mismatches += 1;
+    }
+  }
+  // Penalize chain-length deltas too — a runtime object missing an ancestor is
+  // structurally weaker than one whose chain matches end-to-end.
+  return mismatches + Math.abs(configChain.length - runtimeChain.length);
+};
+
 const hierarchyRoleDistance = (
   configPage: StructuralPage,
   runtimePage: StructuralPage,
   configObject: StructuralObjectNode,
   runtimeObject: StructuralObjectNode
-): [number, number, number] => {
+): [number, number, number, number] => {
   const configParent = getObjectById(configPage, configObject.parentObjectId);
   const runtimeParent = getObjectById(runtimePage, runtimeObject.parentObjectId);
 
   const childPresencePenalty = Number((configObject.childObjectIds.length > 0) !== (runtimeObject.childObjectIds.length > 0));
   const depthPenalty = Math.abs(getObjectDepth(configPage, configObject.objectId) - getObjectDepth(runtimePage, runtimeObject.objectId));
   const parentTypePenalty = Number(Boolean(configParent?.type) !== Boolean(runtimeParent?.type) || (configParent?.type && runtimeParent?.type && configParent.type !== runtimeParent.type));
+  const ancestorChainPenalty = ancestorChainMismatchCount(
+    getAncestorTypeChain(configPage, configObject.objectId),
+    getAncestorTypeChain(runtimePage, runtimeObject.objectId)
+  );
 
-  return [childPresencePenalty, depthPenalty, parentTypePenalty];
+  // Ancestor chain mismatch is the strongest structural signal — a runtime
+  // object whose full ancestry matches is far more trustworthy than one that
+  // only happens to share an immediate parent type.
+  return [ancestorChainPenalty, childPresencePenalty, depthPenalty, parentTypePenalty];
 };
 
 const resolveRuntimeObject = (
@@ -330,14 +375,10 @@ const resolveRuntimeObject = (
       distance: geometryDistance(configObject.objectRectNorm, object.objectRectNorm)
     }))
     .sort((left, right) => {
-      if (left.hierarchyRole[0] !== right.hierarchyRole[0]) {
-        return left.hierarchyRole[0] - right.hierarchyRole[0];
-      }
-      if (left.hierarchyRole[1] !== right.hierarchyRole[1]) {
-        return left.hierarchyRole[1] - right.hierarchyRole[1];
-      }
-      if (left.hierarchyRole[2] !== right.hierarchyRole[2]) {
-        return left.hierarchyRole[2] - right.hierarchyRole[2];
+      for (let i = 0; i < left.hierarchyRole.length; i += 1) {
+        if (left.hierarchyRole[i] !== right.hierarchyRole[i]) {
+          return left.hierarchyRole[i] - right.hierarchyRole[i];
+        }
       }
       if (left.distance !== right.distance) {
         return left.distance - right.distance;

@@ -1,3 +1,57 @@
+## 2026-04-27 — Fix: Run Mode containment-chain authority for field anchors
+
+### Why this step
+- Run Mode was emitting predicted Field BBOXes in random-looking locations even when Config detected a useful larger structural object, the Field BBOX clearly sat inside that object, and Run Mode detected the same object on the runtime document.
+- The relational chain `Field → containing object → parent → Refined Border → Border` was being **stored** in `StructuralModel` but not **used** as the source of stable anchors.
+
+### Root cause
+- `buildFieldRelationships` in `src/core/engines/structure/object-hierarchy.ts` built `stableObjectAnchors` (`A`, `B`, `C`) from `nearestObjects(field, MAX_FIELD_ANCHORS)` — i.e. the three objects whose centers were closest to the field. The actual containment chain (smallest enclosing object → its parent → its grandparent) was recorded only in the legacy `containedBy` scalar, not as anchor authority.
+- Consequence: a field that genuinely sat inside `tray ⊂ drawer ⊂ counter` could end up with anchors `A=nearby header`, `B=adjacent line`, `C=tray`. `relativeFieldRect` for `A` was then computed against an object that did not actually contain the field, so its `xRatio/yRatio/wRatio/hRatio` were geometrically meaningless. Projecting that relative rect through the runtime equivalent of `nearby header` placed the predicted box at a location that bore no relationship to where the field really lives — exactly the "weird/random" symptom reported.
+- `localization-runner.resolveAnchorPriority` did try to re-rank A/B/C by `containedBy`, but only when the actual container was already in the A/B/C list. If center-distance ranking pushed the real container out of the top 3, the runner had nothing to re-rank to.
+- Object matching across Config↔Runtime considered immediate-parent type but not the full ancestor chain. Two runtime objects of the same type with similar geometry but completely different ancestry could be picked interchangeably.
+
+### Fix
+- `src/core/engines/structure/object-hierarchy.ts`:
+  - New `buildContainmentChain(field, objects, limit)` walks `direct container → parent → grandparent` outward and is now the authoritative source for stable anchors `A → B → C`.
+  - New `selectFallbackAnchorObjects(field, objects, excludeIds, needed)` only fills slots the chain leaves empty, preferring (a) other containers, (b) overlapping objects, (c) nearest objects as last resort. Pure center-distance ranking is no longer the primary signal for any anchor slot.
+  - `buildFieldRelationships` now produces `objectAnchors[*].rank = primary|secondary|tertiary` and `stableObjectAnchors[*].label = A|B|C` from `[...containmentChain, ...supplemental]`. Each `relativeFieldRect` is computed against its own anchor's `objectRectNorm`, so for true chain anchors ratios are guaranteed to live in `[0, 1]`.
+  - Legacy `containedBy` is set to the chain's direct container, mirroring `A.objectId`. `nearestObjects` is still emitted in the legacy slot for backward-compat readers.
+- `src/core/runtime/localization-runner.ts`:
+  - New `getAncestorTypeChain(page, objectId)` and `ancestorChainMismatchCount(...)` add full-chain ancestor-type comparison to `hierarchyRoleDistance`, ahead of every other criterion. A runtime object whose ancestry matches `[container, container, container]` now beats one that only happens to share the immediate parent type.
+  - The sort tuple in `resolveRuntimeObject` is now `[ancestorChainPenalty, childPresencePenalty, depthPenalty, parentTypePenalty]`, then geometry distance, then objectId for determinism. Distance is no longer the primary criterion.
+  - Anchor fallback order remains the deterministic `A → B → C → Refined Border → Border`. Because `A` is now guaranteed to be the direct container (or the best-available containing object), the same chain `field → A → B → C → Refined → Border` is what Run Mode actually walks.
+
+### Architecture answers
+1. **Why Run Mode was projecting boxes incorrectly.** Stable anchors `A/B/C` were nearest-by-distance, not the containment chain, so `relativeFieldRect` was being computed against objects that didn't actually enclose the field. Projecting through a non-containing anchor at runtime placed predicted boxes anywhere.
+2. **Whether relationship data was missing or just unused.** Largely *unused*. Parent/child links, containment, refined-border-to-border, object-to-refined-border, and per-field anchor slots were already in `StructuralModel v3.0`. The chain just wasn't driving anchor selection.
+3. **How Field BBOX relative-to-object anchors are now stored.** `fieldAnchors.stableObjectAnchors[0|1|2]` carries the field's `relativeFieldRect` against the **direct container**, **its parent**, **its grandparent** (in that order). `fieldAnchors.refinedBorderAnchor` and `fieldAnchors.borderAnchor` carry the same field expressed relative to Refined Border and Border. `pageAnchorRelations` carries object→object, object→refined-border, and refined-border→border relative geometry independent of any field.
+4. **How Run Mode uses those anchors.** `localization-runner.resolveFieldAnchor` walks `A → B → C` deterministically, using each anchor's `relativeFieldRect` projected through the runtime equivalent of that anchor's `objectRectNorm`. If no anchor in the chain resolves on the runtime page, it falls back to projecting via Refined Border, then Border.
+5. **How fallback works when a child object is missing.** If `A` cannot be resolved on the runtime page (no ID match and no structural match by type+ancestor chain), the runner moves to `B`. If `B` also cannot be resolved, it moves to `C`. If no chain anchor resolves, it projects the saved `refinedBorderAnchor.relativeFieldRect` through the runtime Refined Border. If even that is unavailable on the legacy model shape, it projects through Border.
+6. **How Border / Refined Border remain part of the chain.** Border is always `{0,0,1,1}` and Refined Border is always anchored to Border via `pageAnchorRelations.refinedBorderToBorder.relativeRect`. Every object additionally carries its own relative geometry to Refined Border in `pageAnchorRelations.objectToRefinedBorder[]`. So the chain `field → A → B → C → Refined Border → Border` is fully traversable from any anchor up to page authority.
+7. **Whether OpenCV object detection is consistent between Config and Run.** Yes. Both screens consume `createStructuralRunner()` which is the only composer for the OpenCV.js adapter. The same `surfaceRectToNormalized` path converts CV pixel output to canonical normalized rects in both places. Object IDs are not stable across documents (CV emits IDs per run), which is exactly why structural matching falls back to type + ancestor-type chain rather than relying on ID.
+
+### Files modified
+- `src/core/engines/structure/object-hierarchy.ts` (new chain-authority anchor builder + supplemental-fill helper, exported `__testing` for unit coverage)
+- `src/core/runtime/localization-runner.ts` (ancestor-type chain match in `hierarchyRoleDistance`, refactored sort tuple in `resolveRuntimeObject`)
+- `tests/unit/structural-engine.test.ts` (two new tests: chain-ordered anchor production, fallback-fill behavior when chain is short)
+- `tests/unit/localization-runner.test.ts` (two new tests: end-to-end chain projection lands inside runtime container; ancestor-chain match beats geometric proximity)
+- `docs/architecture.md` (new "Containment Chain Authority for Field Anchors" section)
+- `docs/dev-log.md`
+
+### Boundaries preserved
+- No mutation of `GeometryFile` and no movement of saved Field BBOXes in Config.
+- No OCR added; no visual overlay hacks; no parallel coordinate system; no PDF-vs-image branching; no weakening of `NormalizedPage`/page-surface authority.
+- `StructuralModel` schema is unchanged (still v3.0 / `wrokit/structure/v2`); only the *content* of `stableObjectAnchors` and `objectAnchors` changes for newly produced models. The contract guard already required canonical `A/B/C` and `primary/secondary/tertiary` ordering and continues to enforce that.
+- Refined Border and Border invariants unchanged: containment-of-saved-BBOXes still enforced by the engine, never cropped.
+- OpenCV.js stays inside `cv/opencv-js-adapter.ts`. Structural runner is still the only composer.
+
+### Checks run
+- `npm run check` (`tsc --noEmit`): clean.
+- `npm test` (vitest): 70/70 passing (66 prior + 4 new).
+- `npm run build` (`tsc -b && vite build`): clean.
+
+---
+
 ## 2026-04-27 — OpenCV execution honesty + unified structural overlay renderer
 
 ### Why this step
