@@ -286,4 +286,142 @@ describe('localization-runner', () => {
     expect(resolution.transform.runtimeObjectId).toBe('obj_runtime_container');
     expect(resolution.transform.objectMatchStrategy).toBe('type-hierarchy-geometry');
   });
+
+  it('uses deterministic fallback order A -> B -> C -> Refined -> Border', () => {
+    const sourceField = configGeometry.fields[0];
+
+    const buildPage = (
+      objects: StructuralObjectNode[],
+      stableObjectIds: [string, string, string]
+    ): StructuralPage => ({
+      pageIndex: 0,
+      pageSurface: { pageIndex: 0, surfaceWidth: 1000, surfaceHeight: 2000 },
+      border: { rectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 } },
+      refinedBorder: {
+        rectNorm: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.8, hNorm: 0.8 },
+        source: 'cv-content',
+        influencedByBBoxCount: 0,
+        containsAllSavedBBoxes: true
+      },
+      objectHierarchy: { objects },
+      pageAnchorRelations: {
+        objectToObject: [],
+        objectToRefinedBorder: [],
+        refinedBorderToBorder: {
+          relativeRect: { xRatio: 0.1, yRatio: 0.1, wRatio: 0.8, hRatio: 0.8 }
+        }
+      },
+      fieldRelationships: [
+        {
+          fieldId: sourceField.fieldId,
+          fieldAnchors: {
+            objectAnchors: [
+              { rank: 'primary', objectId: stableObjectIds[0], relativeFieldRect: { xRatio: 0.1, yRatio: 0.1, wRatio: 0.2, hRatio: 0.2 } },
+              { rank: 'secondary', objectId: stableObjectIds[1], relativeFieldRect: { xRatio: 0.1, yRatio: 0.1, wRatio: 0.2, hRatio: 0.2 } },
+              { rank: 'tertiary', objectId: stableObjectIds[2], relativeFieldRect: { xRatio: 0.1, yRatio: 0.1, wRatio: 0.2, hRatio: 0.2 } }
+            ],
+            stableObjectAnchors: [
+              { label: 'A', objectId: stableObjectIds[0], distance: 0.1, relativeFieldRect: { xRatio: 0.1, yRatio: 0.1, wRatio: 0.2, hRatio: 0.2 } },
+              { label: 'B', objectId: stableObjectIds[1], distance: 0.2, relativeFieldRect: { xRatio: 0.1, yRatio: 0.1, wRatio: 0.2, hRatio: 0.2 } },
+              { label: 'C', objectId: stableObjectIds[2], distance: 0.3, relativeFieldRect: { xRatio: 0.1, yRatio: 0.1, wRatio: 0.2, hRatio: 0.2 } }
+            ],
+            refinedBorderAnchor: {
+              relativeFieldRect: { xRatio: 0.2, yRatio: 0.2, wRatio: 0.2, hRatio: 0.1 },
+              distanceToEdge: 0.1
+            },
+            borderAnchor: {
+              relativeFieldRect: { xRatio: 0.25, yRatio: 0.25, wRatio: 0.2, hRatio: 0.1 },
+              distanceToEdge: 0.2
+            }
+          },
+          objectAnchorGraph: [],
+          containedBy: null,
+          nearestObjects: [],
+          relativePositionWithinParent: null,
+          distanceToBorder: 0.2,
+          distanceToRefinedBorder: 0.1
+        }
+      ]
+    });
+
+    const configPage = buildPage(
+      [
+        {
+          objectId: 'obj_a',
+          type: 'header',
+          objectRectNorm: { xNorm: 0.2, yNorm: 0.2, wNorm: 0.3, hNorm: 0.3 },
+          bbox: { xNorm: 0.2, yNorm: 0.2, wNorm: 0.3, hNorm: 0.3 },
+          parentObjectId: null,
+          childObjectIds: [],
+          confidence: 0.9
+        },
+        {
+          objectId: 'obj_b',
+          type: 'container',
+          objectRectNorm: { xNorm: 0.55, yNorm: 0.2, wNorm: 0.2, hNorm: 0.3 },
+          bbox: { xNorm: 0.55, yNorm: 0.2, wNorm: 0.2, hNorm: 0.3 },
+          parentObjectId: null,
+          childObjectIds: [],
+          confidence: 0.85
+        },
+        {
+          objectId: 'obj_c',
+          type: 'rectangle',
+          objectRectNorm: { xNorm: 0.2, yNorm: 0.55, wNorm: 0.25, hNorm: 0.2 },
+          bbox: { xNorm: 0.2, yNorm: 0.55, wNorm: 0.25, hNorm: 0.2 },
+          parentObjectId: null,
+          childObjectIds: [],
+          confidence: 0.8
+        }
+      ],
+      ['obj_a', 'obj_b', 'obj_c']
+    );
+
+    const runtimeAll = buildPage(
+      [
+        {
+          objectId: 'obj_a',
+          type: 'header',
+          objectRectNorm: { xNorm: 0.21, yNorm: 0.22, wNorm: 0.3, hNorm: 0.3 },
+          bbox: { xNorm: 0.21, yNorm: 0.22, wNorm: 0.3, hNorm: 0.3 },
+          parentObjectId: null,
+          childObjectIds: [],
+          confidence: 0.9
+        },
+        {
+          objectId: 'obj_b',
+          type: 'container',
+          objectRectNorm: { xNorm: 0.56, yNorm: 0.22, wNorm: 0.2, hNorm: 0.3 },
+          bbox: { xNorm: 0.56, yNorm: 0.22, wNorm: 0.2, hNorm: 0.3 },
+          parentObjectId: null,
+          childObjectIds: [],
+          confidence: 0.85
+        },
+        {
+          objectId: 'obj_c',
+          type: 'rectangle',
+          objectRectNorm: { xNorm: 0.22, yNorm: 0.56, wNorm: 0.25, hNorm: 0.2 },
+          bbox: { xNorm: 0.22, yNorm: 0.56, wNorm: 0.25, hNorm: 0.2 },
+          parentObjectId: null,
+          childObjectIds: [],
+          confidence: 0.8
+        }
+      ],
+      ['obj_a', 'obj_b', 'obj_c']
+    );
+
+    const runtimeNoA = buildPage(runtimeAll.objectHierarchy.objects.filter((obj) => obj.objectId !== 'obj_a'), ['obj_a', 'obj_b', 'obj_c']);
+    const runtimeNoAB = buildPage(runtimeAll.objectHierarchy.objects.filter((obj) => obj.objectId !== 'obj_a' && obj.objectId !== 'obj_b'), ['obj_a', 'obj_b', 'obj_c']);
+    const runtimeNoABC = buildPage([], ['obj_a', 'obj_b', 'obj_c']);
+
+    expect(__testing.resolveFieldAnchor(sourceField, configPage, runtimeAll).tier).toBe('field-object-a');
+    expect(__testing.resolveFieldAnchor(sourceField, configPage, runtimeNoA).tier).toBe('field-object-b');
+    expect(__testing.resolveFieldAnchor(sourceField, configPage, runtimeNoAB).tier).toBe('field-object-c');
+    expect(__testing.resolveFieldAnchor(sourceField, configPage, runtimeNoABC).tier).toBe('refined-border');
+
+    const configNoRefined = buildPage(configPage.objectHierarchy.objects, ['obj_a', 'obj_b', 'obj_c']);
+    delete (configNoRefined.fieldRelationships[0].fieldAnchors as { refinedBorderAnchor?: unknown }).refinedBorderAnchor;
+    const tierBorder = __testing.resolveFieldAnchor(sourceField, configNoRefined as StructuralPage, runtimeNoABC).tier;
+    expect(tierBorder).toBe('border');
+  });
 });

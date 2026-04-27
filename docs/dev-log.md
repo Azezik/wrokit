@@ -1,3 +1,40 @@
+## 2026-04-27 — Tests + docs: OpenCV authority, contingency fallback, and deterministic localization fallback chain
+
+### Why this step
+- Structural behavior and fallback ordering needed tighter documentation plus explicit unit coverage at module boundaries (adapter/contracts/engine/localization).
+- Goal: codify OpenCV.js structural authority on canonical NormalizedPage raster, keep fallback non-default, and lock deterministic anchor fallback in localization tests.
+
+### What changed
+- **Architecture docs**
+  - `docs/architecture.md` now explicitly states:
+    - structural object authority is real OpenCV.js contour/line/object operations on canonical NormalizedPage raster surfaces,
+    - heuristic fallback is a non-default contingency path only when OpenCV runtime is absent/fails,
+    - localization fallback order is deterministic `A → B → C → Refined Border → Border`.
+- **Adapter tests** (`tests/unit/cv-opencv-js-adapter.test.ts`)
+  - Added mocked OpenCV runtime boundary test proving contour + Hough-line outputs are converted into canonical adapter objects and content rect output.
+  - Existing heuristic tests remain and continue validating canonical-surface invariants.
+- **Contract tests** (`tests/unit/contracts.test.ts`)
+  - Added negative schema/validator coverage for:
+    - invalid stable-anchor label ordering (must be canonical A/B/C order),
+    - invalid object-anchor rank ordering (must be primary/secondary/tertiary order).
+- **Structural-engine tests** (`tests/unit/structural-engine.test.ts`)
+  - Added test proving one field persists multi-anchor storage (`objectAnchors` and `stableObjectAnchors`) with deterministic `primary→secondary→tertiary` and `A→B→C` invariants.
+  - Keeps Border/Refined Border and canonical normalized-coordinate assertions intact.
+- **Localization-runner tests** (`tests/unit/localization-runner.test.ts`)
+  - Added deterministic fallback test asserting exact tier order:
+    - `field-object-a` when A resolves,
+    - `field-object-b` when A fails and B resolves,
+    - `field-object-c` when A/B fail and C resolves,
+    - `refined-border` when object anchors fail,
+    - `border` when refined anchor is unavailable.
+
+### Boundaries preserved
+- No runtime architecture rewrite and no cross-module coupling changes.
+- Canonical coordinate authority remains: all tested transforms remain normalized over the same NormalizedPage surface model.
+- Refined Border and Border invariants remain asserted in unit tests.
+
+---
+
 ## 2026-04-27 — Fix: Config Capture / Run Mode overlay alignment + shared viewport authority
 
 ### Why this step

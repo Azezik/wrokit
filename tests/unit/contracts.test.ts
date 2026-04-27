@@ -280,6 +280,165 @@ describe('isStructuralModel', () => {
       })
     ).toBe(false);
   });
+
+  it('rejects structural field anchors when stable labels are not canonical A->B->C order', () => {
+    const invalidLabels = {
+      schema: 'wrokit/structural-model',
+      version: '3.0',
+      structureVersion: 'wrokit/structure/v2',
+      id: 's2',
+      documentFingerprint: 'sha256:abc',
+      cvAdapter: { name: 'opencv-js', version: '1.0' },
+      pages: [
+        {
+          pageIndex: 0,
+          pageSurface: { pageIndex: 0, surfaceWidth: 1000, surfaceHeight: 1400 },
+          border: { rectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 } },
+          refinedBorder: {
+            rectNorm: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.8, hNorm: 0.8 },
+            source: 'cv-content',
+            influencedByBBoxCount: 0,
+            containsAllSavedBBoxes: true
+          },
+          objectHierarchy: {
+            objects: [
+              {
+                objectId: 'obj_a',
+                type: 'container',
+                objectRectNorm: { xNorm: 0.2, yNorm: 0.2, wNorm: 0.4, hNorm: 0.4 },
+                bbox: { xNorm: 0.2, yNorm: 0.2, wNorm: 0.4, hNorm: 0.4 },
+                parentObjectId: null,
+                childObjectIds: [],
+                confidence: 0.9
+              }
+            ]
+          },
+          pageAnchorRelations: {
+            objectToObject: [],
+            objectToRefinedBorder: [],
+            refinedBorderToBorder: {
+              relativeRect: { xRatio: 0.1, yRatio: 0.1, wRatio: 0.8, hRatio: 0.8 }
+            }
+          },
+          fieldRelationships: [
+            {
+              fieldId: 'f1',
+              fieldAnchors: {
+                objectAnchors: [
+                  {
+                    rank: 'primary',
+                    objectId: 'obj_a',
+                    relativeFieldRect: { xRatio: 0.1, yRatio: 0.1, wRatio: 0.2, hRatio: 0.2 }
+                  }
+                ],
+                stableObjectAnchors: [
+                  {
+                    label: 'B',
+                    objectId: 'obj_a',
+                    distance: 0.1,
+                    relativeFieldRect: { xRatio: 0.1, yRatio: 0.1, wRatio: 0.2, hRatio: 0.2 }
+                  }
+                ],
+                refinedBorderAnchor: {
+                  relativeFieldRect: { xRatio: 0.1, yRatio: 0.1, wRatio: 0.2, hRatio: 0.2 },
+                  distanceToEdge: 0.1
+                },
+                borderAnchor: {
+                  relativeFieldRect: { xRatio: 0.1, yRatio: 0.1, wRatio: 0.2, hRatio: 0.2 },
+                  distanceToEdge: 0.2
+                }
+              },
+              objectAnchorGraph: [],
+              containedBy: 'obj_a',
+              nearestObjects: [{ objectId: 'obj_a', distance: 0.1 }],
+              relativePositionWithinParent: {
+                xRatio: 0.1,
+                yRatio: 0.1,
+                widthRatio: 0.2,
+                heightRatio: 0.2
+              },
+              distanceToBorder: 0.2,
+              distanceToRefinedBorder: 0.1
+            }
+          ]
+        }
+      ],
+      createdAtIso: '2026-01-01T00:00:00Z'
+    };
+
+    expect(isStructuralModel(invalidLabels)).toBe(false);
+  });
+
+  it('rejects structural field anchors when object anchor rank order is not primary->secondary->tertiary', () => {
+    const invalidRanks = {
+      schema: 'wrokit/structural-model',
+      version: '3.0',
+      structureVersion: 'wrokit/structure/v2',
+      id: 's3',
+      documentFingerprint: 'sha256:abc',
+      cvAdapter: { name: 'opencv-js', version: '1.0' },
+      pages: [
+        {
+          pageIndex: 0,
+          pageSurface: { pageIndex: 0, surfaceWidth: 1000, surfaceHeight: 1400 },
+          border: { rectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 } },
+          refinedBorder: {
+            rectNorm: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.8, hNorm: 0.8 },
+            source: 'cv-content',
+            influencedByBBoxCount: 0,
+            containsAllSavedBBoxes: true
+          },
+          objectHierarchy: { objects: [] },
+          pageAnchorRelations: {
+            objectToObject: [],
+            objectToRefinedBorder: [],
+            refinedBorderToBorder: {
+              relativeRect: { xRatio: 0.1, yRatio: 0.1, wRatio: 0.8, hRatio: 0.8 }
+            }
+          },
+          fieldRelationships: [
+            {
+              fieldId: 'f2',
+              fieldAnchors: {
+                objectAnchors: [
+                  {
+                    rank: 'secondary',
+                    objectId: 'obj_b',
+                    relativeFieldRect: { xRatio: 0.2, yRatio: 0.2, wRatio: 0.2, hRatio: 0.2 }
+                  }
+                ],
+                stableObjectAnchors: [
+                  {
+                    label: 'A',
+                    objectId: 'obj_b',
+                    distance: 0.2,
+                    relativeFieldRect: { xRatio: 0.2, yRatio: 0.2, wRatio: 0.2, hRatio: 0.2 }
+                  }
+                ],
+                refinedBorderAnchor: {
+                  relativeFieldRect: { xRatio: 0.2, yRatio: 0.2, wRatio: 0.2, hRatio: 0.2 },
+                  distanceToEdge: 0.2
+                },
+                borderAnchor: {
+                  relativeFieldRect: { xRatio: 0.2, yRatio: 0.2, wRatio: 0.2, hRatio: 0.2 },
+                  distanceToEdge: 0.25
+                }
+              },
+              objectAnchorGraph: [],
+              containedBy: null,
+              nearestObjects: [],
+              relativePositionWithinParent: null,
+              distanceToBorder: 0.25,
+              distanceToRefinedBorder: 0.2
+            }
+          ]
+        }
+      ],
+      createdAtIso: '2026-01-01T00:00:00Z'
+    };
+
+    expect(isStructuralModel(invalidRanks)).toBe(false);
+  });
 });
 
 describe('isExtractionResult', () => {
