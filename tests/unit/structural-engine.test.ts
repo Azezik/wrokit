@@ -267,7 +267,9 @@ describe('createStructuralEngine', () => {
     expect(page.fieldRelationships).toHaveLength(1);
     expect(page.fieldRelationships[0].fieldId).toBe('amount');
     expect(page.fieldRelationships[0].fieldAnchors.objectAnchors[0].rank).toBe('primary');
-    expect(page.pageAnchorRelations.objectToObject).toHaveLength(1);
+    expect(page.pageAnchorRelations.objectToObject.length).toBeGreaterThan(0);
+    expect(page.pageAnchorRelations.objectToObject.some((relation) => relation.relationKind === 'container')).toBe(true);
+    expect(page.fieldRelationships[0].fieldAnchors.stableObjectAnchors[0].label).toBe('A');
     expect(page.fieldRelationships[0].nearestObjects.length).toBeGreaterThan(0);
   });
 });

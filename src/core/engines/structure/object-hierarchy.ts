@@ -1,12 +1,15 @@
 import type { NormalizedBoundingBox } from '../../contracts/geometry';
 import type {
+  StructuralFieldObjectAnchorRank,
   StructuralFieldRelationship,
   StructuralNormalizedRect,
   StructuralObjectHierarchy,
   StructuralObjectNode,
+  StructuralObjectToObjectAnchorRelation,
   StructuralObjectType,
   StructuralPageAnchorRelations,
-  StructuralRelativeAnchorRect
+  StructuralRelativeAnchorRect,
+  StructuralStableFieldAnchorLabel
 } from '../../contracts/structural-model';
 
 interface RawObjectInput {
@@ -17,6 +20,10 @@ interface RawObjectInput {
 }
 
 const EPS = 1e-6;
+const MAX_FIELD_ANCHORS = 3;
+const MAX_RELATION_GRAPH_OBJECTS = 12;
+const NEAR_DISTANCE_THRESHOLD = 0.35;
+const ADJACENT_GAP_THRESHOLD = 0.04;
 
 const rectArea = (rect: StructuralNormalizedRect): number => rect.wNorm * rect.hNorm;
 
@@ -44,6 +51,31 @@ const rectDistance = (a: StructuralNormalizedRect, b: StructuralNormalizedRect):
   const dx = ac.x - bc.x;
   const dy = ac.y - bc.y;
   return Math.hypot(dx, dy);
+};
+
+const overlapSpan = (aStart: number, aEnd: number, bStart: number, bEnd: number): number =>
+  Math.max(0, Math.min(aEnd, bEnd) - Math.max(aStart, bStart));
+
+const gapSpan = (aStart: number, aEnd: number, bStart: number, bEnd: number): number => {
+  if (aEnd < bStart) {
+    return bStart - aEnd;
+  }
+  if (bEnd < aStart) {
+    return aStart - bEnd;
+  }
+  return 0;
+};
+
+const areAdjacent = (a: StructuralNormalizedRect, b: StructuralNormalizedRect): boolean => {
+  const xOverlap = overlapSpan(a.xNorm, a.xNorm + a.wNorm, b.xNorm, b.xNorm + b.wNorm);
+  const yOverlap = overlapSpan(a.yNorm, a.yNorm + a.hNorm, b.yNorm, b.yNorm + b.hNorm);
+  const xGap = gapSpan(a.xNorm, a.xNorm + a.wNorm, b.xNorm, b.xNorm + b.wNorm);
+  const yGap = gapSpan(a.yNorm, a.yNorm + a.hNorm, b.yNorm, b.yNorm + b.hNorm);
+
+  const horizontalAdjacency = yOverlap > EPS && xGap > EPS && xGap <= ADJACENT_GAP_THRESHOLD;
+  const verticalAdjacency = xOverlap > EPS && yGap > EPS && yGap <= ADJACENT_GAP_THRESHOLD;
+
+  return horizontalAdjacency || verticalAdjacency;
 };
 
 const shortestDistanceToRectEdge = (
@@ -85,12 +117,12 @@ const relativeRect = (
 const nearestObjects = (
   field: NormalizedBoundingBox,
   objects: StructuralObjectNode[],
-  limit = 3
+  limit = MAX_FIELD_ANCHORS
 ): { objectId: string; distance: number }[] => {
   const fieldRect = toRect(field);
   return objects
     .map((object) => ({ objectId: object.objectId, distance: rectDistance(fieldRect, object.objectRectNorm) }))
-    .sort((a, b) => a.distance - b.distance)
+    .sort((a, b) => a.distance - b.distance || a.objectId.localeCompare(b.objectId))
     .slice(0, limit);
 };
 
@@ -121,6 +153,80 @@ const relativePositionWithinParent = (
     widthRatio: field.wNorm / safeW,
     heightRatio: field.hNorm / safeH
   };
+};
+
+const sortedTopRankedObjects = (objects: StructuralObjectNode[]): StructuralObjectNode[] => {
+  return [...objects]
+    .sort(
+      (a, b) =>
+        b.confidence - a.confidence ||
+        rectArea(b.objectRectNorm) - rectArea(a.objectRectNorm) ||
+        a.objectId.localeCompare(b.objectId)
+    )
+    .slice(0, MAX_RELATION_GRAPH_OBJECTS);
+};
+
+const buildObjectRelationGraph = (
+  objects: StructuralObjectNode[]
+): StructuralObjectToObjectAnchorRelation[] => {
+  const rankedObjects = sortedTopRankedObjects(objects);
+  const relations: Omit<StructuralObjectToObjectAnchorRelation, 'fallbackOrder'>[] = [];
+
+  for (let i = 0; i < rankedObjects.length; i += 1) {
+    for (let j = 0; j < rankedObjects.length; j += 1) {
+      if (i === j) {
+        continue;
+      }
+
+      const source = rankedObjects[i];
+      const target = rankedObjects[j];
+      const distance = rectDistance(source.objectRectNorm, target.objectRectNorm);
+
+      let relationKind: StructuralObjectToObjectAnchorRelation['relationKind'] | null = null;
+
+      if (rectContains(source.objectRectNorm, target.objectRectNorm, EPS)) {
+        relationKind = 'container';
+      } else if (source.parentObjectId && source.parentObjectId === target.parentObjectId) {
+        relationKind = 'sibling';
+      } else if (areAdjacent(source.objectRectNorm, target.objectRectNorm)) {
+        relationKind = 'adjacent';
+      } else if (distance <= NEAR_DISTANCE_THRESHOLD) {
+        relationKind = 'near';
+      }
+
+      if (!relationKind) {
+        continue;
+      }
+
+      relations.push({
+        fromObjectId: source.objectId,
+        toObjectId: target.objectId,
+        relationKind,
+        relativeRect: relativeRect(target.objectRectNorm, source.objectRectNorm),
+        distance
+      });
+    }
+  }
+
+  const relationPriority = {
+    container: 0,
+    sibling: 1,
+    adjacent: 2,
+    near: 3
+  } as const;
+
+  return relations
+    .sort(
+      (a, b) =>
+        relationPriority[a.relationKind] - relationPriority[b.relationKind] ||
+        a.distance - b.distance ||
+        a.fromObjectId.localeCompare(b.fromObjectId) ||
+        a.toObjectId.localeCompare(b.toObjectId)
+    )
+    .map((relation, index) => ({
+      ...relation,
+      fallbackOrder: index
+    }));
 };
 
 export const buildObjectHierarchy = (rawObjects: RawObjectInput[]): StructuralObjectHierarchy => {
@@ -166,21 +272,7 @@ export const buildPageAnchorRelations = (input: {
   borderRect: StructuralNormalizedRect;
 }): StructuralPageAnchorRelations => {
   const objects = input.hierarchy.objects;
-  const objectToObject = objects
-    .flatMap((object) =>
-      object.childObjectIds.map((childObjectId) => {
-        const child = objects.find((candidate) => candidate.objectId === childObjectId);
-        if (!child) {
-          return null;
-        }
-        return {
-          fromObjectId: object.objectId,
-          toObjectId: child.objectId,
-          relativeRect: relativeRect(child.objectRectNorm, object.objectRectNorm)
-        };
-      })
-    )
-    .filter((relation): relation is NonNullable<typeof relation> => relation !== null);
+  const objectToObject = buildObjectRelationGraph(objects);
 
   return {
     objectToObject,
@@ -194,6 +286,12 @@ export const buildPageAnchorRelations = (input: {
   };
 };
 
+const objectAnchorRank = (index: number): StructuralFieldObjectAnchorRank =>
+  index === 0 ? 'primary' : index === 1 ? 'secondary' : 'tertiary';
+
+const stableAnchorLabel = (index: number): StructuralStableFieldAnchorLabel =>
+  index === 0 ? 'A' : index === 1 ? 'B' : 'C';
+
 export const buildFieldRelationships = (input: {
   fields: Array<{ fieldId: string; bbox: NormalizedBoundingBox }>;
   borderRect: StructuralNormalizedRect;
@@ -201,24 +299,47 @@ export const buildFieldRelationships = (input: {
   hierarchy: StructuralObjectHierarchy;
 }): StructuralFieldRelationship[] => {
   const objects = input.hierarchy.objects;
+  const relations = buildObjectRelationGraph(objects);
+
   return input.fields.map((field) => {
     const fieldRect = toRect(field.bbox);
     const parent = findContainingObject(field.bbox, objects);
-    const nearest = nearestObjects(field.bbox, objects);
+    const nearest = nearestObjects(field.bbox, objects, MAX_FIELD_ANCHORS);
+
+    const stableAnchors = nearest.map((object, index) => {
+      const anchorObject = objects.find((candidate) => candidate.objectId === object.objectId);
+      const anchorRect = anchorObject?.objectRectNorm ?? input.refinedBorderRect;
+      return {
+        label: stableAnchorLabel(index),
+        objectId: object.objectId,
+        distance: object.distance,
+        relativeFieldRect: relativeRect(fieldRect, anchorRect)
+      };
+    });
+
+    const anchorByObjectId = new Map(stableAnchors.map((anchor) => [anchor.objectId, anchor]));
+
+    const objectAnchorGraph = relations
+      .filter(
+        (relation) => anchorByObjectId.has(relation.fromObjectId) && anchorByObjectId.has(relation.toObjectId)
+      )
+      .map((relation) => ({
+        fromAnchor: anchorByObjectId.get(relation.fromObjectId)?.label ?? 'A',
+        toAnchor: anchorByObjectId.get(relation.toObjectId)?.label ?? 'A',
+        fromObjectId: relation.fromObjectId,
+        toObjectId: relation.toObjectId,
+        relationKind: relation.relationKind,
+        fallbackOrder: relation.fallbackOrder,
+        relativeRect: relation.relativeRect
+      }));
 
     const fieldAnchors = {
-      objectAnchors: nearest.map((object, index) => ({
-        rank: (index === 0 ? 'primary' : index === 1 ? 'secondary' : 'tertiary') as
-          | 'primary'
-          | 'secondary'
-          | 'tertiary',
-        objectId: object.objectId,
-        relativeFieldRect: relativeRect(
-          fieldRect,
-          objects.find((candidate) => candidate.objectId === object.objectId)?.objectRectNorm ??
-            input.refinedBorderRect
-        )
+      objectAnchors: stableAnchors.map((anchor, index) => ({
+        rank: objectAnchorRank(index),
+        objectId: anchor.objectId,
+        relativeFieldRect: anchor.relativeFieldRect
       })),
+      stableObjectAnchors: stableAnchors,
       refinedBorderAnchor: {
         relativeFieldRect: relativeRect(fieldRect, input.refinedBorderRect),
         distanceToEdge: shortestDistanceToRectEdge(input.refinedBorderRect, field.bbox)
@@ -232,6 +353,7 @@ export const buildFieldRelationships = (input: {
     return {
       fieldId: field.fieldId,
       fieldAnchors,
+      objectAnchorGraph,
       // Legacy fields kept for compatibility while consumers migrate.
       containedBy: parent?.objectId ?? null,
       nearestObjects: nearest,
