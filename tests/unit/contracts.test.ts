@@ -196,6 +196,14 @@ describe('isStructuralModel', () => {
                       relativeFieldRect: { xRatio: 0.1, yRatio: 0.1, wRatio: 0.2, hRatio: 0.2 }
                     }
                   ],
+                  stableObjectAnchors: [
+                    {
+                      label: 'A',
+                      objectId: 'obj_1',
+                      distance: 0.1,
+                      relativeFieldRect: { xRatio: 0.1, yRatio: 0.1, wRatio: 0.2, hRatio: 0.2 }
+                    }
+                  ],
                   refinedBorderAnchor: {
                     relativeFieldRect: { xRatio: 0.1, yRatio: 0.1, wRatio: 0.2, hRatio: 0.2 },
                     distanceToEdge: 0.05
@@ -205,6 +213,7 @@ describe('isStructuralModel', () => {
                     distanceToEdge: 0.1
                   }
                 },
+                objectAnchorGraph: [],
                 containedBy: 'obj_1',
                 nearestObjects: [{ objectId: 'obj_1', distance: 0.1 }],
                 relativePositionWithinParent: {

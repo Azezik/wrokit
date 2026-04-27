@@ -119,9 +119,18 @@ export interface StructuralRelativeAnchorRect {
 
 export type StructuralFieldObjectAnchorRank = 'primary' | 'secondary' | 'tertiary';
 
+export type StructuralStableFieldAnchorLabel = 'A' | 'B' | 'C';
+
 export interface StructuralFieldObjectAnchor {
   rank: StructuralFieldObjectAnchorRank;
   objectId: string;
+  relativeFieldRect: StructuralRelativeAnchorRect;
+}
+
+export interface StructuralFieldStableObjectAnchor {
+  label: StructuralStableFieldAnchorLabel;
+  objectId: string;
+  distance: number;
   relativeFieldRect: StructuralRelativeAnchorRect;
 }
 
@@ -132,14 +141,20 @@ export interface StructuralFieldBorderAnchor {
 
 export interface StructuralFieldAnchors {
   objectAnchors: StructuralFieldObjectAnchor[];
+  stableObjectAnchors: StructuralFieldStableObjectAnchor[];
   refinedBorderAnchor: StructuralFieldBorderAnchor;
   borderAnchor: StructuralFieldBorderAnchor;
 }
 
+export type StructuralObjectRelationKind = 'container' | 'sibling' | 'adjacent' | 'near';
+
 export interface StructuralObjectToObjectAnchorRelation {
   fromObjectId: string;
   toObjectId: string;
+  relationKind: StructuralObjectRelationKind;
   relativeRect: StructuralRelativeAnchorRect;
+  fallbackOrder: number;
+  distance: number;
 }
 
 export interface StructuralObjectToRefinedBorderAnchorRelation {
@@ -148,6 +163,16 @@ export interface StructuralObjectToRefinedBorderAnchorRelation {
 }
 
 export interface StructuralRefinedBorderToBorderAnchorRelation {
+  relativeRect: StructuralRelativeAnchorRect;
+}
+
+export interface StructuralFieldAnchorGraphRelation {
+  fromAnchor: StructuralStableFieldAnchorLabel;
+  toAnchor: StructuralStableFieldAnchorLabel;
+  fromObjectId: string;
+  toObjectId: string;
+  relationKind: StructuralObjectRelationKind;
+  fallbackOrder: number;
   relativeRect: StructuralRelativeAnchorRect;
 }
 
@@ -160,6 +185,7 @@ export interface StructuralPageAnchorRelations {
 export interface StructuralFieldRelationship {
   fieldId: string;
   fieldAnchors: StructuralFieldAnchors;
+  objectAnchorGraph: StructuralFieldAnchorGraphRelation[];
   /**
    * @deprecated Temporary compatibility fields. Prefer `fieldAnchors`.
    */
@@ -318,6 +344,9 @@ const isStructuralRelativeAnchorRect = (value: unknown): value is StructuralRela
 const isStructuralFieldObjectAnchorRank = (value: unknown): value is StructuralFieldObjectAnchorRank =>
   value === 'primary' || value === 'secondary' || value === 'tertiary';
 
+const isStructuralStableFieldAnchorLabel = (value: unknown): value is StructuralStableFieldAnchorLabel =>
+  value === 'A' || value === 'B' || value === 'C';
+
 const isStructuralFieldObjectAnchor = (value: unknown): value is StructuralFieldObjectAnchor => {
   if (!isRecord(value)) {
     return false;
@@ -325,6 +354,21 @@ const isStructuralFieldObjectAnchor = (value: unknown): value is StructuralField
   return (
     isStructuralFieldObjectAnchorRank(value.rank) &&
     typeof value.objectId === 'string' &&
+    isStructuralRelativeAnchorRect(value.relativeFieldRect)
+  );
+};
+
+const isStructuralFieldStableObjectAnchor = (
+  value: unknown
+): value is StructuralFieldStableObjectAnchor => {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    isStructuralStableFieldAnchorLabel(value.label) &&
+    typeof value.objectId === 'string' &&
+    isFiniteNumber(value.distance) &&
     isStructuralRelativeAnchorRect(value.relativeFieldRect)
   );
 };
@@ -359,11 +403,30 @@ const isStructuralFieldAnchors = (value: unknown): value is StructuralFieldAncho
     }
   }
 
+  if (
+    !Array.isArray(value.stableObjectAnchors) ||
+    value.stableObjectAnchors.length === 0 ||
+    value.stableObjectAnchors.length > 3 ||
+    !value.stableObjectAnchors.every(isStructuralFieldStableObjectAnchor)
+  ) {
+    return false;
+  }
+
+  const expectedStableLabels: StructuralStableFieldAnchorLabel[] = ['A', 'B', 'C'];
+  for (let i = 0; i < value.stableObjectAnchors.length; i += 1) {
+    if (value.stableObjectAnchors[i].label !== expectedStableLabels[i]) {
+      return false;
+    }
+  }
+
   return (
     isStructuralFieldBorderAnchor(value.refinedBorderAnchor) &&
     isStructuralFieldBorderAnchor(value.borderAnchor)
   );
 };
+
+const isStructuralObjectRelationKind = (value: unknown): value is StructuralObjectRelationKind =>
+  value === 'container' || value === 'sibling' || value === 'adjacent' || value === 'near';
 
 const isStructuralObjectToObjectAnchorRelation = (
   value: unknown
@@ -374,7 +437,10 @@ const isStructuralObjectToObjectAnchorRelation = (
   return (
     typeof value.fromObjectId === 'string' &&
     typeof value.toObjectId === 'string' &&
-    isStructuralRelativeAnchorRect(value.relativeRect)
+    isStructuralObjectRelationKind(value.relationKind) &&
+    isStructuralRelativeAnchorRect(value.relativeRect) &&
+    isFiniteNumber(value.fallbackOrder) &&
+    isFiniteNumber(value.distance)
   );
 };
 
@@ -394,6 +460,24 @@ const isStructuralRefinedBorderToBorderAnchorRelation = (
     return false;
   }
   return isStructuralRelativeAnchorRect(value.relativeRect);
+};
+
+const isStructuralFieldAnchorGraphRelation = (
+  value: unknown
+): value is StructuralFieldAnchorGraphRelation => {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    isStructuralStableFieldAnchorLabel(value.fromAnchor) &&
+    isStructuralStableFieldAnchorLabel(value.toAnchor) &&
+    typeof value.fromObjectId === 'string' &&
+    typeof value.toObjectId === 'string' &&
+    isStructuralObjectRelationKind(value.relationKind) &&
+    isFiniteNumber(value.fallbackOrder) &&
+    isStructuralRelativeAnchorRect(value.relativeRect)
+  );
 };
 
 const isStructuralPageAnchorRelations = (value: unknown): value is StructuralPageAnchorRelations => {
@@ -447,6 +531,8 @@ const isStructuralFieldRelationship = (value: unknown): value is StructuralField
   return (
     typeof value.fieldId === 'string' &&
     isStructuralFieldAnchors(value.fieldAnchors) &&
+    Array.isArray(value.objectAnchorGraph) &&
+    value.objectAnchorGraph.every(isStructuralFieldAnchorGraphRelation) &&
     // Legacy properties are retained temporarily and still required for compatibility.
     hasLegacyShape
   );
