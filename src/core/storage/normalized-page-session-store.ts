@@ -1,6 +1,17 @@
 import type { NormalizedPage } from '../contracts/normalized-page';
 import type { ObservableStore, StoreListener } from './observable-store';
 
+/**
+ * Mode partition for the canonical NormalizedPage session authority.
+ *
+ * Config Capture and Run Mode are mounted on the same screen; uploading a
+ * runtime document must not clobber the config document the user just drew
+ * BBOXes against, and vice versa. The session authority is therefore
+ * partitioned by mode while every consumer still goes through the same store
+ * module and the same fingerprint formula.
+ */
+export type NormalizedPageSessionMode = 'config' | 'run';
+
 export interface NormalizedPageSessionState {
   sessionId: string;
   documentFingerprint: string;
@@ -28,7 +39,14 @@ const generateSessionId = (): string => {
   return `nps_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 };
 
-const buildDocumentFingerprint = (sourceName: string, pages: NormalizedPage[]): string => {
+/**
+ * Single fingerprint formula used by every page-aware feature in the app.
+ * Exported so feature code never hand-rolls its own variant.
+ */
+export const buildDocumentFingerprint = (
+  sourceName: string,
+  pages: ReadonlyArray<NormalizedPage>
+): string => {
   const surfaceSignature = pages
     .map((page) => `${page.pageIndex}:${Math.round(page.width)}x${Math.round(page.height)}`)
     .join('|');
@@ -89,7 +107,15 @@ export const createNormalizedPageSessionStore = (): NormalizedPageSessionStore =
   };
 };
 
-const normalizedPageSessionStore = createNormalizedPageSessionStore();
+const sessionStoresByMode = new Map<NormalizedPageSessionMode, NormalizedPageSessionStore>();
 
-export const getNormalizedPageSessionStore = (): NormalizedPageSessionStore =>
-  normalizedPageSessionStore;
+export const getNormalizedPageSessionStore = (
+  mode: NormalizedPageSessionMode = 'config'
+): NormalizedPageSessionStore => {
+  let store = sessionStoresByMode.get(mode);
+  if (!store) {
+    store = createNormalizedPageSessionStore();
+    sessionStoresByMode.set(mode, store);
+  }
+  return store;
+};

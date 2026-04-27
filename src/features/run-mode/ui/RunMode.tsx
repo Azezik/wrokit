@@ -1,7 +1,6 @@
-import { useMemo, useRef, useState, type ChangeEvent } from 'react';
+import { useMemo, useRef, useState, useSyncExternalStore, type ChangeEvent } from 'react';
 
 import type { GeometryFile } from '../../../core/contracts/geometry';
-import type { NormalizedPage } from '../../../core/contracts/normalized-page';
 import type { StructuralModel } from '../../../core/contracts/structural-model';
 import type { WizardFile } from '../../../core/contracts/wizard';
 import { createNormalizationEngine } from '../../../core/engines/normalization';
@@ -18,6 +17,7 @@ import {
   type SurfaceTransform
 } from '../../../core/page-surface/page-surface';
 import {
+  buildStructuralStatusText,
   DEFAULT_STRUCTURAL_OVERLAY_OPTIONS,
   NormalizedPageViewport,
   StructuralDebugOverlay,
@@ -29,6 +29,7 @@ import { createLocalizationRunner, type PredictedGeometryFile } from '../../../c
 import { createStructuralRunner } from '../../../core/runtime/structural-runner';
 import { createTransformationRunner } from '../../../core/runtime/transformation-runner';
 import type { TransformationModel } from '../../../core/contracts/transformation-model';
+import { getNormalizedPageSessionStore } from '../../../core/storage/normalized-page-session-store';
 import { Button } from '../../../core/ui/components/Button';
 import { Input } from '../../../core/ui/components/Input';
 import { Panel } from '../../../core/ui/components/Panel';
@@ -43,14 +44,16 @@ export function RunMode() {
   const structuralRunnerRef = useRef(createStructuralRunner());
   const localizationRunnerRef = useRef(createLocalizationRunner());
   const transformationRunnerRef = useRef(createTransformationRunner());
+  const runtimeSessionStoreRef = useRef(getNormalizedPageSessionStore('run'));
+  const runtimeSessionStore = runtimeSessionStoreRef.current;
+  const runtimeSession = useSyncExternalStore(
+    runtimeSessionStore.subscribe,
+    runtimeSessionStore.getSnapshot
+  );
 
   const [wizard, setWizard] = useState<WizardFile | null>(null);
   const [geometry, setGeometry] = useState<GeometryFile | null>(null);
   const [configStructuralModel, setConfigStructuralModel] = useState<StructuralModel | null>(null);
-
-  const [runtimePages, setRuntimePages] = useState<NormalizedPage[]>([]);
-  const [runtimeDocumentFingerprint, setRuntimeDocumentFingerprint] = useState('');
-  const [selectedPageIndex, setSelectedPageIndex] = useState(0);
 
   const [predicted, setPredicted] = useState<PredictedGeometryFile | null>(null);
   const [runtimeStructuralModel, setRuntimeStructuralModel] = useState<StructuralModel | null>(null);
@@ -69,6 +72,10 @@ export function RunMode() {
 
   const [surfaceTransform, setSurfaceTransform] = useState<SurfaceTransform | null>(null);
   const structuralRuntimeLoadStatus = structuralRunnerRef.current.runtimeLoadStatus;
+
+  const runtimePages = runtimeSession.pages;
+  const selectedPageIndex = runtimeSession.selectedPageIndex;
+  const runtimeDocumentFingerprint = runtimeSession.documentFingerprint;
 
   const selectedPage = useMemo(
     () => runtimePages.find((page) => page.pageIndex === selectedPageIndex) ?? null,
@@ -208,15 +215,12 @@ export function RunMode() {
 
     try {
       const result = await normalizationEngineRef.current.normalize(file);
-      setRuntimePages(result.pages);
-      setSelectedPageIndex(result.pages[0]?.pageIndex ?? 0);
-      const signature = result.pages
-        .map((page) => `${page.pageIndex}:${Math.round(page.width)}x${Math.round(page.height)}`)
-        .join('|');
-      setRuntimeDocumentFingerprint(`surface:${result.sourceName}#${signature}`);
+      await runtimeSessionStore.setNormalizedDocument({
+        sourceName: result.sourceName,
+        pages: result.pages
+      });
     } catch (uploadError) {
-      setRuntimePages([]);
-      setRuntimeDocumentFingerprint('');
+      await runtimeSessionStore.clearSession();
       setRuntimeNormalizationError(
         uploadError instanceof Error ? uploadError.message : 'Runtime normalization failed.'
       );
@@ -320,13 +324,16 @@ export function RunMode() {
             options={structuralOverlayOptions}
             onOptionsChange={setStructuralOverlayOptions}
             transformationAvailable
-            statusText={
-              transformationModel
-                ? `TransformationModel · overall confidence ${transformationModel.overallConfidence.toFixed(3)}`
-                : runtimeStructuralModel
-                  ? 'Run matching to produce TransformationModel.'
-                  : 'No runtime structure yet.'
-            }
+            statusText={buildStructuralStatusText({
+              pages: runtimePages,
+              isComputing: isComputingPredictions,
+              structuralModel: runtimeStructuralModel,
+              structuralPage: runtimeStructuralPage,
+              runtimeLoadStatus: structuralRuntimeLoadStatus,
+              transformationModel,
+              emptyLabel: 'No runtime page loaded.',
+              pendingLabel: 'Run matching to produce StructuralModel.'
+            })}
           />
 
           <div className="run-mode__toolbar">
@@ -398,7 +405,9 @@ export function RunMode() {
                   key={page.pageIndex}
                   type="button"
                   variant={selectedPageIndex === page.pageIndex ? 'primary' : 'default'}
-                  onClick={() => setSelectedPageIndex(page.pageIndex)}
+                  onClick={() => {
+                    void runtimeSessionStore.selectPage(page.pageIndex);
+                  }}
                 >
                   Page {page.pageIndex + 1}
                 </Button>

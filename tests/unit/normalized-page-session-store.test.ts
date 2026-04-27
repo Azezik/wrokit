@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import type { NormalizedPage } from '../../src/core/contracts/normalized-page';
-import { createNormalizedPageSessionStore } from '../../src/core/storage/normalized-page-session-store';
+import {
+  buildDocumentFingerprint,
+  createNormalizedPageSessionStore,
+  getNormalizedPageSessionStore
+} from '../../src/core/storage/normalized-page-session-store';
 
 const page = (index: number, width: number, height: number): NormalizedPage => ({
   schema: 'wrokit/normalized-page',
@@ -69,5 +73,45 @@ describe('normalized-page-session-store', () => {
     expect(cleared.documentFingerprint).toBe('');
     expect(cleared.selectedPageIndex).toBe(0);
     expect(cleared.sessionId).not.toBe(loadedSessionId);
+  });
+
+  it('produces identical fingerprints for the same input via the canonical helper', () => {
+    const pages = [page(0, 1200, 1600), page(1, 1200, 1600)];
+
+    const formula = buildDocumentFingerprint('doc.pdf', pages);
+
+    expect(formula).toBe('surface:doc.pdf#0:1200x1600|1:1200x1600');
+  });
+
+  it('shares the canonical fingerprint formula across the config and run session partitions', async () => {
+    const configStore = getNormalizedPageSessionStore('config');
+    const runStore = getNormalizedPageSessionStore('run');
+    expect(configStore).not.toBe(runStore);
+
+    const pages = [page(0, 1200, 1600)];
+
+    await configStore.setNormalizedDocument({ sourceName: 'shared.pdf', pages });
+    await runStore.setNormalizedDocument({ sourceName: 'shared.pdf', pages });
+
+    expect(configStore.getSnapshot().documentFingerprint).toBe(
+      buildDocumentFingerprint('shared.pdf', pages)
+    );
+    expect(runStore.getSnapshot().documentFingerprint).toBe(
+      configStore.getSnapshot().documentFingerprint
+    );
+
+    // Sessions are isolated even though the formula is shared: clearing one
+    // does not clear the other.
+    await configStore.clearSession();
+    expect(configStore.getSnapshot().pages).toEqual([]);
+    expect(runStore.getSnapshot().pages).toHaveLength(1);
+
+    await runStore.clearSession();
+  });
+
+  it('returns the same singleton for repeated calls with the same mode', () => {
+    expect(getNormalizedPageSessionStore('config')).toBe(getNormalizedPageSessionStore('config'));
+    expect(getNormalizedPageSessionStore('run')).toBe(getNormalizedPageSessionStore('run'));
+    expect(getNormalizedPageSessionStore()).toBe(getNormalizedPageSessionStore('config'));
   });
 });

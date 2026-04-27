@@ -15,6 +15,10 @@ export {
   type StructuralOverlayControlsProps
 } from './StructuralOverlayControls';
 export {
+  buildStructuralStatusText,
+  type BuildStructuralStatusTextInput
+} from './structural-status-text';
+export {
   ADVANCED_OVERLAY_OPTIONS,
   DEFAULT_STRUCTURAL_OVERLAY_OPTIONS,
   SIMPLE_OVERLAY_OPTIONS,
