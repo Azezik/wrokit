@@ -66,6 +66,53 @@ export interface StructuralPage {
   pageSurface: StructuralPageSurfaceRef;
   border: StructuralBorder;
   refinedBorder: StructuralRefinedBorder;
+  objectHierarchy: StructuralObjectHierarchy;
+  fieldRelationships: StructuralFieldRelationship[];
+}
+
+export type StructuralObjectType =
+  | 'rectangle'
+  | 'container'
+  | 'line-horizontal'
+  | 'line-vertical'
+  | 'table-like'
+  | 'header'
+  | 'footer'
+  | 'group-region'
+  | 'nested-region';
+
+export interface StructuralObjectNode {
+  objectId: string;
+  type: StructuralObjectType;
+  bbox: StructuralNormalizedRect;
+  parentObjectId: string | null;
+  childObjectIds: string[];
+  confidence: number;
+}
+
+export interface StructuralObjectHierarchy {
+  objects: StructuralObjectNode[];
+}
+
+export interface StructuralFieldNearestObject {
+  objectId: string;
+  distance: number;
+}
+
+export interface StructuralFieldRelativePosition {
+  xRatio: number;
+  yRatio: number;
+  widthRatio: number;
+  heightRatio: number;
+}
+
+export interface StructuralFieldRelationship {
+  fieldId: string;
+  containedBy: string | null;
+  nearestObjects: StructuralFieldNearestObject[];
+  relativePositionWithinParent: StructuralFieldRelativePosition | null;
+  distanceToBorder: number;
+  distanceToRefinedBorder: number;
 }
 
 export interface StructuralCvAdapterRef {
@@ -148,7 +195,80 @@ const isStructuralPage = (value: unknown): value is StructuralPage => {
     isFiniteNumber(value.pageIndex) &&
     isStructuralPageSurfaceRef(value.pageSurface) &&
     isStructuralBorder(value.border) &&
-    isStructuralRefinedBorder(value.refinedBorder)
+    isStructuralRefinedBorder(value.refinedBorder) &&
+    isStructuralObjectHierarchy(value.objectHierarchy) &&
+    Array.isArray(value.fieldRelationships) &&
+    value.fieldRelationships.every(isStructuralFieldRelationship)
+  );
+};
+
+const isStructuralObjectType = (value: unknown): value is StructuralObjectType =>
+  value === 'rectangle' ||
+  value === 'container' ||
+  value === 'line-horizontal' ||
+  value === 'line-vertical' ||
+  value === 'table-like' ||
+  value === 'header' ||
+  value === 'footer' ||
+  value === 'group-region' ||
+  value === 'nested-region';
+
+const isStructuralObjectNode = (value: unknown): value is StructuralObjectNode => {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    typeof value.objectId === 'string' &&
+    isStructuralObjectType(value.type) &&
+    isStructuralNormalizedRect(value.bbox) &&
+    (value.parentObjectId === null || typeof value.parentObjectId === 'string') &&
+    Array.isArray(value.childObjectIds) &&
+    value.childObjectIds.every((id) => typeof id === 'string') &&
+    isFiniteNumber(value.confidence)
+  );
+};
+
+const isStructuralObjectHierarchy = (value: unknown): value is StructuralObjectHierarchy => {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return Array.isArray(value.objects) && value.objects.every(isStructuralObjectNode);
+};
+
+const isStructuralFieldNearestObject = (value: unknown): value is StructuralFieldNearestObject => {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return typeof value.objectId === 'string' && isFiniteNumber(value.distance);
+};
+
+const isStructuralFieldRelativePosition = (
+  value: unknown
+): value is StructuralFieldRelativePosition => {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    isFiniteNumber(value.xRatio) &&
+    isFiniteNumber(value.yRatio) &&
+    isFiniteNumber(value.widthRatio) &&
+    isFiniteNumber(value.heightRatio)
+  );
+};
+
+const isStructuralFieldRelationship = (value: unknown): value is StructuralFieldRelationship => {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    typeof value.fieldId === 'string' &&
+    (value.containedBy === null || typeof value.containedBy === 'string') &&
+    Array.isArray(value.nearestObjects) &&
+    value.nearestObjects.every(isStructuralFieldNearestObject) &&
+    (value.relativePositionWithinParent === null ||
+      isStructuralFieldRelativePosition(value.relativePositionWithinParent)) &&
+    isFiniteNumber(value.distanceToBorder) &&
+    isFiniteNumber(value.distanceToRefinedBorder)
   );
 };
 

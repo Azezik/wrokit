@@ -1,3 +1,80 @@
+## 2026-04-27 — Step: Structural Object Hierarchy layer in Structural Engine
+
+### Why this step
+- Border + Refined Border gave coarse structure, but not enough measurable anchors for later localization refinement.
+- Goal: enrich `StructuralModel` with a machine-readable object map around human-confirmed BBOXes while keeping Geometry as authority and preserving a single NormalizedPage coordinate universe.
+
+### What changed
+- **Structural contract enrichment** (`src/core/contracts/structural-model.ts`):
+  - Added `objectHierarchy` on each `StructuralPage` with typed nodes:
+    - `objectId`, `type`, `bbox`, `parentObjectId`, `childObjectIds`, `confidence`.
+  - Added `fieldRelationships` for each page field:
+    - `containedBy`,
+    - `nearestObjects`,
+    - `relativePositionWithinParent`,
+    - `distanceToBorder`,
+    - `distanceToRefinedBorder`.
+  - Runtime contract guard (`isStructuralModel`) now validates these new sections.
+- **CV adapter output extension** (`src/core/engines/structure/cv/cv-adapter.ts`):
+  - `CvContentRectResult` now includes `objectsSurface` in canonical surface pixels, alongside `contentRectSurface`.
+- **OpenCV.js adapter object detection** (`src/core/engines/structure/cv/opencv-js-adapter.ts`):
+  - Kept OpenCV.js isolated in adapter boundary.
+  - Added deterministic pixel-based detection for object candidates on the canonical raster surface, emitting:
+    - `rectangle`,
+    - `container`,
+    - `line-horizontal`,
+    - `line-vertical`,
+    - `table-like`,
+    - `header`,
+    - `footer`.
+  - Output remains surface-pixel coordinates tied directly to `PageSurface`.
+- **Hierarchy + relationship module** (`src/core/engines/structure/object-hierarchy.ts`):
+  - Builds parent/child nesting from normalized object containment.
+  - Promotes nested containers to `nested-region` and rectangles-with-children to `group-region`.
+  - Computes field-centric structural relationships without changing field BBOXes.
+- **Structural engine integration** (`src/core/engines/structure/structural-engine.ts`):
+  - Converts `objectsSurface` to normalized coordinates via the same `surfaceRectToNormalized` path used by border/refined-border handling.
+  - Produces `objectHierarchy` and `fieldRelationships` per page.
+  - Geometry remains read-only and authoritative; no GeometryFile mutation and no saved BBOX relocation in this step.
+- **Config Capture debug overlay** (`src/features/config-capture/ui/ConfigCapture.tsx`, `config-capture.css`):
+  - Added structural object box overlays + labels in the existing debug layer.
+  - Objects render through the same `normalizedRectToScreen` transform as Border, Refined Border, and saved Geometry overlays.
+
+### Coordinate authority proof
+- CV adapter receives only `CvSurfaceRaster` whose pixels must match `PageSurface`.
+- Object detections are emitted in that same `PageSurface` pixel plane (`objectsSurface`).
+- Structural Engine converts those to normalized rects via `surfaceRectToNormalized`.
+- UI overlays convert normalized rects to screen via `normalizedRectToScreen`.
+- No alternate coordinate system, no detached OpenCV-only space, and no UI-specific math was introduced.
+
+### Ground truth protection
+- Geometry remains untouched and separately stored.
+- Object hierarchy enriches StructuralModel context only.
+- Saved BBOXes are neither moved nor reinterpreted.
+
+### Files added
+- `src/core/engines/structure/object-hierarchy.ts`
+
+### Files modified
+- `src/core/contracts/structural-model.ts`
+- `src/core/engines/structure/cv/cv-adapter.ts`
+- `src/core/engines/structure/cv/opencv-js-adapter.ts`
+- `src/core/engines/structure/structural-engine.ts`
+- `src/features/config-capture/ui/ConfigCapture.tsx`
+- `src/features/config-capture/ui/config-capture.css`
+- `tests/unit/structural-engine.test.ts`
+- `tests/unit/cv-opencv-js-adapter.test.ts`
+- `tests/unit/contracts.test.ts`
+- `tests/unit/structural-model-io.test.ts`
+- `tests/unit/localization-runner.test.ts`
+- `docs/architecture.md`
+- `docs/dev-log.md`
+
+### Checks run
+- `npm run check`: passed.
+- `npm test`: passed.
+- `npm run build`: passed.
+
 ## 2026-04-26 — Step: Run Mode upload status visibility + runtime structural overlay parity
 
 ### Why this step

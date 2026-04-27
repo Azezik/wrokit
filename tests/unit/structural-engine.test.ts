@@ -39,7 +39,7 @@ const stubLoader = async (
 const cvAdapterReturning = (rect: PixelRect): CvAdapter => ({
   name: 'mock-cv',
   version: '0.0',
-  detectContentRect: async () => ({ contentRectSurface: rect })
+  detectContentRect: async () => ({ contentRectSurface: rect, objectsSurface: [] })
 });
 
 describe('createStructuralEngine', () => {
@@ -70,6 +70,8 @@ describe('createStructuralEngine', () => {
     });
     expect(page.refinedBorder.containsAllSavedBBoxes).toBe(true);
     expect(page.refinedBorder.influencedByBBoxCount).toBe(0);
+    expect(page.objectHierarchy.objects).toEqual([]);
+    expect(page.fieldRelationships).toEqual([]);
   });
 
   it('falls back to full-page when CV reports a degenerate rect and no BBOXes exist', async () => {
@@ -197,5 +199,65 @@ describe('createStructuralEngine', () => {
 
     expect(model.pages).toHaveLength(1);
     expect(model.pages[0].pageIndex).toBe(1);
+  });
+
+  it('enriches StructuralModel with object hierarchy and field relationships', async () => {
+    const geometry: GeometryFile = {
+      schema: 'wrokit/geometry-file',
+      version: '1.1',
+      geometryFileVersion: 'wrokit/geometry/v1',
+      id: 'g2',
+      wizardId: 'w2',
+      documentFingerprint: 'surface:test#0:1000x2000',
+      fields: [
+        {
+          fieldId: 'amount',
+          pageIndex: 0,
+          bbox: { xNorm: 0.2, yNorm: 0.25, wNorm: 0.1, hNorm: 0.06 },
+          pixelBbox: { x: 200, y: 500, width: 100, height: 120 },
+          pageSurface: { pageIndex: 0, surfaceWidth: 1000, surfaceHeight: 2000 },
+          confirmedAtIso: '2026-04-26T00:00:00Z',
+          confirmedBy: 'user'
+        }
+      ]
+    };
+
+    const engine = createStructuralEngine({
+      cvAdapter: {
+        name: 'mock-cv',
+        version: '0.1',
+        detectContentRect: async () => ({
+          contentRectSurface: { x: 100, y: 200, width: 800, height: 1600 },
+          objectsSurface: [
+            {
+              objectId: 'obj_container',
+              type: 'container',
+              bboxSurface: { x: 150, y: 300, width: 500, height: 900 },
+              confidence: 0.88
+            },
+            {
+              objectId: 'obj_line_h',
+              type: 'line-horizontal',
+              bboxSurface: { x: 150, y: 450, width: 500, height: 2 },
+              confidence: 0.8
+            }
+          ]
+        })
+      },
+      rasterLoader: stubLoader
+    });
+
+    const model = await engine.run({
+      pages: [makePage()],
+      geometry,
+      documentFingerprint: geometry.documentFingerprint
+    });
+
+    const page = model.pages[0];
+    expect(page.objectHierarchy.objects).toHaveLength(2);
+    expect(page.objectHierarchy.objects[0].bbox.xNorm).toBeCloseTo(0.15, 6);
+    expect(page.fieldRelationships).toHaveLength(1);
+    expect(page.fieldRelationships[0].fieldId).toBe('amount');
+    expect(page.fieldRelationships[0].nearestObjects.length).toBeGreaterThan(0);
   });
 });

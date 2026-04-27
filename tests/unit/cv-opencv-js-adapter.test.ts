@@ -57,6 +57,7 @@ describe('createOpenCvJsAdapter', () => {
 
     const result = await adapter.detectContentRect(raster);
     expect(result.contentRectSurface).toEqual({ x: 4, y: 6, width: 10, height: 10 });
+    expect(Array.isArray(result.objectsSurface)).toBe(true);
   });
 
   it('falls back to the full surface rect when no content is found', async () => {
@@ -64,6 +65,7 @@ describe('createOpenCvJsAdapter', () => {
     const raster = makeRaster(10, 10, () => {});
     const result = await adapter.detectContentRect(raster);
     expect(result.contentRectSurface).toEqual({ x: 0, y: 0, width: 10, height: 10 });
+    expect(result.objectsSurface).toEqual([]);
   });
 
   it('rejects a raster whose dimensions do not match the surface', async () => {

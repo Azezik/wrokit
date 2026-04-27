@@ -231,6 +231,11 @@ export function ConfigCapture() {
         surfaceTransform,
         activeStructuralPage.refinedBorder.rectNorm
       ),
+      objects: activeStructuralPage.objectHierarchy.objects.map((object) => ({
+        objectId: object.objectId,
+        type: object.type,
+        rect: normalizedRectToScreen(surfaceTransform, object.bbox)
+      })),
       source: activeStructuralPage.refinedBorder.source,
       influencedByBBoxCount: activeStructuralPage.refinedBorder.influencedByBBoxCount
     };
@@ -585,6 +590,23 @@ export function ConfigCapture() {
                       Refined ({structuralOverlay.source})
                     </span>
                   </div>
+                  {structuralOverlay.objects.map((object) => (
+                    <div
+                      key={object.objectId}
+                      className="config-capture__structural-object"
+                      aria-hidden="true"
+                      style={{
+                        left: `${object.rect.x}px`,
+                        top: `${object.rect.y}px`,
+                        width: `${object.rect.width}px`,
+                        height: `${object.rect.height}px`
+                      }}
+                    >
+                      <span className="config-capture__structural-object-label">
+                        {object.type} · {object.objectId}
+                      </span>
+                    </div>
+                  ))}
                 </>
               ) : null}
 

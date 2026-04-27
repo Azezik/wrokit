@@ -146,6 +146,25 @@
   white-space: nowrap;
 }
 
+.config-capture__structural-object {
+  position: absolute;
+  border: 1px solid rgb(14 116 144 / 0.9);
+  background: rgb(14 116 144 / 0.08);
+  pointer-events: none;
+}
+
+.config-capture__structural-object-label {
+  position: absolute;
+  top: -1.2rem;
+  left: 0;
+  background: rgb(8 47 73 / 0.82);
+  color: #fff;
+  padding: 0 var(--space-1);
+  font-size: 0.65rem;
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
 .config-capture__toggle {
   display: inline-flex;
   align-items: center;
