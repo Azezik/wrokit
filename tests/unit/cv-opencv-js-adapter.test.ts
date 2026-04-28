@@ -225,6 +225,23 @@ describe('createOpenCvJsAdapter', () => {
     expect(lineObjects).toHaveLength(0);
   });
 
+  it('scales line and area thresholds with raster size (size-relative floors)', async () => {
+    // A large 1200x1600 raster paints a thin horizontal rule (1 row thick) at
+    // y=400 of length 30 pixels. With purely absolute thresholds (24 px min
+    // length) this would qualify as a line, even though 30 px is a tiny
+    // fraction of the 1200 px page width. With size-relative floors the
+    // adapter ignores it as below 4% of the min side (≈48 px).
+    const adapter = createOpenCvJsAdapter();
+    const raster = makeRaster(1200, 1600, (data) => {
+      paintContentRect(data, 1200, { left: 100, top: 400, right: 130, bottom: 401 });
+    });
+
+    const result = await adapter.detectContentRect(raster);
+    expect(result.executionMode).toBe('heuristic-fallback');
+    const horizontals = result.objectsSurface.filter((o) => o.type === 'line-horizontal');
+    expect(horizontals).toHaveLength(0);
+  });
+
   it('extracts contour and line objects through the OpenCV runtime boundary when runtime is provided', async () => {
     const adapter = createOpenCvJsAdapter({
       opencvRuntime: createMockOpenCvRuntime()
