@@ -219,6 +219,51 @@ describe('matchPage', () => {
     expect(childBMatch?.runtimeObjectId).toBe('rChildB');
   });
 
+  it('flags a near-duplicate match as ambiguous and demotes its confidence', () => {
+    // Two runtime rectangles sit at near-identical positions/sizes — the
+    // matcher's "winner" against c_target is statistically a tie. Confirm
+    // the match is emitted with an ambiguity warning and a lower confidence
+    // than the equivalent unambiguous match. This is the repeated-header /
+    // table-cell case the audit calls out.
+    const config = buildPage([node('c_target', 'rectangle', rect(0.10, 0.10, 0.20, 0.10))]);
+    const runtime = buildPage([
+      node('r_winner', 'rectangle', rect(0.10, 0.10, 0.20, 0.10)),
+      // r_twin: nearly identical to r_winner, so its similarity score with
+      // c_target lands within the AMBIGUITY_SCORE_MARGIN of r_winner's score.
+      node('r_twin', 'rectangle', rect(0.105, 0.10, 0.20, 0.10))
+    ]);
+    const result = matchPage(config, runtime);
+    expect(result.matches).toHaveLength(1);
+    const match = result.matches[0];
+    expect(match.configObjectId).toBe('c_target');
+    expect(match.warnings.some((w) => w.startsWith('ambiguous match'))).toBe(true);
+    expect(match.warnings[0]).toMatch(/r_winner/);
+    expect(match.warnings[0]).toMatch(/r_twin/);
+
+    // Equivalent setup but only r_winner exists — no rival, no demotion.
+    const unambiguous = matchPage(config, buildPage([node('r_winner', 'rectangle', rect(0.10, 0.10, 0.20, 0.10))]));
+    expect(unambiguous.matches[0].warnings).toEqual([]);
+    expect(match.confidence).toBeLessThan(unambiguous.matches[0].confidence);
+
+    // Page-level warning is also surfaced so consumers can see ambiguity
+    // without scanning every match's `warnings`.
+    expect(result.warnings.some((w) => w.startsWith('ambiguous match'))).toBe(true);
+  });
+
+  it('does not flag ambiguity when the runner-up clearly loses', () => {
+    // r_winner is a near-perfect twin of c_target, r_other is far away.
+    // The score gap is well above AMBIGUITY_SCORE_MARGIN, so no warning.
+    const config = buildPage([node('c_target', 'rectangle', rect(0.10, 0.10, 0.20, 0.10))]);
+    const runtime = buildPage([
+      node('r_winner', 'rectangle', rect(0.10, 0.10, 0.20, 0.10)),
+      node('r_other', 'rectangle', rect(0.80, 0.80, 0.05, 0.05))
+    ]);
+    const result = matchPage(config, runtime);
+    expect(result.matches).toHaveLength(1);
+    expect(result.matches[0].warnings).toEqual([]);
+    expect(result.warnings.some((w) => w.startsWith('ambiguous match'))).toBe(false);
+  });
+
   it('respects a custom confidence threshold', () => {
     const config = buildPage([node('c1', 'container', rect(0.0, 0.0, 0.2, 0.2))]);
     const runtime = buildPage([node('r1', 'container', rect(0.7, 0.7, 0.2, 0.2))]);

@@ -432,19 +432,58 @@ const hierarchyRoleDistance = (
   return [ancestorChainPenalty, childPresencePenalty, depthPenalty, parentTypePenalty];
 };
 
+/**
+ * Patterns produced by the OpenCV.js adapter (and any heuristic fallback that
+ * shares its prefixes) when assigning objectIds purely by detection order:
+ * `obj_0`, `obj_hline_3`, `obj_cv_5`, `obj_cv_line_2`, etc.
+ *
+ * Such ids are positional — they encode the index of the object inside the
+ * page's detection pass, not anything about the underlying content. Two
+ * unrelated documents will routinely share `obj_0` or `obj_hline_0` for
+ * structurally distinct objects, so an id-only match across distinct
+ * documents tells us nothing more than "both detectors found at least one
+ * object." See {@link ResolveObjectOptions.crossDocument}.
+ */
+const POSITIONAL_OBJECT_ID_PATTERN = /^obj(?:_[a-z]+)*_\d+$/;
+
+const isPositionalObjectId = (objectId: string): boolean =>
+  POSITIONAL_OBJECT_ID_PATTERN.test(objectId);
+
+interface ResolveObjectOptions {
+  /**
+   * True when the config and runtime pages came from distinct documents
+   * (different `StructuralModel.documentFingerprint`). When true, an id-only
+   * match against a positional/auto-generated objectId is treated as
+   * coincidental: the resolver falls through to the type-hierarchy-geometry
+   * pass, which actually examines the structural signal. The resolver still
+   * accepts `id` matches when the id is non-positional (e.g. an authored or
+   * content-derived id), since those carry real cross-document meaning.
+   */
+  crossDocument?: boolean;
+}
+
 const resolveRuntimeObject = (
   configPage: StructuralPage,
   runtimePage: StructuralPage,
-  configObjectId: string
+  configObjectId: string,
+  options: ResolveObjectOptions = {}
 ): { object: StructuralObjectNode; strategy: RuntimeObjectMatchStrategy } | null => {
   const configObject = configPage.objectHierarchy.objects.find((object) => object.objectId === configObjectId);
 
   const runtimeById = runtimePage.objectHierarchy.objects.find((object) => object.objectId === configObjectId);
   if (runtimeById && (!configObject || runtimeById.type === configObject.type)) {
-    return {
-      object: runtimeById,
-      strategy: 'id'
-    };
+    // Across distinct documents, a positional objectId match is not an
+    // identity signal — it just means both detection passes happened to
+    // assign the same index. Skip the `id` strategy in that case so the
+    // RuntimeStructuralTransform.objectMatchStrategy reflects reality, and
+    // let the `type-hierarchy-geometry` pass below pick the same object on
+    // its own merits if it deserves to win.
+    if (!(options.crossDocument && isPositionalObjectId(runtimeById.objectId))) {
+      return {
+        object: runtimeById,
+        strategy: 'id'
+      };
+    }
   }
 
   if (!configObject) {
@@ -509,7 +548,8 @@ const stableAnchorLabelToTier = (
 const resolveRescuerObjectStrict = (
   configPage: StructuralPage,
   runtimePage: StructuralPage,
-  rescuerObjectId: string
+  rescuerObjectId: string,
+  options: ResolveObjectOptions = {}
 ): { object: StructuralObjectNode; strategy: RuntimeObjectMatchStrategy } | null => {
   const configObject = getObjectById(configPage, rescuerObjectId);
 
@@ -517,7 +557,9 @@ const resolveRescuerObjectStrict = (
     (object) => object.objectId === rescuerObjectId
   );
   if (runtimeById && (!configObject || runtimeById.type === configObject.type)) {
-    return { object: runtimeById, strategy: 'id' };
+    if (!(options.crossDocument && isPositionalObjectId(runtimeById.objectId))) {
+      return { object: runtimeById, strategy: 'id' };
+    }
   }
 
   if (!configObject) {
@@ -569,7 +611,8 @@ const resolveFromRelationalRescue = (
   configPage: StructuralPage,
   runtimePage: StructuralPage,
   missingAnchor: StructuralFieldStableObjectAnchor,
-  candidateRescuers: readonly StructuralFieldStableObjectAnchor[]
+  candidateRescuers: readonly StructuralFieldStableObjectAnchor[],
+  options: ResolveObjectOptions = {}
 ): AnchorResolution | null => {
   const configMissingObject = getObjectById(configPage, missingAnchor.objectId);
   if (!configMissingObject) {
@@ -592,7 +635,12 @@ const resolveFromRelationalRescue = (
       continue;
     }
 
-    const rescuerMatch = resolveRescuerObjectStrict(configPage, runtimePage, rescuer.objectId);
+    const rescuerMatch = resolveRescuerObjectStrict(
+      configPage,
+      runtimePage,
+      rescuer.objectId,
+      options
+    );
     if (!rescuerMatch) {
       continue;
     }
@@ -729,6 +777,18 @@ const resolveFromTransformationCandidate = (
  */
 const CONSENSUS_RESCUE_MIN_CONFIDENCE = 0.6;
 
+/**
+ * Stricter floor used when a consensus has only a SINGLE contributing match.
+ * A 1-match consensus is structurally degenerate: it is just that one match's
+ * own affine elevated to "page-level" status, with no second match available
+ * to cross-check it. Allowing it to rescue a field that just barely clears the
+ * regular {@link CONSENSUS_RESCUE_MIN_CONFIDENCE} would amount to laundering a
+ * single low-trust object match into a page-wide transform. Demand a stronger
+ * signal before letting that happen, and warn whenever a 1-match rescue does
+ * fire so consumers can see it.
+ */
+const SINGLE_MATCH_CONSENSUS_MIN_CONFIDENCE = 0.85;
+
 const findTransformationPage = (
   transformationModel: TransformationModel,
   pageIndex: number
@@ -754,6 +814,16 @@ const resolveFromConsensusRescue = (
   if (!Number.isFinite(consensus.confidence) || consensus.confidence < minConfidence) {
     return null;
   }
+  // Degenerate consensus guard: a single-match consensus is just that one
+  // object match dressed as a page-level affine. Refuse to rescue with it
+  // unless its confidence clears the stricter single-match floor.
+  if (
+    consensus.contributingMatchCount < 2 &&
+    consensus.confidence < SINGLE_MATCH_CONSENSUS_MIN_CONFIDENCE
+  ) {
+    return null;
+  }
+  const isSingleMatch = consensus.contributingMatchCount < 2;
 
   // The consensus is a page-level affine derived from object matches across
   // the page; it is not bound to any single object or source rect pair. The
@@ -771,11 +841,22 @@ const resolveFromConsensusRescue = (
   };
 
   const projection = applyTransformToBox(source.bbox, transform);
+  const warnings: string[] = [];
+  if (projection.clipWarning) {
+    warnings.push(projection.clipWarning);
+  }
+  if (isSingleMatch) {
+    warnings.push(
+      `weak consensus rescue: page-consensus built from a single contributing ` +
+        `match (confidence ${consensus.confidence.toFixed(2)}); cannot be ` +
+        `cross-checked against any second match`
+    );
+  }
   return {
     tier: 'page-consensus',
     transform,
     predictedBox: projection.box,
-    ...(projection.clipWarning ? { warnings: [projection.clipWarning] } : {})
+    ...(warnings.length > 0 ? { warnings } : {})
   };
 };
 
@@ -815,6 +896,19 @@ const ANCHOR_AGREEMENT_IOU_MIN = 0.5;
  * downstream consumers can inspect why the prediction is fragile.
  */
 const WEAK_OBJECT_MATCH_CONFIDENCE = 0.5;
+
+/**
+ * Multiplier applied to an object-anchor candidate's reported confidence when
+ * the page's config and runtime `cvExecutionMode` disagree (i.e. one side ran
+ * full OpenCV detection and the other fell back to the heuristic detector).
+ * Heuristic-vs-OpenCV object detections aren't strictly comparable — they
+ * pick up different shapes and emit different rect bounds — so the matcher's
+ * confidence in the resulting object anchor is overstated relative to a
+ * within-mode comparison. We don't reject those anchors (predictions are
+ * still better than nothing), but we down-weight their confidence for the
+ * weak-match check so the warning fires at a more honest threshold.
+ */
+const CV_MODE_MISMATCH_CONFIDENCE_PENALTY = 0.7;
 
 interface AlternativeProjection {
   label: string;
@@ -879,20 +973,46 @@ const evaluateAnchorAgreement = (input: {
   alternatives: readonly AlternativeProjection[];
   primaryCandidate?: TransformationFieldCandidate;
   hasConsensusAlternative: boolean;
+  /**
+   * Whether the page's config/runtime `cvExecutionMode` disagree. When true,
+   * object-anchor confidences are scaled by
+   * {@link CV_MODE_MISMATCH_CONFIDENCE_PENALTY} for the weak-match check, so
+   * predictions built from heuristic-vs-OpenCV detections are flagged at a
+   * stricter threshold without rewriting the chosen anchor itself.
+   */
+  cvModeMismatch?: boolean;
 }): string[] => {
-  const { chosen, chosenLabel, alternatives, primaryCandidate, hasConsensusAlternative } = input;
+  const {
+    chosen,
+    chosenLabel,
+    alternatives,
+    primaryCandidate,
+    hasConsensusAlternative,
+    cvModeMismatch = false
+  } = input;
   const warnings: string[] = [];
+
+  const effectiveConfidence = (candidate: TransformationFieldCandidate): number =>
+    cvModeMismatch
+      ? candidate.confidence * CV_MODE_MISMATCH_CONFIDENCE_PENALTY
+      : candidate.confidence;
+
+  const formatWeakConfidence = (candidate: TransformationFieldCandidate): string =>
+    cvModeMismatch
+      ? `confidence ${candidate.confidence.toFixed(2)} (effective ` +
+        `${effectiveConfidence(candidate).toFixed(2)} after cv-mode-mismatch penalty)`
+      : `confidence ${candidate.confidence.toFixed(2)}`;
 
   if (alternatives.length === 0) {
     if (
       primaryCandidate &&
       isObjectAnchorCandidate(primaryCandidate) &&
       Number.isFinite(primaryCandidate.confidence) &&
-      primaryCandidate.confidence < WEAK_OBJECT_MATCH_CONFIDENCE &&
+      effectiveConfidence(primaryCandidate) < WEAK_OBJECT_MATCH_CONFIDENCE &&
       !hasConsensusAlternative
     ) {
       warnings.push(
-        `weak object match: ${chosenLabel} confidence ${primaryCandidate.confidence.toFixed(2)} ` +
+        `weak object match: ${chosenLabel} ${formatWeakConfidence(primaryCandidate)} ` +
           `with no agreeing alternative anchor or page consensus to cross-check`
       );
     }
@@ -924,10 +1044,10 @@ const evaluateAnchorAgreement = (input: {
     primaryCandidate &&
     isObjectAnchorCandidate(primaryCandidate) &&
     Number.isFinite(primaryCandidate.confidence) &&
-    primaryCandidate.confidence < WEAK_OBJECT_MATCH_CONFIDENCE
+    effectiveConfidence(primaryCandidate) < WEAK_OBJECT_MATCH_CONFIDENCE
   ) {
     warnings.push(
-      `weak object match: ${chosenLabel} confidence ${primaryCandidate.confidence.toFixed(2)} ` +
+      `weak object match: ${chosenLabel} ${formatWeakConfidence(primaryCandidate)} ` +
         `with disagreeing alternatives`
     );
   }
@@ -939,7 +1059,8 @@ const evaluateAnchorAgreement = (input: {
 const resolveFieldAnchor = (
   source: FieldGeometry,
   configPage: StructuralPage,
-  runtimePage: StructuralPage
+  runtimePage: StructuralPage,
+  options: ResolveObjectOptions = {}
 ): AnchorResolution => {
   const relationship = getFieldRelationship(configPage, source.fieldId);
 
@@ -956,7 +1077,12 @@ const resolveFieldAnchor = (
         continue;
       }
 
-      const runtimeMatch = resolveRuntimeObject(configPage, runtimePage, stableAnchor.objectId);
+      const runtimeMatch = resolveRuntimeObject(
+        configPage,
+        runtimePage,
+        stableAnchor.objectId,
+        options
+      );
       if (runtimeMatch) {
         const projection = projectRelativeRect(
           stableAnchor.relativeFieldRect,
@@ -990,7 +1116,8 @@ const resolveFieldAnchor = (
         configPage,
         runtimePage,
         stableAnchor,
-        relationship.fieldAnchors.stableObjectAnchors
+        relationship.fieldAnchors.stableObjectAnchors,
+        options
       );
       if (rescued) {
         return rescued;
@@ -1163,6 +1290,16 @@ export const createLocalizationRunner = (): LocalizationRunner => ({
       input.runtimeStructuralModel
     );
 
+    // Detect cross-document localization. Fingerprints are produced at
+    // structural-model build time and uniquely identify the surface the
+    // model was derived from; when they differ, we are localizing one
+    // document onto another, so positional objectId matches no longer
+    // carry identity weight (see {@link isPositionalObjectId}).
+    const crossDocument =
+      input.configStructuralModel.documentFingerprint !==
+      input.runtimeStructuralModel.documentFingerprint;
+    const resolveOptions: ResolveObjectOptions = { crossDocument };
+
     const fields = input.configGeometry.fields
       .filter((field) => runtimePagesByIndex.has(field.pageIndex))
       .map((field) => {
@@ -1247,7 +1384,8 @@ export const createLocalizationRunner = (): LocalizationRunner => ({
                 configStructuralPage,
                 runtimeStructuralPage,
                 missingAnchor,
-                fieldRelationship.fieldAnchors.stableObjectAnchors
+                fieldRelationship.fieldAnchors.stableObjectAnchors,
+                resolveOptions
               );
               if (rescued) {
                 resolution = rescued;
@@ -1346,18 +1484,26 @@ export const createLocalizationRunner = (): LocalizationRunner => ({
         }
 
         if (!resolution) {
-          resolution = resolveFieldAnchor(field, configStructuralPage, runtimeStructuralPage);
+          resolution = resolveFieldAnchor(
+            field,
+            configStructuralPage,
+            runtimeStructuralPage,
+            resolveOptions
+          );
           if (chosenLabel === 'legacy-stable-anchor') {
             chosenLabel = `legacy-${resolution.tier}`;
           }
         }
+
+        const cvModeMismatch = cvMismatchWarnings.perPage.has(field.pageIndex);
 
         const fieldWarnings = evaluateAnchorAgreement({
           chosen: resolution,
           chosenLabel,
           alternatives,
           primaryCandidate,
-          hasConsensusAlternative
+          hasConsensusAlternative,
+          cvModeMismatch
         });
 
         if (resolution.warnings) {
@@ -1366,7 +1512,25 @@ export const createLocalizationRunner = (): LocalizationRunner => ({
 
         const cvWarning = cvMismatchWarnings.perPage.get(field.pageIndex);
         if (cvWarning) {
-          fieldWarnings.push(cvWarning);
+          // Escalate the message when an object-anchor candidate was actually
+          // used: the heuristic-vs-OpenCV detection difference touches THIS
+          // prediction, not just the document overall, so the warning records
+          // the confidence demotion that was applied.
+          if (
+            primaryCandidate &&
+            isObjectAnchorCandidate(primaryCandidate) &&
+            Number.isFinite(primaryCandidate.confidence)
+          ) {
+            const effective =
+              primaryCandidate.confidence * CV_MODE_MISMATCH_CONFIDENCE_PENALTY;
+            fieldWarnings.push(
+              `${cvWarning}; object-anchor confidence demoted ` +
+                `${primaryCandidate.confidence.toFixed(2)}→${effective.toFixed(2)} ` +
+                `for weak-match evaluation`
+            );
+          } else {
+            fieldWarnings.push(cvWarning);
+          }
         }
 
         return buildPredictedField(field, runtimePage, resolution, fieldWarnings);
@@ -1404,7 +1568,10 @@ export const __testing = {
   evaluateAnchorAgreement,
   collectCvModeMismatchWarnings,
   validateArtifactCrossReferences,
+  isPositionalObjectId,
   CONSENSUS_RESCUE_MIN_CONFIDENCE,
+  SINGLE_MATCH_CONSENSUS_MIN_CONFIDENCE,
   ANCHOR_AGREEMENT_IOU_MIN,
-  WEAK_OBJECT_MATCH_CONFIDENCE
+  WEAK_OBJECT_MATCH_CONFIDENCE,
+  CV_MODE_MISMATCH_CONFIDENCE_PENALTY
 };
