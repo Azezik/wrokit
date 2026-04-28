@@ -22,6 +22,7 @@ import type {
   StructuralStableFieldAnchorLabel
 } from '../contracts/structural-model';
 import type {
+  TransformationConsensus,
   TransformationFieldCandidate,
   TransformationModel,
   TransformationPage
@@ -453,6 +454,62 @@ const resolveFromTransformationCandidate = (
   };
 };
 
+/**
+ * Minimum TransformationModel consensus confidence required before its global
+ * page-level affine is allowed to "rescue" a field whose object anchors all
+ * failed. Set conservatively: a confident consensus is worth more than the
+ * page-level refined-border fallback, but a weak one is worth less.
+ */
+const CONSENSUS_RESCUE_MIN_CONFIDENCE = 0.6;
+
+const findTransformationPage = (
+  transformationModel: TransformationModel,
+  pageIndex: number
+): TransformationPage | undefined =>
+  transformationModel.pages.find((entry) => entry.pageIndex === pageIndex);
+
+const isObjectAnchorCandidate = (
+  candidate: TransformationFieldCandidate
+): boolean =>
+  candidate.source === 'matched-object' || candidate.source === 'parent-object';
+
+const resolveFromConsensusRescue = (
+  source: FieldGeometry,
+  consensus: TransformationConsensus,
+  minConfidence: number
+): AnchorResolution | null => {
+  if (!consensus.transform) {
+    return null;
+  }
+  if (consensus.contributingMatchCount < 1) {
+    return null;
+  }
+  if (!Number.isFinite(consensus.confidence) || consensus.confidence < minConfidence) {
+    return null;
+  }
+
+  // The consensus is a page-level affine derived from object matches across
+  // the page; it is not bound to any single object or source rect pair. The
+  // PredictedGeometryFile contract intentionally omits `sourceConfigRectNorm`
+  // / `sourceRuntimeRectNorm` for `page-consensus` so downstream consumers
+  // are not misled into treating an attributed pair as the basis of the
+  // affine.
+  const transform: RuntimeStructuralTransform = {
+    pageIndex: source.pageIndex,
+    basis: 'page-consensus',
+    scaleX: consensus.transform.scaleX,
+    scaleY: consensus.transform.scaleY,
+    translateX: consensus.transform.translateX,
+    translateY: consensus.transform.translateY
+  };
+
+  return {
+    tier: 'page-consensus',
+    transform,
+    predictedBox: applyTransformToBox(source.bbox, transform)
+  };
+};
+
 const findFieldCandidates = (
   transformationModel: TransformationModel,
   pageIndex: number,
@@ -611,7 +668,14 @@ export const createLocalizationRunner = (): LocalizationRunner => ({
             field.pageIndex,
             field.fieldId
           );
+
+          // Object-based candidates first (matched-object, parent-object), in
+          // fallbackOrder. These remain the strongest signal whenever they
+          // resolve, so they are tried before any rescue rung.
           for (const candidate of candidates) {
+            if (!isObjectAnchorCandidate(candidate)) {
+              continue;
+            }
             const candidateResolution = resolveFromTransformationCandidate(
               field,
               candidate,
@@ -621,6 +685,46 @@ export const createLocalizationRunner = (): LocalizationRunner => ({
             if (candidateResolution) {
               resolution = candidateResolution;
               break;
+            }
+          }
+
+          // Consensus / global-affine rescue rung: when no object anchor
+          // resolved but the page has a confident consensus transform, apply
+          // it before falling back to refined-border / border. This is what
+          // the audit calls out as missing — page-level movement trends were
+          // being ignored as soon as object anchors failed.
+          if (!resolution) {
+            const transformationPage = findTransformationPage(
+              input.transformationModel,
+              field.pageIndex
+            );
+            if (transformationPage) {
+              resolution = resolveFromConsensusRescue(
+                field,
+                transformationPage.consensus,
+                CONSENSUS_RESCUE_MIN_CONFIDENCE
+              );
+            }
+          }
+
+          // Refined-border / border candidates from the TransformationModel,
+          // also in fallbackOrder. These keep their existing semantics; they
+          // are intentionally tried *after* the consensus rescue.
+          if (!resolution) {
+            for (const candidate of candidates) {
+              if (isObjectAnchorCandidate(candidate)) {
+                continue;
+              }
+              const candidateResolution = resolveFromTransformationCandidate(
+                field,
+                candidate,
+                configStructuralPage,
+                runtimeStructuralPage
+              );
+              if (candidateResolution) {
+                resolution = candidateResolution;
+                break;
+              }
             }
           }
         }
@@ -655,5 +759,7 @@ export const __testing = {
   resolveRuntimeObject,
   resolveFieldAnchor,
   resolveFromTransformationCandidate,
-  findFieldCandidates
+  resolveFromConsensusRescue,
+  findFieldCandidates,
+  CONSENSUS_RESCUE_MIN_CONFIDENCE
 };

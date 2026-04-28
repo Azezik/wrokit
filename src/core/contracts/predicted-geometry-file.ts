@@ -11,6 +11,11 @@
  * - The persisted shape carries `geometryFileVersion` and `structureVersion`
  *   so consumers can verify it is compatible with their loaded GeometryFile +
  *   StructuralModel.
+ * - For every `RuntimeAnchorTier` except `'page-consensus'`, the transform's
+ *   `sourceConfigRectNorm` / `sourceRuntimeRectNorm` pair is the rect pair the
+ *   affine was derived from. For `'page-consensus'`, those fields are omitted
+ *   because the affine is the page-level TransformationModel consensus and is
+ *   not derived from any single source rect pair.
  */
 
 import type { NormalizedBoundingBox, PixelBoundingBox } from './geometry';
@@ -20,6 +25,7 @@ export type RuntimeAnchorTier =
   | 'field-object-a'
   | 'field-object-b'
   | 'field-object-c'
+  | 'page-consensus'
   | 'refined-border'
   | 'border';
 
@@ -28,8 +34,16 @@ export type RuntimeObjectMatchStrategy = 'id' | 'type-hierarchy-geometry';
 export interface RuntimeStructuralTransform {
   pageIndex: number;
   basis: RuntimeAnchorTier;
-  sourceConfigRectNorm: StructuralNormalizedRect;
-  sourceRuntimeRectNorm: StructuralNormalizedRect;
+  /**
+   * Config-side rect from which the affine was *derived*. Required for every
+   * basis except `'page-consensus'`. For `'page-consensus'` the affine is the
+   * page-level TransformationModel consensus and is not derived from any
+   * single source rect pair, so these fields are intentionally omitted to
+   * keep the artifact honest. Consumers MUST treat their absence as the
+   * "no source rect pair" signal — do not synthesize one.
+   */
+  sourceConfigRectNorm?: StructuralNormalizedRect;
+  sourceRuntimeRectNorm?: StructuralNormalizedRect;
   scaleX: number;
   scaleY: number;
   translateX: number;
@@ -79,6 +93,7 @@ const RUNTIME_ANCHOR_TIERS: ReadonlySet<RuntimeAnchorTier> = new Set<RuntimeAnch
   'field-object-a',
   'field-object-b',
   'field-object-c',
+  'page-consensus',
   'refined-border',
   'border'
 ]);
@@ -151,7 +166,15 @@ const isRuntimeStructuralTransform = (value: unknown): value is RuntimeStructura
   if (typeof value.basis !== 'string' || !RUNTIME_ANCHOR_TIERS.has(value.basis as RuntimeAnchorTier)) {
     return false;
   }
-  if (
+  // Source rect pair is required for every basis except page-consensus, where
+  // the affine is the page-level consensus and is not derived from any rect
+  // pair. Allow undefined ONLY when the fields are entirely absent — never a
+  // partial pair, and never a wrong-typed value.
+  if (value.basis === 'page-consensus') {
+    if (value.sourceConfigRectNorm !== undefined || value.sourceRuntimeRectNorm !== undefined) {
+      return false;
+    }
+  } else if (
     !isStructuralNormalizedRect(value.sourceConfigRectNorm) ||
     !isStructuralNormalizedRect(value.sourceRuntimeRectNorm)
   ) {

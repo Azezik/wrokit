@@ -546,6 +546,61 @@ describe('isPredictedGeometryFile', () => {
     expect(isPredictedGeometryFile(badStrategy)).toBe(false);
   });
 
+  it('accepts page-consensus transforms only when source rect pair is omitted', () => {
+    const validConsensus = {
+      ...validPredicted,
+      fields: [
+        {
+          ...validPredicted.fields[0],
+          anchorTierUsed: 'page-consensus',
+          transform: {
+            pageIndex: 0,
+            basis: 'page-consensus',
+            scaleX: 1,
+            scaleY: 1,
+            translateX: 0.1,
+            translateY: 0.05
+          }
+        }
+      ]
+    };
+    expect(isPredictedGeometryFile(validConsensus)).toBe(true);
+
+    const consensusWithSourceRects = {
+      ...validConsensus,
+      fields: [
+        {
+          ...validConsensus.fields[0],
+          transform: {
+            ...validConsensus.fields[0].transform,
+            sourceConfigRectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 },
+            sourceRuntimeRectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 }
+          }
+        }
+      ]
+    };
+    expect(isPredictedGeometryFile(consensusWithSourceRects)).toBe(false);
+
+    const refinedBorderMissingSourceRects = {
+      ...validPredicted,
+      fields: [
+        {
+          ...validPredicted.fields[0],
+          anchorTierUsed: 'refined-border',
+          transform: {
+            pageIndex: 0,
+            basis: 'refined-border',
+            scaleX: 1,
+            scaleY: 1,
+            translateX: 0,
+            translateY: 0
+          }
+        }
+      ]
+    };
+    expect(isPredictedGeometryFile(refinedBorderMissingSourceRects)).toBe(false);
+  });
+
   it('rejects a malformed transform rect or non-finite scalar', () => {
     const badRect = {
       ...validPredicted,
