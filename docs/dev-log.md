@@ -1,3 +1,55 @@
+## 2026-04-28 — Refactor: Phase 1A + 1B (per-stage NormalizedPage isolation + pure shared helpers)
+
+### Why this step
+- The original Phase 1 in `docs/audits/WROKIT_REFACTOR_PLAN.md` proposed unifying Config Capture and Run Mode on a single shared `NormalizedPageSessionStore`. Architectural review rejected that direction: NormalizedPage is a calibrated page-surface *standard*, not a shared live document. Each stage must own its own active document, and the only things crossing stage boundaries are explicit, downloadable, versioned artifacts.
+- Phase 1A removes the latent cross-stage coupling potential (the module-level singleton) before any later phase can lean on it. Phase 1B extracts the deduplication wins (one fingerprint formula, one status-text formula) as pure helpers — no shared state.
+
+### Phase 1A — De-singleton the NormalizedPage session store
+- `src/core/storage/normalized-page-session-store.ts`: removed the module-level `normalizedPageSessionStore` instance and the `getNormalizedPageSessionStore` accessor. The factory `createNormalizedPageSessionStore` is now the sole export, matching the per-instance convention used by every other store in `src/core/storage/`.
+- `src/features/config-capture/ui/ConfigCapture.tsx`: switched `useRef(getNormalizedPageSessionStore())` → `useRef(createNormalizedPageSessionStore())`.
+- Run Mode was already independent (local React state) and required no change.
+- `docs/architecture.md`: replaced "single session authority" / "page-aware modules must consume `NormalizedPage` through this session authority" wording with a "single page-surface coordinate authority" rule. The canonical authority is `page-surface.ts` + `NormalizedPageViewport.tsx` (coordinate math + viewport), not the session store. Each stage owns its own session.
+
+### Phase 1B — Extract pure shared helpers
+- New `src/core/page-surface/page-surface-fingerprint.ts` exports `buildDocumentFingerprint({ sourceName, pages })`. Stateless. The session store now imports this helper for its own fingerprint construction; Run Mode replaces its inline `surface:${sourceName}#${signature}` string with a call to the same helper. One fingerprint formula in the codebase.
+- New `src/core/page-surface/ui/structural-status-text.ts` exports `buildStructuralStatusText({ isComputing?, structuralModel, structuralPage, runtimeLoadStatus, hasNormalizedPages, transformationModel?, computingLabel?, pendingLabel?, emptyLabel? })`. Stateless. Both Config Capture and Run Mode now call this helper instead of constructing their `StructuralOverlayControls` `statusText` inline. Run Mode's status text gains the structural details + OpenCV runtime status it was previously missing (it used to show only the transformation line); the empty-state copy "No runtime structure yet." is preserved via the override labels.
+- Both helpers exported through `src/core/page-surface/index.ts` and `src/core/page-surface/ui/index.ts`.
+
+### Tests added
+- `tests/unit/page-surface-fingerprint.test.ts` — 4 tests including a regression that verifies the session store and a Run Mode-style call site produce byte-identical fingerprints for the same input, and that two independent stages computing the same fingerprint do not share session state.
+- `tests/unit/structural-status-text.test.ts` — 8 tests covering empty / pending / computing fallbacks, override labels, structural detail, OpenCV runtime status (with and without reason), and transformation suffix.
+
+### Files added
+- `src/core/page-surface/page-surface-fingerprint.ts`
+- `src/core/page-surface/ui/structural-status-text.ts`
+- `tests/unit/page-surface-fingerprint.test.ts`
+- `tests/unit/structural-status-text.test.ts`
+
+### Files modified
+- `src/core/storage/normalized-page-session-store.ts` (drop singleton; consume helper)
+- `src/core/page-surface/index.ts` (export new helper)
+- `src/core/page-surface/ui/index.ts` (export new helper)
+- `src/features/config-capture/ui/ConfigCapture.tsx` (factory + helper)
+- `src/features/run-mode/ui/RunMode.tsx` (helper + helper)
+- `docs/architecture.md` (per-stage session wording)
+- `docs/dev-log.md` (this entry)
+
+### Authority + anti-drift behavior
+- No shared live document state between Config Capture and Run Mode. Each stage instantiates its own NormalizedPage session.
+- Pure helpers only — no cross-stage runtime coupling reintroduced.
+- Public IO contracts, engine contracts, runner shapes, and the `NormalizedPageViewport` viewport authority are unchanged.
+- The session store's external test surface is unchanged (factory + mutators); the existing test file continues to pass without modification.
+
+### Checks run
+- `npm run check` (clean)
+- `npm test` — 146/146 passing across 18 files (134 baseline + 12 new in 2 new test files).
+- `npm run build` (clean)
+
+### Recommended next step
+- Phase 1C — Complete the artifact set: promote `PredictedGeometryFile` to a first-class versioned contract under `src/core/contracts/` with `is*` guard and IO module; wire `downloadTransformationModel` and a runtime `downloadStructuralModel` into Run Mode; replace the hand-rolled blob in `RunMode.tsx`.
+
+---
+
 ## 2026-04-27 — UI: Shared structural overlay controls, presets, anchor + match visibility
 
 ### What overlay/UI problems were found

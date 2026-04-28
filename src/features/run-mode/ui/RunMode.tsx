@@ -14,6 +14,7 @@ import {
   StructuralModelParseError
 } from '../../../core/io/structural-model-io';
 import { parseWizardFile, WizardFileParseError } from '../../../core/io/wizard-file-io';
+import { buildDocumentFingerprint } from '../../../core/page-surface/page-surface-fingerprint';
 import {
   type SurfaceTransform
 } from '../../../core/page-surface/page-surface';
@@ -22,6 +23,7 @@ import {
   NormalizedPageViewport,
   StructuralDebugOverlay,
   StructuralOverlayControls,
+  buildStructuralStatusText,
   type StructuralOverlayFieldBox,
   type StructuralOverlayOptions
 } from '../../../core/page-surface/ui';
@@ -210,10 +212,9 @@ export function RunMode() {
       const result = await normalizationEngineRef.current.normalize(file);
       setRuntimePages(result.pages);
       setSelectedPageIndex(result.pages[0]?.pageIndex ?? 0);
-      const signature = result.pages
-        .map((page) => `${page.pageIndex}:${Math.round(page.width)}x${Math.round(page.height)}`)
-        .join('|');
-      setRuntimeDocumentFingerprint(`surface:${result.sourceName}#${signature}`);
+      setRuntimeDocumentFingerprint(
+        buildDocumentFingerprint({ sourceName: result.sourceName, pages: result.pages })
+      );
     } catch (uploadError) {
       setRuntimePages([]);
       setRuntimeDocumentFingerprint('');
@@ -320,13 +321,17 @@ export function RunMode() {
             options={structuralOverlayOptions}
             onOptionsChange={setStructuralOverlayOptions}
             transformationAvailable
-            statusText={
-              transformationModel
-                ? `TransformationModel · overall confidence ${transformationModel.overallConfidence.toFixed(3)}`
-                : runtimeStructuralModel
-                  ? 'Run matching to produce TransformationModel.'
-                  : 'No runtime structure yet.'
-            }
+            statusText={buildStructuralStatusText({
+              isComputing: isComputingPredictions,
+              structuralModel: runtimeStructuralModel,
+              structuralPage: runtimeStructuralPage,
+              runtimeLoadStatus: structuralRuntimeLoadStatus,
+              hasNormalizedPages: runtimePages.length > 0,
+              transformationModel,
+              computingLabel: 'Building runtime structure + predictions…',
+              pendingLabel: 'No runtime structure yet.',
+              emptyLabel: 'No runtime structure yet.'
+            })}
           />
 
           <div className="run-mode__toolbar">

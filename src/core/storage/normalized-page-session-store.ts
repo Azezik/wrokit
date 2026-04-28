@@ -1,4 +1,5 @@
 import type { NormalizedPage } from '../contracts/normalized-page';
+import { buildDocumentFingerprint } from '../page-surface/page-surface-fingerprint';
 import type { ObservableStore, StoreListener } from './observable-store';
 
 export interface NormalizedPageSessionState {
@@ -26,14 +27,6 @@ const generateSessionId = (): string => {
   }
 
   return `nps_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-};
-
-const buildDocumentFingerprint = (sourceName: string, pages: NormalizedPage[]): string => {
-  const surfaceSignature = pages
-    .map((page) => `${page.pageIndex}:${Math.round(page.width)}x${Math.round(page.height)}`)
-    .join('|');
-
-  return `surface:${sourceName}#${surfaceSignature}`;
 };
 
 const initialState = (): NormalizedPageSessionState => ({
@@ -68,7 +61,7 @@ export const createNormalizedPageSessionStore = (): NormalizedPageSessionStore =
 
       commit({
         sessionId: generateSessionId(),
-        documentFingerprint: buildDocumentFingerprint(sourceName, pages),
+        documentFingerprint: buildDocumentFingerprint({ sourceName, pages }),
         sourceName,
         pages,
         selectedPageIndex
@@ -88,8 +81,3 @@ export const createNormalizedPageSessionStore = (): NormalizedPageSessionStore =
     }
   };
 };
-
-const normalizedPageSessionStore = createNormalizedPageSessionStore();
-
-export const getNormalizedPageSessionStore = (): NormalizedPageSessionStore =>
-  normalizedPageSessionStore;
