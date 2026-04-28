@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import type { NormalizedPage } from '../../src/core/contracts/normalized-page';
-import { createNormalizedPageSessionStore } from '../../src/core/storage/normalized-page-session-store';
+import {
+  buildDocumentFingerprint,
+  createNormalizedPageSessionStore
+} from '../../src/core/storage/normalized-page-session-store';
 
 const page = (index: number, width: number, height: number): NormalizedPage => ({
   schema: 'wrokit/normalized-page',
@@ -47,6 +50,23 @@ describe('normalized-page-session-store', () => {
 
     await store.selectPage(999);
     expect(store.getSnapshot().selectedPageIndex).toBe(1);
+  });
+
+  it('exposes a single canonical fingerprint formula reused by every page-aware feature', async () => {
+    // Both Config Capture and Run Mode write into this store via
+    // setNormalizedDocument. The test proves the fingerprint that lands in
+    // the snapshot equals the fingerprint produced by the exported pure
+    // helper for the same input — i.e. there is one formula, not two.
+    const store = createNormalizedPageSessionStore();
+    const sourceName = 'runtime-doc.pdf';
+    const pages = [page(0, 1240, 1755), page(1, 1240, 1755)];
+
+    await store.setNormalizedDocument({ sourceName, pages });
+
+    const expected = buildDocumentFingerprint(sourceName, pages);
+
+    expect(expected).toBe('surface:runtime-doc.pdf#0:1240x1755|1:1240x1755');
+    expect(store.getSnapshot().documentFingerprint).toBe(expected);
   });
 
   it('resets session identity and clears page authority', async () => {
