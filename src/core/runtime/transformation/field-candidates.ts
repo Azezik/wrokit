@@ -14,8 +14,10 @@
 
 import type {
   StructuralFieldRelationship,
+  StructuralNormalizedRect,
   StructuralObjectNode,
-  StructuralPage
+  StructuralPage,
+  StructuralRelativeAnchorRect
 } from '../../contracts/structural-model';
 import type {
   TransformationFieldAlignment,
@@ -24,6 +26,37 @@ import type {
   TransformationObjectMatch
 } from '../../contracts/transformation-model';
 import { IDENTITY_AFFINE } from './transform-math';
+
+const REL_RECT_EPS = 1e-9;
+
+/**
+ * Re-express a `relativeFieldRect` (originally relative to `primaryAnchorRect`)
+ * as relative to a different `targetRect`. Used to derive an honest
+ * `relativeFieldRect` for parent-object candidates: the StructuralModel only
+ * records the field rect against its primary anchor, so we project that anchor-
+ * local rect into page-absolute coordinates and re-express it against the
+ * ancestor whose transform the candidate is actually carrying.
+ */
+const reExpressRelativeFieldRect = (
+  primaryRelative: StructuralRelativeAnchorRect,
+  primaryAnchorRect: StructuralNormalizedRect,
+  targetRect: StructuralNormalizedRect
+): StructuralRelativeAnchorRect => {
+  const absX = primaryAnchorRect.xNorm + primaryRelative.xRatio * primaryAnchorRect.wNorm;
+  const absY = primaryAnchorRect.yNorm + primaryRelative.yRatio * primaryAnchorRect.hNorm;
+  const absW = primaryRelative.wRatio * primaryAnchorRect.wNorm;
+  const absH = primaryRelative.hRatio * primaryAnchorRect.hNorm;
+
+  const safeW = Math.max(targetRect.wNorm, REL_RECT_EPS);
+  const safeH = Math.max(targetRect.hNorm, REL_RECT_EPS);
+
+  return {
+    xRatio: (absX - targetRect.xNorm) / safeW,
+    yRatio: (absY - targetRect.yNorm) / safeH,
+    wRatio: absW / safeW,
+    hRatio: absH / safeH
+  };
+};
 
 const RANK_CONFIDENCE_FACTOR: Record<'primary' | 'secondary' | 'tertiary', number> = {
   primary: 1,
@@ -107,22 +140,35 @@ const buildFieldCandidates = (input: BuildCandidateInputs): {
   //    the first matched ancestor as a candidate.
   const primaryAnchor = input.field.fieldAnchors.objectAnchors.find((a) => a.rank === 'primary');
   if (primaryAnchor) {
+    const primaryConfigObject = input.configObjects.get(primaryAnchor.objectId);
     const ancestors = walkAncestors(primaryAnchor.objectId, input.configObjects);
     for (const ancestor of ancestors) {
       const match = input.matchesByConfigId.get(ancestor.objectId);
       if (!match) {
         continue;
       }
+      // The StructuralModel only records the field's rect relative to its
+      // primary anchor. For a parent-object candidate the source rect pair is
+      // the ancestor — not the primary anchor — so we re-express the primary-
+      // relative rect against the ancestor's rect. This keeps
+      // `relativeFieldRect` honest with respect to the candidate's source and
+      // avoids misleading downstream consumers (which previously saw a
+      // primary-anchor-relative rect on a candidate whose transform is
+      // ancestor-relative).
+      const ancestorRelativeFieldRect = primaryConfigObject
+        ? reExpressRelativeFieldRect(
+            primaryAnchor.relativeFieldRect,
+            primaryConfigObject.objectRectNorm,
+            ancestor.objectRectNorm
+          )
+        : primaryAnchor.relativeFieldRect;
       candidates.push({
         source: 'parent-object',
         fallbackOrder: order++,
         configObjectId: ancestor.objectId,
         runtimeObjectId: match.runtimeObjectId,
         transform: match.transform,
-        // We reuse the primary anchor's relativeFieldRect because that is the
-        // anchor the StructuralModel actually recorded against the field. The
-        // parent provides the transform; the original anchor provides the rect.
-        relativeFieldRect: primaryAnchor.relativeFieldRect,
+        relativeFieldRect: ancestorRelativeFieldRect,
         confidence: clamp01(match.confidence * PARENT_INDIRECTION_PENALTY),
         notes: [
           `primary anchor ${primaryAnchor.objectId} did not match — falling back to ancestor ${ancestor.objectId}`,

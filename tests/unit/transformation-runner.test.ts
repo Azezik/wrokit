@@ -178,6 +178,44 @@ describe('computeFieldAlignments — fallback chain', () => {
     ]);
   });
 
+  it('parent-object candidate carries a relativeFieldRect expressed against the ancestor (not the missing primary anchor)', () => {
+    // Parent fills the page-half so the math is easy to read:
+    //   parent = (0, 0, 1, 1)
+    //   child  = (0.2, 0.2, 0.4, 0.4)
+    //   field-rel-child = (0.5, 0.5, 0.5, 0.5)
+    //   => field absolute = (0.4, 0.4, 0.2, 0.2)
+    //   => field-rel-parent = (0.4, 0.4, 0.2, 0.2)
+    const configObjects = [
+      node('parent', 'container', rect(0.0, 0.0, 1.0, 1.0), null, ['child']),
+      node('child', 'rectangle', rect(0.2, 0.2, 0.4, 0.4), 'parent')
+    ];
+    // Runtime missing the child entirely; only the parent matches.
+    const runtimeObjects = [node('rParent', 'container', rect(0.0, 0.0, 1.0, 1.0), null, [])];
+    const fields = [buildField('f1', 'child', ratio(0.5, 0.5, 0.5, 0.5))];
+    const config = buildPage(configObjects, fields);
+    const runtime = buildPage(runtimeObjects);
+
+    const matchResult = matchPage(config, runtime);
+    expect(matchResult.matches.map((m) => m.configObjectId)).toContain('parent');
+    expect(matchResult.matches.map((m) => m.configObjectId)).not.toContain('child');
+
+    const summaries = [
+      computeBorderLevelSummary(config, runtime),
+      computeRefinedBorderLevelSummary(config, runtime)
+    ];
+    const alignments = computeFieldAlignments(config, matchResult.matches, summaries);
+    const parentCandidate = alignments[0].candidates.find((c) => c.source === 'parent-object');
+    expect(parentCandidate).toBeDefined();
+    expect(parentCandidate!.configObjectId).toBe('parent');
+    // Honest: re-expressed against the ancestor's rect, NOT a stale copy of
+    // the primary anchor's relativeFieldRect (which would have been
+    // (0.5, 0.5, 0.5, 0.5)).
+    expect(parentCandidate!.relativeFieldRect.xRatio).toBeCloseTo(0.4, 6);
+    expect(parentCandidate!.relativeFieldRect.yRatio).toBeCloseTo(0.4, 6);
+    expect(parentCandidate!.relativeFieldRect.wRatio).toBeCloseTo(0.2, 6);
+    expect(parentCandidate!.relativeFieldRect.hRatio).toBeCloseTo(0.2, 6);
+  });
+
   it('uses refined-border + border when no anchor and no ancestor match', () => {
     const configObjects = [node('orphan', 'rectangle', rect(0.4, 0.4, 0.1, 0.1))];
     const runtimeObjects = [node('completelyDifferent', 'header', rect(0.0, 0.0, 0.05, 0.02))];

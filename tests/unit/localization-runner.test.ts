@@ -1820,12 +1820,16 @@ describe('localization-runner', () => {
       ]
     });
 
-    it('rescues a missing matched-object candidate via the parent in the TM-driven path', async () => {
+    it('prefers a direct parent-object candidate over rescuing a missing matched-object (direct B beats rescued A)', async () => {
       const runner = createLocalizationRunner();
       const chainConfigModel = buildChainConfigModel();
 
       // Runtime: cfg_child is missing entirely (no rectangles), but the
-      // parent is present with the same id (id-match → unambiguous rescuer).
+      // parent is present with the same id (id-match → would also be an
+      // unambiguous rescuer for the missing child). The point of this test
+      // is that the runner must NOT rescue candidate A when candidate B
+      // resolves directly: a direct match is stronger than a virtual one
+      // reconstructed from the config containment graph.
       const chainRuntimeModel: StructuralModel = {
         ...baseRuntimeModel,
         id: 'runtime_chain_tm',
@@ -1877,7 +1881,11 @@ describe('localization-runner', () => {
                 fieldId: 'invoice_number',
                 candidates: [
                   {
-                    // matched-object pointing at the missing child — fails.
+                    // matched-object pointing at the missing child — fails
+                    // direct. Rescue would succeed via cfg_parent (same id
+                    // present in runtime), but the runner must defer the
+                    // rescue pass until *all* direct candidates have been
+                    // tried.
                     source: 'matched-object',
                     fallbackOrder: 0,
                     configObjectId: 'cfg_child',
@@ -1888,10 +1896,9 @@ describe('localization-runner', () => {
                     notes: []
                   },
                   {
-                    // parent-object that *would* resolve directly. The
-                    // rescue must take priority over this so the artifact
-                    // reports the rescued tier-A rather than dropping to
-                    // tier-B.
+                    // parent-object that resolves directly — this is the
+                    // "clean direct B" the audit calls out. It must win
+                    // over rescuing the missing child.
                     source: 'parent-object',
                     fallbackOrder: 1,
                     configObjectId: 'cfg_parent',
@@ -1922,13 +1929,124 @@ describe('localization-runner', () => {
         runtimeStructuralModel: chainRuntimeModel,
         runtimePages: [runtimePage],
         transformationModel,
-        predictedId: 'pred_tm_rescue',
+        predictedId: 'pred_tm_direct_b_beats_rescued_a',
+        nowIso: '2026-04-27T00:00:00Z'
+      });
+
+      const predicted = result.fields[0];
+      // Direct parent-object wins — tier B, real runtime object id, and the
+      // resolution comes from the candidate's own affine, not a rescue
+      // reconstruction.
+      expect(predicted.anchorTierUsed).toBe('field-object-b');
+      expect(predicted.transform.basis).toBe('field-object-b');
+      expect(predicted.transform.configObjectId).toBe('cfg_parent');
+      expect(predicted.transform.runtimeObjectId).toBe('cfg_parent');
+      // Field bbox (0.25,0.20,0.20,0.10) under affine (1,1,0.2,0.1) ->
+      // (0.45,0.30,0.20,0.10).
+      expect(predicted.bbox.xNorm).toBeCloseTo(0.45, 6);
+      expect(predicted.bbox.yNorm).toBeCloseTo(0.30, 6);
+      expect(predicted.bbox.wNorm).toBeCloseTo(0.20, 6);
+      expect(predicted.bbox.hNorm).toBeCloseTo(0.10, 6);
+    });
+
+    it('rescues a missing matched-object via the parent when no direct object-anchor candidate is viable', async () => {
+      const runner = createLocalizationRunner();
+      const chainConfigModel = buildChainConfigModel();
+
+      // Runtime: cfg_child is missing, cfg_parent is present (id-match →
+      // unambiguous rescuer). The TransformationModel only carries the
+      // matched-object candidate (no parent-object candidate), so rescue is
+      // the only object-level path. This guards the rescue rung itself
+      // against being reordered or weakened by the audit's first-direct fix.
+      const chainRuntimeModel: StructuralModel = {
+        ...baseRuntimeModel,
+        id: 'runtime_chain_tm_rescue_only',
+        documentFingerprint: 'runtime_chain_tm_rescue_only-fingerprint',
+        pages: [
+          {
+            ...baseRuntimeModel.pages[0],
+            objectHierarchy: {
+              objects: [
+                {
+                  objectId: 'cfg_parent',
+                  type: 'container',
+                  objectRectNorm: { xNorm: 0.30, yNorm: 0.20, wNorm: 0.50, hNorm: 0.50 },
+                  bbox: { xNorm: 0.30, yNorm: 0.20, wNorm: 0.50, hNorm: 0.50 },
+                  parentObjectId: null,
+                  childObjectIds: [],
+                  confidence: 0.9
+                }
+              ]
+            }
+          }
+        ]
+      };
+
+      const transformationModel: TransformationModel = {
+        schema: 'wrokit/transformation-model',
+        version: '1.0',
+        transformVersion: 'wrokit/transformation/v1',
+        id: 'xform_chain_tm_rescue_only',
+        config: { id: chainConfigModel.id, documentFingerprint: chainConfigModel.documentFingerprint },
+        runtime: { id: chainRuntimeModel.id, documentFingerprint: chainRuntimeModel.documentFingerprint },
+        pages: [
+          {
+            pageIndex: 0,
+            levelSummaries: [],
+            objectMatches: [],
+            unmatchedConfigObjectIds: [],
+            unmatchedRuntimeObjectIds: [],
+            consensus: {
+              transform: null,
+              confidence: 0,
+              contributingMatchCount: 0,
+              outliers: [],
+              notes: [],
+              warnings: []
+            },
+            fieldAlignments: [
+              {
+                fieldId: 'invoice_number',
+                candidates: [
+                  {
+                    source: 'matched-object',
+                    fallbackOrder: 0,
+                    configObjectId: 'cfg_child',
+                    runtimeObjectId: 'rt_missing_child',
+                    transform: { scaleX: 1, scaleY: 1, translateX: 9, translateY: 9 },
+                    relativeFieldRect: { xRatio: 0, yRatio: 0, wRatio: 1, hRatio: 1 },
+                    confidence: 0.9,
+                    notes: []
+                  }
+                ],
+                warnings: []
+              }
+            ],
+            notes: [],
+            warnings: []
+          }
+        ],
+        overallConfidence: 0,
+        notes: [],
+        warnings: [],
+        createdAtIso: '2026-04-27T00:00:00Z'
+      };
+
+      const result = await runner.run({
+        wizardId: 'Invoice Wizard',
+        configGeometry,
+        configStructuralModel: chainConfigModel,
+        runtimeStructuralModel: chainRuntimeModel,
+        runtimePages: [runtimePage],
+        transformationModel,
+        predictedId: 'pred_tm_rescue_only',
         nowIso: '2026-04-27T00:00:00Z'
       });
 
       const predicted = result.fields[0];
       // Rescue path was taken — tier reflects the missing direct anchor (A),
-      // not the surviving parent (B).
+      // not the surviving parent (B), because no direct object-anchor
+      // candidate was available.
       expect(predicted.anchorTierUsed).toBe('field-object-a');
       expect(predicted.transform.basis).toBe('field-object-a');
       expect(predicted.transform.configObjectId).toBe('cfg_child');

@@ -1193,9 +1193,13 @@ export const createLocalizationRunner = (): LocalizationRunner => ({
             field.fieldId
           );
 
-          // Object-based candidates first (matched-object, parent-object), in
-          // fallbackOrder. These remain the strongest signal whenever they
-          // resolve, so they are tried before any rescue rung.
+          // First pass: try every object-anchor candidate (matched-object,
+          // parent-object) directly, in fallbackOrder. A direct match — even
+          // a parent-object one — beats a rescued match, because rescue
+          // reconstructs a virtual runtime rect from the config containment
+          // graph rather than observing one in the runtime model. Trying
+          // rescue inline (per candidate) was wrong: a rescued candidate A
+          // could preempt a clean direct B further down the list.
           for (const candidate of candidates) {
             if (!isObjectAnchorCandidate(candidate)) {
               continue;
@@ -1212,18 +1216,22 @@ export const createLocalizationRunner = (): LocalizationRunner => ({
               chosenLabel = labelForCandidate(candidate);
               break;
             }
+          }
 
-            // Relational rescue rung inside the TM-driven path: when a
-            // `matched-object` candidate failed because its runtime object is
-            // missing, attempt to reconstruct a virtual runtime version of
-            // that object inside an unambiguously-matched parent (another
-            // stable anchor of the same field) using the config's
-            // `objectToObject` container relation. If that succeeds we keep
-            // the missing anchor's tier — the prediction reflects the
-            // field's relationship to its direct anchor, just reconstructed
-            // through a surviving parent — instead of dropping all the way
-            // to the parent-object candidate's tier.
-            if (candidate.source === 'matched-object' && candidate.configObjectId) {
+          // Second pass — relational rescue rung inside the TM-driven path:
+          // only attempted when no direct object-anchor candidate resolved.
+          // For each matched-object candidate whose runtime object is missing,
+          // try to reconstruct a virtual runtime version of that object inside
+          // an unambiguously-matched parent (another stable anchor of the
+          // same field) using the config's `objectToObject` container
+          // relation. If rescue succeeds we keep the missing anchor's tier —
+          // the prediction reflects the field's relationship to its direct
+          // anchor, just reconstructed through a surviving parent.
+          if (!resolution) {
+            for (const candidate of candidates) {
+              if (candidate.source !== 'matched-object' || !candidate.configObjectId) {
+                continue;
+              }
               const fieldRelationship = getFieldRelationship(
                 configStructuralPage,
                 field.fieldId
@@ -1231,20 +1239,21 @@ export const createLocalizationRunner = (): LocalizationRunner => ({
               const missingAnchor = fieldRelationship?.fieldAnchors.stableObjectAnchors.find(
                 (anchor) => anchor.objectId === candidate.configObjectId
               );
-              if (fieldRelationship && missingAnchor) {
-                const rescued = resolveFromRelationalRescue(
-                  field,
-                  configStructuralPage,
-                  runtimeStructuralPage,
-                  missingAnchor,
-                  fieldRelationship.fieldAnchors.stableObjectAnchors
-                );
-                if (rescued) {
-                  resolution = rescued;
-                  primaryCandidate = candidate;
-                  chosenLabel = `relational-rescue(${candidate.configObjectId})`;
-                  break;
-                }
+              if (!fieldRelationship || !missingAnchor) {
+                continue;
+              }
+              const rescued = resolveFromRelationalRescue(
+                field,
+                configStructuralPage,
+                runtimeStructuralPage,
+                missingAnchor,
+                fieldRelationship.fieldAnchors.stableObjectAnchors
+              );
+              if (rescued) {
+                resolution = rescued;
+                primaryCandidate = candidate;
+                chosenLabel = `relational-rescue(${candidate.configObjectId})`;
+                break;
               }
             }
           }
