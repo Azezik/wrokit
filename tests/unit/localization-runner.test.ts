@@ -112,25 +112,228 @@ describe('localization-runner', () => {
     });
   });
 
-  it('clamps transformed geometry to normalized bounds', () => {
-    const transformed = __testing.applyTransformToBox(
-      { xNorm: 0.9, yNorm: 0.92, wNorm: 0.3, hNorm: 0.2 },
-      {
-        pageIndex: 0,
-        basis: 'refined-border',
-        sourceConfigRectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 },
-        sourceRuntimeRectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 },
-        scaleX: 1,
-        scaleY: 1,
-        translateX: 0.1,
-        translateY: 0.05
-      }
-    );
+  describe('off-page clipping', () => {
+    it('preserves width/height when a partially off-page transformed box can be shifted to fit', () => {
+      const transformed = __testing.applyTransformToBox(
+        { xNorm: 0.9, yNorm: 0.92, wNorm: 0.3, hNorm: 0.05 },
+        {
+          pageIndex: 0,
+          basis: 'refined-border',
+          sourceConfigRectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 },
+          sourceRuntimeRectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 },
+          scaleX: 1,
+          scaleY: 1,
+          translateX: 0.1,
+          translateY: 0.05
+        }
+      );
 
-    expect(transformed.xNorm).toBe(1);
-    expect(transformed.yNorm).toBe(0.9700000000000001);
-    expect(transformed.wNorm).toBe(0);
-    expect(transformed.hNorm).toBeCloseTo(0.029999999999999916);
+      // Width fits in [0,1], so the box is shifted left to fit instead of
+      // independently clamping each side and silently shrinking it.
+      expect(transformed.box.wNorm).toBeCloseTo(0.3);
+      expect(transformed.box.hNorm).toBeCloseTo(0.05);
+      expect(transformed.box.xNorm).toBeCloseTo(0.7);
+      expect(transformed.box.yNorm).toBeCloseTo(0.95);
+      expect(transformed.clipWarning).toBeDefined();
+      expect(transformed.clipWarning).toMatch(/width\/height preserved/);
+      expect(transformed.clipWarning).toMatch(/right/);
+      expect(transformed.clipWarning).toMatch(/bottom/);
+    });
+
+    it('clamps and warns when a transformed box is larger than the page in a dimension', () => {
+      const transformed = __testing.applyTransformToBox(
+        { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 },
+        {
+          pageIndex: 0,
+          basis: 'refined-border',
+          sourceConfigRectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 },
+          sourceRuntimeRectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 },
+          scaleX: 1.5,
+          scaleY: 1,
+          translateX: 0,
+          translateY: 0
+        }
+      );
+
+      expect(transformed.box.wNorm).toBe(1);
+      expect(transformed.box.xNorm).toBe(0);
+      expect(transformed.box.hNorm).toBeCloseTo(1);
+      expect(transformed.clipWarning).toBeDefined();
+      expect(transformed.clipWarning).toMatch(/exceeds page in width/);
+    });
+
+    it('does not emit a clip warning when the transformed box already fits within [0,1]', () => {
+      const transformed = __testing.applyTransformToBox(
+        { xNorm: 0.1, yNorm: 0.1, wNorm: 0.2, hNorm: 0.2 },
+        {
+          pageIndex: 0,
+          basis: 'refined-border',
+          sourceConfigRectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 },
+          sourceRuntimeRectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 },
+          scaleX: 1,
+          scaleY: 1,
+          translateX: 0.1,
+          translateY: 0.1
+        }
+      );
+
+      expect(transformed.box).toEqual({
+        xNorm: 0.2,
+        yNorm: 0.2,
+        wNorm: 0.2,
+        hNorm: 0.2
+      });
+      expect(transformed.clipWarning).toBeUndefined();
+    });
+
+    it('preserves width/height when projectRelativeRect lands partially off-page', () => {
+      const projected = __testing.projectRelativeRect(
+        { xRatio: 0.9, yRatio: 0.0, wRatio: 0.5, hRatio: 0.2 },
+        { xNorm: 0.5, yNorm: 0.5, wNorm: 0.5, hNorm: 0.5 }
+      );
+
+      expect(projected.box.wNorm).toBeCloseTo(0.25);
+      expect(projected.box.hNorm).toBeCloseTo(0.1);
+      // Box shifted back inside [0,1] rather than each side independently clamped.
+      expect(projected.box.xNorm).toBeCloseTo(0.75);
+      expect(projected.box.yNorm).toBeCloseTo(0.5);
+      expect(projected.clipWarning).toBeDefined();
+      expect(projected.clipWarning).toMatch(/projected/);
+    });
+
+    it('surfaces clip warnings on the predicted field when the projected box overflows', async () => {
+      const runner = createLocalizationRunner();
+      // Choose refined-border rects that yield a unit translation, so the
+      // configured field bbox [0.25,0.2,0.2,0.1] projects to roughly
+      // [1.0,0.95,0.2,0.1] — past the right edge — exercising the clip path.
+      const configModel = createModel('config_struct_off', 0.1, 0.1, 0.5, 0.5);
+      const runtimeModel = createModel('runtime_struct_off', 0.85, 0.85, 0.5, 0.5);
+
+      const result = await runner.run({
+        wizardId: 'Invoice Wizard',
+        configGeometry,
+        configStructuralModel: configModel,
+        runtimeStructuralModel: runtimeModel,
+        runtimePages: [runtimePage],
+        predictedId: 'pred_off',
+        nowIso: '2026-03-01T00:00:00Z'
+      });
+
+      const field = result.fields[0];
+      expect(field.warnings).toBeDefined();
+      expect(field.warnings?.some((w) => /off-page|exceeds page|partially off-page/.test(w))).toBe(true);
+      // Width/height should not have collapsed to zero (the old clamp bug).
+      expect(field.bbox.wNorm).toBeGreaterThan(0);
+      expect(field.bbox.hNorm).toBeGreaterThan(0);
+    });
+  });
+
+  describe('artifact cross-reference validation', () => {
+    it('rejects a configGeometry whose wizardId does not match the expected wizardId', async () => {
+      const runner = createLocalizationRunner();
+      const configModel = createModel('config_struct', 0.1, 0.1, 0.5, 0.5);
+      const runtimeModel = createModel('runtime_struct', 0.2, 0.3, 0.4, 0.3);
+
+      await expect(
+        runner.run({
+          wizardId: 'Other Wizard',
+          configGeometry,
+          configStructuralModel: configModel,
+          runtimeStructuralModel: runtimeModel,
+          runtimePages: [runtimePage]
+        })
+      ).rejects.toThrow(/configGeometry\.wizardId.*does not match expected wizardId/);
+    });
+
+    it('rejects a TransformationModel whose config.id does not match configStructuralModel.id', async () => {
+      const runner = createLocalizationRunner();
+      const configModel = createModel('config_struct', 0.1, 0.1, 0.5, 0.5);
+      const runtimeModel = createModel('runtime_struct', 0.2, 0.3, 0.4, 0.3);
+      const transformationModel: TransformationModel = {
+        schema: 'wrokit/transformation-model',
+        version: '1.0',
+        transformVersion: 'wrokit/transformation/v1',
+        id: 'tm_mismatch',
+        config: { id: 'some_other_struct', documentFingerprint: 'whatever' },
+        runtime: { id: runtimeModel.id, documentFingerprint: runtimeModel.documentFingerprint },
+        pages: [],
+        overallConfidence: 0,
+        notes: [],
+        warnings: [],
+        createdAtIso: '2026-02-01T00:00:00Z'
+      };
+
+      await expect(
+        runner.run({
+          wizardId: 'Invoice Wizard',
+          configGeometry,
+          configStructuralModel: configModel,
+          runtimeStructuralModel: runtimeModel,
+          runtimePages: [runtimePage],
+          transformationModel
+        })
+      ).rejects.toThrow(/transformationModel\.config\.id.*does not match configStructuralModel\.id/);
+    });
+
+    it('rejects a TransformationModel whose runtime.id does not match runtimeStructuralModel.id', async () => {
+      const runner = createLocalizationRunner();
+      const configModel = createModel('config_struct', 0.1, 0.1, 0.5, 0.5);
+      const runtimeModel = createModel('runtime_struct', 0.2, 0.3, 0.4, 0.3);
+      const transformationModel: TransformationModel = {
+        schema: 'wrokit/transformation-model',
+        version: '1.0',
+        transformVersion: 'wrokit/transformation/v1',
+        id: 'tm_mismatch',
+        config: { id: configModel.id, documentFingerprint: configModel.documentFingerprint },
+        runtime: { id: 'some_other_runtime', documentFingerprint: 'whatever' },
+        pages: [],
+        overallConfidence: 0,
+        notes: [],
+        warnings: [],
+        createdAtIso: '2026-02-01T00:00:00Z'
+      };
+
+      await expect(
+        runner.run({
+          wizardId: 'Invoice Wizard',
+          configGeometry,
+          configStructuralModel: configModel,
+          runtimeStructuralModel: runtimeModel,
+          runtimePages: [runtimePage],
+          transformationModel
+        })
+      ).rejects.toThrow(/transformationModel\.runtime\.id.*does not match runtimeStructuralModel\.id/);
+    });
+
+    it('accepts artifacts with matching wizardId and structural-model ids', async () => {
+      const runner = createLocalizationRunner();
+      const configModel = createModel('config_struct', 0.1, 0.1, 0.5, 0.5);
+      const runtimeModel = createModel('runtime_struct', 0.2, 0.3, 0.4, 0.3);
+      const transformationModel: TransformationModel = {
+        schema: 'wrokit/transformation-model',
+        version: '1.0',
+        transformVersion: 'wrokit/transformation/v1',
+        id: 'tm_ok',
+        config: { id: configModel.id, documentFingerprint: configModel.documentFingerprint },
+        runtime: { id: runtimeModel.id, documentFingerprint: runtimeModel.documentFingerprint },
+        pages: [],
+        overallConfidence: 0,
+        notes: [],
+        warnings: [],
+        createdAtIso: '2026-02-01T00:00:00Z'
+      };
+
+      await expect(
+        runner.run({
+          wizardId: 'Invoice Wizard',
+          configGeometry,
+          configStructuralModel: configModel,
+          runtimeStructuralModel: runtimeModel,
+          runtimePages: [runtimePage],
+          transformationModel
+        })
+      ).resolves.toBeDefined();
+    });
   });
 
   it('prioritizes containment-chain anchor ranking over nearest-label ordering', () => {
