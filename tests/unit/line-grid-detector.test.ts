@@ -4,7 +4,6 @@ import {
   buildLineBoundedRects,
   detectLineSegments,
   lineBoundedRectsToObjects,
-  lineSegmentsToObjects,
   type SizeRelativeThresholds
 } from '../../src/core/engines/structure/cv/line-grid-detector';
 
@@ -157,25 +156,15 @@ describe('buildLineBoundedRects', () => {
   });
 });
 
-describe('lineSegmentsToObjects + lineBoundedRectsToObjects', () => {
-  it('emits stable structural object types with non-empty bounding boxes', () => {
-    const segments = {
-      horizontals: [{ axisPos: 10, thickness: 2, start: 0, end: 100 }],
-      verticals: [{ axisPos: 50, thickness: 1, start: 0, end: 100 }]
-    };
-    const objects = lineSegmentsToObjects(segments, 'obj');
-    expect(objects).toHaveLength(2);
-    expect(objects[0].type).toBe('line-horizontal');
-    expect(objects[0].bboxSurface.width).toBe(100);
-    expect(objects[1].type).toBe('line-vertical');
-    expect(objects[1].bboxSurface.height).toBe(100);
-
+describe('lineBoundedRectsToObjects', () => {
+  it('emits unclassified objects (no semantic type) with non-empty bounding boxes', () => {
     const cells = lineBoundedRectsToObjects(
       [{ left: 10, top: 20, right: 30, bottom: 40 }],
       { idPrefix: 'obj', surfaceWidth: 100, surfaceHeight: 100 }
     );
     expect(cells).toHaveLength(1);
-    expect(cells[0].type).toBe('rectangle');
     expect(cells[0].bboxSurface).toEqual({ x: 10, y: 20, width: 20, height: 20 });
+    // Object-only model: no semantic `type` field on emitted objects.
+    expect((cells[0] as Record<string, unknown>).type).toBeUndefined();
   });
 });

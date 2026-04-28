@@ -4,7 +4,6 @@ import type {
   StructuralModel,
   StructuralNormalizedRect,
   StructuralObjectNode,
-  StructuralObjectType,
   StructuralPage,
   StructuralRefinedBorder
 } from '../../src/core/contracts/structural-model';
@@ -25,19 +24,19 @@ const rect = (
 
 const node = (
   objectId: string,
-  type: StructuralObjectType,
   r: StructuralNormalizedRect,
   parentObjectId: string | null = null,
   childObjectIds: string[] = [],
-  confidence = 0.9
+  confidence = 0.9,
+  depth = 0
 ): StructuralObjectNode => ({
   objectId,
-  type,
   objectRectNorm: r,
   bbox: r,
   parentObjectId,
   childObjectIds,
-  confidence
+  confidence,
+  depth
 });
 
 const refinedFullPage: StructuralRefinedBorder = {
@@ -64,8 +63,8 @@ const buildPage = (objects: StructuralObjectNode[]): StructuralPage => ({
 
 const buildModel = (id: string, fingerprint: string, page: StructuralPage): StructuralModel => ({
   schema: 'wrokit/structural-model',
-  version: '3.0',
-  structureVersion: 'wrokit/structure/v2',
+  version: '4.0',
+  structureVersion: 'wrokit/structure/v3',
   id,
   documentFingerprint: fingerprint,
   cvAdapter: { name: 'opencv-js', version: '1.0' },
@@ -82,39 +81,40 @@ const baseSimilarityCtx = {
 };
 
 describe('computeObjectSimilarity', () => {
-  it('scores identical objects close to 1.0', () => {
-    const a = node('a', 'container', rect(0.1, 0.1, 0.4, 0.4));
-    const b = node('b', 'container', rect(0.1, 0.1, 0.4, 0.4));
+  it('scores identical objects close to 1.0 using purely geometric/structural basis', () => {
+    const a = node('a', rect(0.1, 0.1, 0.4, 0.4));
+    const b = node('b', rect(0.1, 0.1, 0.4, 0.4));
     const result = computeObjectSimilarity(a, b, baseSimilarityCtx);
     expect(result.score).toBeGreaterThan(0.95);
-    expect(result.basis).toContain('type-match');
     expect(result.basis).toContain('object-similarity');
     expect(result.basis).toContain('parent-chain');
     expect(result.basis).toContain('refined-border-relation');
+    // Object-only model: there is no semantic type-match component anywhere
+    // in the basis tags.
+    expect(result.basis).not.toContain('type-match');
   });
 
-  it('penalises type mismatch but rewards similar geometry', () => {
-    const a = node('a', 'container', rect(0.1, 0.1, 0.4, 0.4));
-    const b = node('b', 'line-horizontal', rect(0.1, 0.1, 0.4, 0.4));
-    const result = computeObjectSimilarity(a, b, baseSimilarityCtx);
-    expect(result.score).toBeLessThan(
-      computeObjectSimilarity(a, node('c', 'container', rect(0.1, 0.1, 0.4, 0.4)), baseSimilarityCtx).score
+  it('drops the score when geometry differs significantly', () => {
+    const a = node('a', rect(0.1, 0.1, 0.4, 0.4));
+    const farMismatch = node('b', rect(0.7, 0.7, 0.05, 0.05));
+    const close = node('c', rect(0.1, 0.1, 0.4, 0.4));
+    expect(computeObjectSimilarity(a, farMismatch, baseSimilarityCtx).score).toBeLessThan(
+      computeObjectSimilarity(a, close, baseSimilarityCtx).score
     );
-    expect(result.notes.join(' ')).toContain('type mismatch');
   });
 
   it('scales score with positional distance', () => {
-    const a = node('a', 'container', rect(0.0, 0.0, 0.2, 0.2));
-    const close = node('b', 'container', rect(0.0, 0.05, 0.2, 0.2));
-    const far = node('c', 'container', rect(0.7, 0.7, 0.2, 0.2));
+    const a = node('a', rect(0.0, 0.0, 0.2, 0.2));
+    const close = node('b', rect(0.0, 0.05, 0.2, 0.2));
+    const far = node('c', rect(0.7, 0.7, 0.2, 0.2));
     const closeScore = computeObjectSimilarity(a, close, baseSimilarityCtx).score;
     const farScore = computeObjectSimilarity(a, far, baseSimilarityCtx).score;
     expect(closeScore).toBeGreaterThan(farScore);
   });
 
   it('rewards parent-chain similarity when parents are matched', () => {
-    const configChild = node('cc', 'rectangle', rect(0.2, 0.2, 0.1, 0.1), 'cp');
-    const runtimeChild = node('rc', 'rectangle', rect(0.2, 0.2, 0.1, 0.1), 'rp');
+    const configChild = node('cc', rect(0.2, 0.2, 0.1, 0.1), 'cp');
+    const runtimeChild = node('rc', rect(0.2, 0.2, 0.1, 0.1), 'rp');
     const withParent = computeObjectSimilarity(configChild, runtimeChild, {
       ...baseSimilarityCtx,
       parentMatches: new Map([['cp', 'rp']]),
@@ -129,8 +129,8 @@ describe('computeObjectSimilarity', () => {
 describe('matchPage', () => {
   it('matches identical pages 1:1 with high confidence', () => {
     const objects = [
-      node('o1', 'container', rect(0.1, 0.1, 0.4, 0.4)),
-      node('o2', 'rectangle', rect(0.6, 0.1, 0.3, 0.2))
+      node('o1', rect(0.1, 0.1, 0.4, 0.4)),
+      node('o2', rect(0.6, 0.1, 0.3, 0.2))
     ];
     const result = matchPage(buildPage(objects), buildPage(objects));
     expect(result.matches).toHaveLength(2);
@@ -147,12 +147,12 @@ describe('matchPage', () => {
 
   it('recovers an affine transform on a uniformly shifted runtime page', () => {
     const config = buildPage([
-      node('c1', 'container', rect(0.1, 0.1, 0.3, 0.3)),
-      node('c2', 'rectangle', rect(0.5, 0.5, 0.2, 0.2))
+      node('c1', rect(0.1, 0.1, 0.3, 0.3)),
+      node('c2', rect(0.5, 0.5, 0.2, 0.2))
     ]);
     const runtime = buildPage([
-      node('r1', 'container', rect(0.12, 0.07, 0.3, 0.3)),
-      node('r2', 'rectangle', rect(0.52, 0.47, 0.2, 0.2))
+      node('r1', rect(0.12, 0.07, 0.3, 0.3)),
+      node('r2', rect(0.52, 0.47, 0.2, 0.2))
     ]);
     const result = matchPage(config, runtime);
     expect(result.matches).toHaveLength(2);
@@ -164,8 +164,8 @@ describe('matchPage', () => {
   });
 
   it('recovers a uniform scale on a runtime page', () => {
-    const config = buildPage([node('c1', 'container', rect(0.1, 0.1, 0.4, 0.4))]);
-    const runtime = buildPage([node('r1', 'container', rect(0.1, 0.1, 0.6, 0.6))]);
+    const config = buildPage([node('c1', rect(0.1, 0.1, 0.4, 0.4))]);
+    const runtime = buildPage([node('r1', rect(0.1, 0.1, 0.6, 0.6))]);
     const result = matchPage(config, runtime);
     expect(result.matches).toHaveLength(1);
     expect(result.matches[0].transform.scaleX).toBeCloseTo(1.5, 5);
@@ -173,10 +173,10 @@ describe('matchPage', () => {
   });
 
   it('does not match an extra runtime object that has no config counterpart', () => {
-    const config = buildPage([node('c1', 'container', rect(0.1, 0.1, 0.3, 0.3))]);
+    const config = buildPage([node('c1', rect(0.1, 0.1, 0.3, 0.3))]);
     const runtime = buildPage([
-      node('r1', 'container', rect(0.1, 0.1, 0.3, 0.3)),
-      node('rOrphan', 'header', rect(0.8, 0.0, 0.15, 0.05))
+      node('r1', rect(0.1, 0.1, 0.3, 0.3)),
+      node('rOrphan', rect(0.8, 0.0, 0.15, 0.05))
     ]);
     const result = matchPage(config, runtime);
     expect(result.matches.map((m) => m.configObjectId)).toEqual(['c1']);
@@ -186,10 +186,10 @@ describe('matchPage', () => {
 
   it('reports unmatched config objects when the runtime is missing them', () => {
     const config = buildPage([
-      node('c1', 'container', rect(0.1, 0.1, 0.3, 0.3)),
-      node('cMissing', 'rectangle', rect(0.7, 0.7, 0.1, 0.1))
+      node('c1', rect(0.1, 0.1, 0.3, 0.3)),
+      node('cMissing', rect(0.7, 0.7, 0.1, 0.1))
     ]);
-    const runtime = buildPage([node('r1', 'container', rect(0.1, 0.1, 0.3, 0.3))]);
+    const runtime = buildPage([node('r1', rect(0.1, 0.1, 0.3, 0.3))]);
     const result = matchPage(config, runtime);
     expect(result.matches).toHaveLength(1);
     expect(result.unmatchedConfigObjectIds).toContain('cMissing');
@@ -198,18 +198,18 @@ describe('matchPage', () => {
 
   it('only matches a child against children of its matched parent', () => {
     const config = buildPage([
-      node('cParentA', 'container', rect(0.0, 0.0, 0.5, 1.0), null, ['cChildA']),
-      node('cParentB', 'container', rect(0.5, 0.0, 0.5, 1.0), null, ['cChildB']),
-      node('cChildA', 'rectangle', rect(0.05, 0.1, 0.1, 0.1), 'cParentA'),
-      node('cChildB', 'rectangle', rect(0.55, 0.1, 0.1, 0.1), 'cParentB')
+      node('cParentA', rect(0.0, 0.0, 0.5, 1.0), null, ['cChildA']),
+      node('cParentB', rect(0.5, 0.0, 0.5, 1.0), null, ['cChildB']),
+      node('cChildA', rect(0.05, 0.1, 0.1, 0.1), 'cParentA'),
+      node('cChildB', rect(0.55, 0.1, 0.1, 0.1), 'cParentB')
     ]);
     const runtime = buildPage([
-      node('rParentA', 'container', rect(0.0, 0.0, 0.5, 1.0), null, ['rChildA']),
-      node('rParentB', 'container', rect(0.5, 0.0, 0.5, 1.0), null, ['rChildB']),
+      node('rParentA', rect(0.0, 0.0, 0.5, 1.0), null, ['rChildA']),
+      node('rParentB', rect(0.5, 0.0, 0.5, 1.0), null, ['rChildB']),
       // Both runtime children have geometry similar to BOTH config children;
       // only the parent-chain anchoring should keep them properly assigned.
-      node('rChildA', 'rectangle', rect(0.05, 0.1, 0.1, 0.1), 'rParentA'),
-      node('rChildB', 'rectangle', rect(0.55, 0.1, 0.1, 0.1), 'rParentB')
+      node('rChildA', rect(0.05, 0.1, 0.1, 0.1), 'rParentA'),
+      node('rChildB', rect(0.55, 0.1, 0.1, 0.1), 'rParentB')
     ]);
 
     const result = matchPage(config, runtime);
@@ -225,12 +225,12 @@ describe('matchPage', () => {
     // the match is emitted with an ambiguity warning and a lower confidence
     // than the equivalent unambiguous match. This is the repeated-header /
     // table-cell case the audit calls out.
-    const config = buildPage([node('c_target', 'rectangle', rect(0.10, 0.10, 0.20, 0.10))]);
+    const config = buildPage([node('c_target', rect(0.10, 0.10, 0.20, 0.10))]);
     const runtime = buildPage([
-      node('r_winner', 'rectangle', rect(0.10, 0.10, 0.20, 0.10)),
+      node('r_winner', rect(0.10, 0.10, 0.20, 0.10)),
       // r_twin: nearly identical to r_winner, so its similarity score with
       // c_target lands within the AMBIGUITY_SCORE_MARGIN of r_winner's score.
-      node('r_twin', 'rectangle', rect(0.105, 0.10, 0.20, 0.10))
+      node('r_twin', rect(0.105, 0.10, 0.20, 0.10))
     ]);
     const result = matchPage(config, runtime);
     expect(result.matches).toHaveLength(1);
@@ -241,7 +241,7 @@ describe('matchPage', () => {
     expect(match.warnings[0]).toMatch(/r_twin/);
 
     // Equivalent setup but only r_winner exists — no rival, no demotion.
-    const unambiguous = matchPage(config, buildPage([node('r_winner', 'rectangle', rect(0.10, 0.10, 0.20, 0.10))]));
+    const unambiguous = matchPage(config, buildPage([node('r_winner', rect(0.10, 0.10, 0.20, 0.10))]));
     expect(unambiguous.matches[0].warnings).toEqual([]);
     expect(match.confidence).toBeLessThan(unambiguous.matches[0].confidence);
 
@@ -253,10 +253,10 @@ describe('matchPage', () => {
   it('does not flag ambiguity when the runner-up clearly loses', () => {
     // r_winner is a near-perfect twin of c_target, r_other is far away.
     // The score gap is well above AMBIGUITY_SCORE_MARGIN, so no warning.
-    const config = buildPage([node('c_target', 'rectangle', rect(0.10, 0.10, 0.20, 0.10))]);
+    const config = buildPage([node('c_target', rect(0.10, 0.10, 0.20, 0.10))]);
     const runtime = buildPage([
-      node('r_winner', 'rectangle', rect(0.10, 0.10, 0.20, 0.10)),
-      node('r_other', 'rectangle', rect(0.80, 0.80, 0.05, 0.05))
+      node('r_winner', rect(0.10, 0.10, 0.20, 0.10)),
+      node('r_other', rect(0.80, 0.80, 0.05, 0.05))
     ]);
     const result = matchPage(config, runtime);
     expect(result.matches).toHaveLength(1);
@@ -265,8 +265,8 @@ describe('matchPage', () => {
   });
 
   it('respects a custom confidence threshold', () => {
-    const config = buildPage([node('c1', 'container', rect(0.0, 0.0, 0.2, 0.2))]);
-    const runtime = buildPage([node('r1', 'container', rect(0.7, 0.7, 0.2, 0.2))]);
+    const config = buildPage([node('c1', rect(0.0, 0.0, 0.2, 0.2))]);
+    const runtime = buildPage([node('r1', rect(0.7, 0.7, 0.2, 0.2))]);
     const lenient = matchPage(config, runtime, { minHierarchicalConfidence: 0.0 });
     const strict = matchPage(config, runtime, {
       minHierarchicalConfidence: 0.99,
@@ -281,8 +281,8 @@ describe('matchPage', () => {
 
 describe('transformation-runner with hierarchical matcher', () => {
   const sharedObjects = [
-    node('o1', 'container', rect(0.1, 0.1, 0.4, 0.4)),
-    node('o2', 'rectangle', rect(0.6, 0.1, 0.3, 0.2))
+    node('o1', rect(0.1, 0.1, 0.4, 0.4)),
+    node('o2', rect(0.6, 0.1, 0.3, 0.2))
   ];
 
   const configModel = buildModel(

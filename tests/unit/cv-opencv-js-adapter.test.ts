@@ -195,23 +195,16 @@ describe('createOpenCvJsAdapter', () => {
 
     const result = await adapter.detectContentRect(raster);
     expect(result.executionMode).toBe('heuristic-fallback');
-    const horizontals = result.objectsSurface.filter((o) => o.type === 'line-horizontal');
-    const verticals = result.objectsSurface.filter((o) => o.type === 'line-vertical');
-
-    expect(horizontals).toHaveLength(2);
-    expect(verticals).toHaveLength(1);
-    expect(horizontals[0].bboxSurface).toMatchObject({ x: 0, y: 10, width: 64, height: 2 });
-    expect(horizontals[1].bboxSurface).toMatchObject({ x: 0, y: 40, width: 64, height: 2 });
-    expect(verticals[0].bboxSurface).toMatchObject({ x: 31, y: 0, width: 1, height: 64 });
+    // Line segments are an internal primitive — they are not emitted as
+    // structural objects. The detector can still emit one blob covering the
+    // intersecting rules (a connected component), but never one object
+    // per row/column.
+    expect(result.objectsSurface.length).toBeLessThan(8);
   });
 
-  it('does not emit line objects for dense regions (those belong to connected components)', async () => {
-    // A fully-dark raster simulates a heavy-ink/teal-mockup page where every
-    // row and every column passes the density threshold. Before the fix, this
-    // produced one line object per row plus one per column (~width+height
-    // overlay nodes that visually fused into a solid blob). The fix collapses
-    // the entire run; since it exceeds MAX_LINE_THICKNESS_PX, no lines are
-    // emitted — the dense region is captured by detectConnectedBounds instead.
+  it('does not emit line objects for dense regions (object-only model)', async () => {
+    // A fully-dark raster simulates a heavy-ink page. Under the object-only
+    // model, no line objects are emitted regardless of density.
     const adapter = createOpenCvJsAdapter();
     const raster = makeRaster(40, 40, (data) => {
       paintContentRect(data, 40, { left: 0, top: 0, right: 40, bottom: 40 });
@@ -219,10 +212,11 @@ describe('createOpenCvJsAdapter', () => {
 
     const result = await adapter.detectContentRect(raster);
     expect(result.executionMode).toBe('heuristic-fallback');
-    const lineObjects = result.objectsSurface.filter(
-      (o) => o.type === 'line-horizontal' || o.type === 'line-vertical'
-    );
-    expect(lineObjects).toHaveLength(0);
+    // Every emitted object must be a 2D blob/rect, never a thin 1D line.
+    for (const object of result.objectsSurface) {
+      const minSide = Math.min(object.bboxSurface.width, object.bboxSurface.height);
+      expect(minSide).toBeGreaterThan(2);
+    }
   });
 
   it('scales line and area thresholds with raster size (size-relative floors)', async () => {
@@ -230,7 +224,8 @@ describe('createOpenCvJsAdapter', () => {
     // y=400 of length 30 pixels. With purely absolute thresholds (24 px min
     // length) this would qualify as a line, even though 30 px is a tiny
     // fraction of the 1200 px page width. With size-relative floors the
-    // adapter ignores it as below 4% of the min side (≈48 px).
+    // adapter ignores it as below 4% of the min side (≈48 px). Either way,
+    // line segments are not promoted to structural objects in the new model.
     const adapter = createOpenCvJsAdapter();
     const raster = makeRaster(1200, 1600, (data) => {
       paintContentRect(data, 1200, { left: 100, top: 400, right: 130, bottom: 401 });
@@ -238,8 +233,7 @@ describe('createOpenCvJsAdapter', () => {
 
     const result = await adapter.detectContentRect(raster);
     expect(result.executionMode).toBe('heuristic-fallback');
-    const horizontals = result.objectsSurface.filter((o) => o.type === 'line-horizontal');
-    expect(horizontals).toHaveLength(0);
+    expect(result.objectsSurface).toHaveLength(0);
   });
 
   it('detects nested line-bounded cells from a ruled form (heuristic path)', async () => {
@@ -261,12 +255,10 @@ describe('createOpenCvJsAdapter', () => {
     const result = await adapter.detectContentRect(raster);
     expect(result.executionMode).toBe('heuristic-fallback');
 
-    const horizontals = result.objectsSurface.filter((o) => o.type === 'line-horizontal');
-    const verticals = result.objectsSurface.filter((o) => o.type === 'line-vertical');
-    const cells = result.objectsSurface.filter((o) => o.type === 'rectangle');
+    // Lines are not objects; only line-bounded rects (cells / outer frame)
+    // are emitted as objects in the new model.
+    const cells = result.objectsSurface;
 
-    expect(horizontals).toHaveLength(3);
-    expect(verticals).toHaveLength(3);
     // Outer frame + 4 inner cells + 4 row/column spans = 9 line-bounded rects.
     // We just assert that the four leaf cells AND the outer frame are present
     // — the exact total may vary as we tune the detector.
@@ -311,9 +303,12 @@ describe('createOpenCvJsAdapter', () => {
       makeRaster(240, 240, paintGrid)
     );
 
+    // Compare only line-bounded rects (id prefix `obj_rect_` in the heuristic
+    // path, `obj_cv_cell_` in the OpenCV path). Connected-component blobs are
+    // a separate detection family and are not part of the parity contract.
     const heuristicCellSet = new Set(
       heuristicResult.objectsSurface
-        .filter((o) => o.type === 'rectangle')
+        .filter((o) => o.objectId.startsWith('obj_rect_'))
         .map((o) => `${o.bboxSurface.x},${o.bboxSurface.y},${o.bboxSurface.width},${o.bboxSurface.height}`)
     );
 
@@ -329,7 +324,7 @@ describe('createOpenCvJsAdapter', () => {
     const cvResult = await cvAdapter.detectContentRect(makeRaster(240, 240, paintGrid));
     const cvCellSet = new Set(
       cvResult.objectsSurface
-        .filter((o) => o.type === 'rectangle')
+        .filter((o) => o.objectId.startsWith('obj_cv_cell_'))
         .map((o) => `${o.bboxSurface.x},${o.bboxSurface.y},${o.bboxSurface.width},${o.bboxSurface.height}`)
     );
 
@@ -339,7 +334,7 @@ describe('createOpenCvJsAdapter', () => {
     }
   });
 
-  it('extracts contour and line objects through the OpenCV runtime boundary when runtime is provided', async () => {
+  it('extracts contour objects through the OpenCV runtime boundary, but does not emit line segments as objects', async () => {
     const adapter = createOpenCvJsAdapter({
       opencvRuntime: createMockOpenCvRuntime()
     });
@@ -350,7 +345,7 @@ describe('createOpenCvJsAdapter', () => {
     expect(result.contentRectSurface).toEqual({ x: 4, y: 5, width: 49, height: 50 });
 
     const contourRects = result.objectsSurface
-      .filter((item) => item.objectId.startsWith('obj_cv_'))
+      .filter((item) => item.objectId.startsWith('obj_cv_') && !item.objectId.startsWith('obj_cv_line_'))
       .map((item) => item.bboxSurface);
     expect(contourRects).toEqual(
       expect.arrayContaining([
@@ -359,14 +354,11 @@ describe('createOpenCvJsAdapter', () => {
       ])
     );
 
-    const lineRects = result.objectsSurface
-      .filter((item) => item.objectId.startsWith('obj_cv_line_'))
-      .map((item) => item.bboxSurface);
-    expect(lineRects).toEqual(
-      expect.arrayContaining([
-        { x: 4, y: 40, width: 49, height: 1 },
-        { x: 12, y: 5, width: 1, height: 50 }
-      ])
+    // Line segments emitted by HoughLinesP must not appear as structural
+    // objects — they are an internal primitive only.
+    const lineObjects = result.objectsSurface.filter((item) =>
+      item.objectId.startsWith('obj_cv_line_')
     );
+    expect(lineObjects).toHaveLength(0);
   });
 });

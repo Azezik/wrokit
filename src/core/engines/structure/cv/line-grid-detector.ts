@@ -1,22 +1,24 @@
 import type { CvSurfaceObject } from './cv-adapter';
-import type { StructuralObjectType } from '../../../contracts/structural-model';
 
 /**
  * Shared structural primitive: line-bounded rectangle detection.
  *
- * Both the heuristic fallback and the OpenCV runtime path delegate cell
- * detection to this module so that identical documents produce comparable
- * structure regardless of CV mode (`Make sure config and run use the same
- * detection logic`).
+ * Both the heuristic fallback and the OpenCV runtime path delegate
+ * line-bounded rect detection to this module so that identical documents
+ * produce comparable structure regardless of CV mode (config and run use
+ * the same detection logic).
  *
  * Why "lines first, then rectangles" instead of contour-first:
- *  - A ruled form is *defined* by its straight rules. Cell interiors are
+ *  - A ruled form is *defined* by its straight rules. The interiors are
  *    background pixels, so connected-component flood fill cannot find them
- *    directly — it finds the text inside, not the cells.
+ *    directly — it finds the text inside, not the bounded regions.
  *  - Internal contours (`RETR_EXTERNAL`) are silently discarded. We instead
  *    reconstruct line-bounded rectangles from line segments, which gives us
- *    every nested cell, every grid block, and the table outline in a single
- *    pass.
+ *    every nested child object and the outermost outline in a single pass.
+ *
+ * Line segments themselves are NOT emitted as objects. They are an internal
+ * primitive used to discover line-bounded objects. Only the bounded rects
+ * become structural objects; everything in the model is just an object.
  */
 
 export interface PixelBounds {
@@ -393,45 +395,6 @@ export const buildLineBoundedRects = (
   return rects;
 };
 
-export const lineSegmentsToObjects = (
-  segments: LineSegments,
-  idPrefix: string,
-  baseConfidence = 0.85
-): CvSurfaceObject[] => {
-  const out: CvSurfaceObject[] = [];
-  segments.horizontals.forEach((line, idx) => {
-    const length = Math.max(0, line.end - line.start);
-    const top = line.axisPos - Math.floor(line.thickness / 2);
-    out.push({
-      objectId: `${idPrefix}_hline_${idx}`,
-      type: 'line-horizontal',
-      bboxSurface: {
-        x: line.start,
-        y: Math.max(0, top),
-        width: length,
-        height: Math.max(1, line.thickness)
-      },
-      confidence: Math.min(0.99, baseConfidence + Math.min(0.14, length / 4000))
-    });
-  });
-  segments.verticals.forEach((line, idx) => {
-    const length = Math.max(0, line.end - line.start);
-    const left = line.axisPos - Math.floor(line.thickness / 2);
-    out.push({
-      objectId: `${idPrefix}_vline_${idx}`,
-      type: 'line-vertical',
-      bboxSurface: {
-        x: Math.max(0, left),
-        y: line.start,
-        width: Math.max(1, line.thickness),
-        height: length
-      },
-      confidence: Math.min(0.99, baseConfidence + Math.min(0.14, length / 4000))
-    });
-  });
-  return out;
-};
-
 interface RectsToObjectsOptions {
   idPrefix: string;
   baseConfidence?: number;
@@ -440,9 +403,9 @@ interface RectsToObjectsOptions {
 }
 
 /**
- * Convert line-bounded rects into CV surface objects. Initial type is always
- * `rectangle`; the structural hierarchy pass later promotes parents to
- * `container` / `table-like` based on what they actually contain.
+ * Convert line-bounded rects into CV surface objects. Each line-bounded box
+ * is just an object — the hierarchy pass decides parent/child purely by
+ * containment, with no semantic classification.
  */
 export const lineBoundedRectsToObjects = (
   rects: PixelBounds[],
@@ -459,13 +422,8 @@ export const lineBoundedRectsToObjects = (
     }
     const area = width * height;
     const fillBoost = Math.min(0.18, area / pageArea);
-    // Concrete type is decided by the hierarchy pass, but starting label is
-    // always "rectangle" (a leaf line-bounded box). This is intentionally
-    // structure-driven — not a size guess.
-    const type: StructuralObjectType = 'rectangle';
     out.push({
       objectId: `${options.idPrefix}_rect_${index}`,
-      type,
       bboxSurface: { x: rect.left, y: rect.top, width, height },
       confidence: Math.min(0.99, baseConfidence + fillBoost)
     });

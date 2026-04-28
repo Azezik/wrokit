@@ -19,7 +19,9 @@
   z-index: 2;
 }
 
-/* Object base styles. Per-type color + accent applied via data-object-type. */
+/* Object base styles. Hierarchy is conveyed via depth (data-depth) and
+   whether the object has children (data-has-children) — never via semantic
+   categories. Top-level objects get a thicker stroke; deeper children fade. */
 .structural-debug-overlay__object {
   border: 1.25px solid rgb(14 116 144 / 0.55);
   background: transparent;
@@ -28,34 +30,36 @@
   z-index: 3;
 }
 
-.structural-debug-overlay__object[data-object-type='container'],
-.structural-debug-overlay__object[data-object-type='group-region'],
-.structural-debug-overlay__object[data-object-type='nested-region'] {
-  border-color: rgb(14 116 144 / 0.55);
+.structural-debug-overlay__object[data-depth='0'] {
+  border-width: 2px;
+  border-color: rgb(14 116 144 / 0.85);
 }
 
-.structural-debug-overlay__object[data-object-type='rectangle'] {
-  border-color: rgb(56 189 248 / 0.65);
+.structural-debug-overlay__object[data-depth='1'] {
+  border-width: 1.5px;
+  border-color: rgb(14 116 144 / 0.65);
 }
 
-.structural-debug-overlay__object[data-object-type='table-like'] {
-  border-color: rgb(217 70 239 / 0.65);
-  background: rgb(217 70 239 / 0.04);
+.structural-debug-overlay__object[data-depth='2'] {
+  border-width: 1.25px;
+  border-color: rgb(14 116 144 / 0.5);
 }
 
-.structural-debug-overlay__object[data-object-type='header'] {
-  border-color: rgb(234 88 12 / 0.7);
-  background: rgb(234 88 12 / 0.04);
+.structural-debug-overlay__object[data-depth='3'] {
+  border-width: 1px;
+  border-color: rgb(14 116 144 / 0.4);
 }
 
-.structural-debug-overlay__object[data-object-type='footer'] {
-  border-color: rgb(120 53 15 / 0.55);
-  background: rgb(120 53 15 / 0.04);
+.structural-debug-overlay__object[data-depth='4'] {
+  border-width: 1px;
+  border-color: rgb(14 116 144 / 0.3);
+  border-style: dashed;
 }
 
-.structural-debug-overlay__object[data-object-type='line-horizontal'],
-.structural-debug-overlay__object[data-object-type='line-vertical'] {
-  border-color: rgb(8 145 178 / 0.22);
+/* Parent objects (have children) get a faint background tint so the
+   nesting structure is visible without semantic naming. */
+.structural-debug-overlay__object[data-has-children='true'] {
+  background: rgb(14 116 144 / 0.04);
 }
 
 /* Hover lifts the object visually so it can be isolated in a busy page. */

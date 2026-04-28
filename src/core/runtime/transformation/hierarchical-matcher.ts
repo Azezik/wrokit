@@ -195,8 +195,6 @@ const buildMatch = (
   return {
     configObjectId: config.objectId,
     runtimeObjectId: runtime.objectId,
-    configType: config.type,
-    runtimeType: runtime.type,
     confidence,
     basis: sim.basis,
     transform: affineFromRects(config.objectRectNorm, runtime.objectRectNorm),

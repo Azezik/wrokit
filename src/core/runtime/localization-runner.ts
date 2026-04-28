@@ -371,11 +371,11 @@ const geometryDistance = (a: StructuralNormalizedRect, b: StructuralNormalizedRe
   );
 };
 
-const getAncestorTypeChain = (
+const ancestorDepthChain = (
   page: StructuralPage,
   objectId: string
-): StructuralObjectNode['type'][] => {
-  const chain: StructuralObjectNode['type'][] = [];
+): number[] => {
+  const chain: number[] = [];
   const seen = new Set<string>();
   let cursor = getObjectById(page, objectId);
   while (cursor?.parentObjectId) {
@@ -387,26 +387,17 @@ const getAncestorTypeChain = (
     if (!parent) {
       break;
     }
-    chain.push(parent.type);
+    chain.push(parent.depth);
     cursor = parent;
   }
   return chain;
 };
 
-const ancestorChainMismatchCount = (
-  configChain: StructuralObjectNode['type'][],
-  runtimeChain: StructuralObjectNode['type'][]
-): number => {
-  const length = Math.min(configChain.length, runtimeChain.length);
-  let mismatches = 0;
-  for (let i = 0; i < length; i += 1) {
-    if (configChain[i] !== runtimeChain[i]) {
-      mismatches += 1;
-    }
-  }
-  // Penalize chain-length deltas too — a runtime object missing an ancestor is
-  // structurally weaker than one whose chain matches end-to-end.
-  return mismatches + Math.abs(configChain.length - runtimeChain.length);
+const ancestorChainMismatchCount = (configChain: number[], runtimeChain: number[]): number => {
+  // Without semantic types, a chain mismatch reduces to a chain-length delta —
+  // a runtime object missing an ancestor is structurally weaker than one whose
+  // chain matches end-to-end.
+  return Math.abs(configChain.length - runtimeChain.length);
 };
 
 const hierarchyRoleDistance = (
@@ -418,18 +409,23 @@ const hierarchyRoleDistance = (
   const configParent = getObjectById(configPage, configObject.parentObjectId);
   const runtimeParent = getObjectById(runtimePage, runtimeObject.parentObjectId);
 
-  const childPresencePenalty = Number((configObject.childObjectIds.length > 0) !== (runtimeObject.childObjectIds.length > 0));
-  const depthPenalty = Math.abs(getObjectDepth(configPage, configObject.objectId) - getObjectDepth(runtimePage, runtimeObject.objectId));
-  const parentTypePenalty = Number(Boolean(configParent?.type) !== Boolean(runtimeParent?.type) || (configParent?.type && runtimeParent?.type && configParent.type !== runtimeParent.type));
+  const childPresencePenalty = Number(
+    (configObject.childObjectIds.length > 0) !== (runtimeObject.childObjectIds.length > 0)
+  );
+  const depthPenalty = Math.abs(
+    getObjectDepth(configPage, configObject.objectId) -
+      getObjectDepth(runtimePage, runtimeObject.objectId)
+  );
+  const parentPresencePenalty = Number(Boolean(configParent) !== Boolean(runtimeParent));
   const ancestorChainPenalty = ancestorChainMismatchCount(
-    getAncestorTypeChain(configPage, configObject.objectId),
-    getAncestorTypeChain(runtimePage, runtimeObject.objectId)
+    ancestorDepthChain(configPage, configObject.objectId),
+    ancestorDepthChain(runtimePage, runtimeObject.objectId)
   );
 
   // Ancestor chain mismatch is the strongest structural signal — a runtime
   // object whose full ancestry matches is far more trustworthy than one that
-  // only happens to share an immediate parent type.
-  return [ancestorChainPenalty, childPresencePenalty, depthPenalty, parentTypePenalty];
+  // only happens to share an immediate parent.
+  return [ancestorChainPenalty, childPresencePenalty, depthPenalty, parentPresencePenalty];
 };
 
 /**
@@ -454,7 +450,7 @@ interface ResolveObjectOptions {
    * True when the config and runtime pages came from distinct documents
    * (different `StructuralModel.documentFingerprint`). When true, an id-only
    * match against a positional/auto-generated objectId is treated as
-   * coincidental: the resolver falls through to the type-hierarchy-geometry
+   * coincidental: the resolver falls through to the hierarchy-geometry
    * pass, which actually examines the structural signal. The resolver still
    * accepts `id` matches when the id is non-positional (e.g. an authored or
    * content-derived id), since those carry real cross-document meaning.
@@ -468,15 +464,19 @@ const resolveRuntimeObject = (
   configObjectId: string,
   options: ResolveObjectOptions = {}
 ): { object: StructuralObjectNode; strategy: RuntimeObjectMatchStrategy } | null => {
-  const configObject = configPage.objectHierarchy.objects.find((object) => object.objectId === configObjectId);
+  const configObject = configPage.objectHierarchy.objects.find(
+    (object) => object.objectId === configObjectId
+  );
 
-  const runtimeById = runtimePage.objectHierarchy.objects.find((object) => object.objectId === configObjectId);
-  if (runtimeById && (!configObject || runtimeById.type === configObject.type)) {
+  const runtimeById = runtimePage.objectHierarchy.objects.find(
+    (object) => object.objectId === configObjectId
+  );
+  if (runtimeById) {
     // Across distinct documents, a positional objectId match is not an
     // identity signal — it just means both detection passes happened to
     // assign the same index. Skip the `id` strategy in that case so the
     // RuntimeStructuralTransform.objectMatchStrategy reflects reality, and
-    // let the `type-hierarchy-geometry` pass below pick the same object on
+    // let the hierarchy-geometry pass below pick the same object on
     // its own merits if it deserves to win.
     if (!(options.crossDocument && isPositionalObjectId(runtimeById.objectId))) {
       return {
@@ -490,8 +490,30 @@ const resolveRuntimeObject = (
     return null;
   }
 
-  const sameType = runtimePage.objectHierarchy.objects
-    .filter((object) => object.type === configObject.type)
+  // Hierarchy-geometry fallback: only fire when the config side has a unique
+  // object at the relevant depth. Without semantic types, configSameDepth=1
+  // is our signal that this object fills a distinct structural role; if the
+  // config has many peers at that depth, we cannot say the missing one
+  // corresponds to any specific runtime object and must give up.
+  const configDepth = getObjectDepth(configPage, configObject.objectId);
+  const configSameDepth = configPage.objectHierarchy.objects.filter(
+    (object) => getObjectDepth(configPage, object.objectId) === configDepth
+  );
+  if (configSameDepth.length !== 1) {
+    return null;
+  }
+
+  const sameDepth = runtimePage.objectHierarchy.objects.filter(
+    (object) => getObjectDepth(runtimePage, object.objectId) === configDepth
+  );
+  if (sameDepth.length === 0) {
+    return null;
+  }
+
+  // When multiple runtime candidates exist at the matching depth, pick the
+  // structurally closest one — this is the lenient direct picker that
+  // surfaces the best available candidate for downstream consumers.
+  const ranked = sameDepth
     .map((object) => ({
       object,
       hierarchyRole: hierarchyRoleDistance(configPage, runtimePage, configObject, object),
@@ -509,12 +531,8 @@ const resolveRuntimeObject = (
       return left.object.objectId.localeCompare(right.object.objectId);
     });
 
-  if (sameType.length === 0) {
-    return null;
-  }
-
   return {
-    object: sameType[0].object,
+    object: ranked[0].object,
     strategy: 'type-hierarchy-geometry'
   };
 };
@@ -539,11 +557,13 @@ const stableAnchorLabelToTier = (
 /**
  * Strict rescuer match: only accept an unambiguous runtime object for the
  * rescuer. A rescuer is unambiguous when:
- *   - the runtime model contains the same object id with the same type, or
- *   - exactly one runtime object shares the rescuer's structural type.
+ *   - the runtime model contains the same object id (and the id isn't a
+ *     coincidental cross-document positional id), or
+ *   - exactly one runtime object lives at the same hierarchy depth as the
+ *     rescuer.
  *
- * Anything else (multiple same-type candidates with no id match) is ambiguous
- * and rejected, so we never reconstruct a child anchor from a guessed parent.
+ * Anything else is ambiguous and rejected, so we never reconstruct a child
+ * anchor from a guessed parent.
  */
 const resolveRescuerObjectStrict = (
   configPage: StructuralPage,
@@ -556,7 +576,7 @@ const resolveRescuerObjectStrict = (
   const runtimeById = runtimePage.objectHierarchy.objects.find(
     (object) => object.objectId === rescuerObjectId
   );
-  if (runtimeById && (!configObject || runtimeById.type === configObject.type)) {
+  if (runtimeById) {
     if (!(options.crossDocument && isPositionalObjectId(runtimeById.objectId))) {
       return { object: runtimeById, strategy: 'id' };
     }
@@ -566,11 +586,19 @@ const resolveRescuerObjectStrict = (
     return null;
   }
 
-  const sameType = runtimePage.objectHierarchy.objects.filter(
-    (object) => object.type === configObject.type
+  const configDepth = getObjectDepth(configPage, configObject.objectId);
+  const configSameDepth = configPage.objectHierarchy.objects.filter(
+    (object) => getObjectDepth(configPage, object.objectId) === configDepth
   );
-  if (sameType.length === 1) {
-    return { object: sameType[0], strategy: 'type-hierarchy-geometry' };
+  if (configSameDepth.length !== 1) {
+    return null;
+  }
+
+  const sameDepth = runtimePage.objectHierarchy.objects.filter(
+    (object) => getObjectDepth(runtimePage, object.objectId) === configDepth
+  );
+  if (sameDepth.length === 1) {
+    return { object: sameDepth[0], strategy: 'type-hierarchy-geometry' };
   }
 
   return null;
@@ -1540,7 +1568,7 @@ export const createLocalizationRunner = (): LocalizationRunner => ({
       schema: 'wrokit/predicted-geometry-file',
       version: '1.0',
       geometryFileVersion: 'wrokit/geometry/v1',
-      structureVersion: 'wrokit/structure/v2',
+      structureVersion: 'wrokit/structure/v3',
       id: input.predictedId ?? generateId(),
       wizardId: input.wizardId,
       sourceGeometryFileId: input.configGeometry.id,

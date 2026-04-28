@@ -9,80 +9,77 @@ const rect = (xNorm: number, yNorm: number, wNorm: number, hNorm: number) => ({
   hNorm
 });
 
-describe('buildObjectHierarchy structure-aware classification', () => {
-  it('promotes a parent rectangle whose children form a 2x2 grid to table-like', () => {
+describe('buildObjectHierarchy: object-only hierarchy', () => {
+  it('a parent with four child rects produces a parent object with four children — every node is just an object', () => {
     // Parent at (0.1..0.5, 0.1..0.5). Four cells in a 2x2 grid plus the parent.
+    // Under the new model, none of these are "table-like" or "rectangle" — they
+    // are all just objects, with parent/child links established by containment.
     const hierarchy = buildObjectHierarchy([
-      { objectId: 'parent', type: 'rectangle', bbox: rect(0.1, 0.1, 0.4, 0.4), confidence: 0.8 },
-      { objectId: 'tl', type: 'rectangle', bbox: rect(0.1, 0.1, 0.2, 0.2), confidence: 0.8 },
-      { objectId: 'tr', type: 'rectangle', bbox: rect(0.3, 0.1, 0.2, 0.2), confidence: 0.8 },
-      { objectId: 'bl', type: 'rectangle', bbox: rect(0.1, 0.3, 0.2, 0.2), confidence: 0.8 },
-      { objectId: 'br', type: 'rectangle', bbox: rect(0.3, 0.3, 0.2, 0.2), confidence: 0.8 }
+      { objectId: 'parent', bbox: rect(0.1, 0.1, 0.4, 0.4), confidence: 0.8 },
+      { objectId: 'tl', bbox: rect(0.1, 0.1, 0.2, 0.2), confidence: 0.8 },
+      { objectId: 'tr', bbox: rect(0.3, 0.1, 0.2, 0.2), confidence: 0.8 },
+      { objectId: 'bl', bbox: rect(0.1, 0.3, 0.2, 0.2), confidence: 0.8 },
+      { objectId: 'br', bbox: rect(0.3, 0.3, 0.2, 0.2), confidence: 0.8 }
     ]);
 
-    const parent = hierarchy.objects.find((node) => node.objectId === 'parent');
+    const parent = hierarchy.objects.find((node) => node.objectId === 'parent')!;
     expect(parent).toBeDefined();
-    expect(parent!.type).toBe('table-like');
-    // Children remain rectangles (leaf cells).
+    expect(parent.parentObjectId).toBeNull();
+    expect(parent.depth).toBe(0);
+    expect(parent.childObjectIds.sort()).toEqual(['bl', 'br', 'tl', 'tr']);
+
     for (const id of ['tl', 'tr', 'bl', 'br']) {
       const child = hierarchy.objects.find((node) => node.objectId === id)!;
-      expect(child.type).toBe('rectangle');
       expect(child.parentObjectId).toBe('parent');
+      expect(child.depth).toBe(1);
+      expect(child.childObjectIds).toEqual([]);
     }
   });
 
-  it('classifies a parent with non-grid children as group-region, not table-like', () => {
-    // Three children of varying sizes scattered inside parent — no grid.
+  it('a parent with non-grid children is still just an object with children', () => {
     const hierarchy = buildObjectHierarchy([
-      { objectId: 'parent', type: 'rectangle', bbox: rect(0.0, 0.0, 0.6, 0.6), confidence: 0.8 },
-      { objectId: 'a', type: 'rectangle', bbox: rect(0.05, 0.05, 0.1, 0.1), confidence: 0.8 },
-      { objectId: 'b', type: 'rectangle', bbox: rect(0.4, 0.2, 0.15, 0.05), confidence: 0.8 },
-      { objectId: 'c', type: 'rectangle', bbox: rect(0.2, 0.45, 0.2, 0.1), confidence: 0.8 }
+      { objectId: 'parent', bbox: rect(0.0, 0.0, 0.6, 0.6), confidence: 0.8 },
+      { objectId: 'a', bbox: rect(0.05, 0.05, 0.1, 0.1), confidence: 0.8 },
+      { objectId: 'b', bbox: rect(0.4, 0.2, 0.15, 0.05), confidence: 0.8 },
+      { objectId: 'c', bbox: rect(0.2, 0.45, 0.2, 0.1), confidence: 0.8 }
     ]);
 
     const parent = hierarchy.objects.find((node) => node.objectId === 'parent')!;
-    expect(parent.type).toBe('group-region');
+    expect(parent.depth).toBe(0);
+    expect(parent.childObjectIds.sort()).toEqual(['a', 'b', 'c']);
   });
 
-  it('does not let line-only children turn a parent into table-like', () => {
-    // A parent containing only horizontal/vertical lines is NOT a table; the
-    // structural label should depend on real cell children.
+  it('builds a 3-deep hierarchy: page → middle → leaf with monotonically increasing depth', () => {
     const hierarchy = buildObjectHierarchy([
-      { objectId: 'parent', type: 'rectangle', bbox: rect(0.0, 0.0, 0.5, 0.5), confidence: 0.8 },
-      { objectId: 'h1', type: 'line-horizontal', bbox: rect(0.05, 0.1, 0.4, 0.005), confidence: 0.9 },
-      { objectId: 'h2', type: 'line-horizontal', bbox: rect(0.05, 0.2, 0.4, 0.005), confidence: 0.9 },
-      { objectId: 'v1', type: 'line-vertical', bbox: rect(0.1, 0.05, 0.005, 0.4), confidence: 0.9 },
-      { objectId: 'v2', type: 'line-vertical', bbox: rect(0.3, 0.05, 0.005, 0.4), confidence: 0.9 }
+      { objectId: 'page', bbox: rect(0.0, 0.0, 1.0, 1.0), confidence: 0.7 },
+      { objectId: 'middle', bbox: rect(0.1, 0.1, 0.4, 0.4), confidence: 0.8 },
+      { objectId: 'tl', bbox: rect(0.1, 0.1, 0.2, 0.2), confidence: 0.8 },
+      { objectId: 'tr', bbox: rect(0.3, 0.1, 0.2, 0.2), confidence: 0.8 },
+      { objectId: 'bl', bbox: rect(0.1, 0.3, 0.2, 0.2), confidence: 0.8 },
+      { objectId: 'br', bbox: rect(0.3, 0.3, 0.2, 0.2), confidence: 0.8 }
     ]);
 
-    const parent = hierarchy.objects.find((node) => node.objectId === 'parent')!;
-    expect(parent.type).not.toBe('table-like');
-  });
-
-  it('builds a 3-deep hierarchy for nested grids (page → table → cell)', () => {
-    // A "page" rectangle that contains a "table" rectangle that contains a 2x2 grid.
-    const hierarchy = buildObjectHierarchy([
-      { objectId: 'page', type: 'rectangle', bbox: rect(0.0, 0.0, 1.0, 1.0), confidence: 0.7 },
-      { objectId: 'table', type: 'rectangle', bbox: rect(0.1, 0.1, 0.4, 0.4), confidence: 0.8 },
-      { objectId: 'tl', type: 'rectangle', bbox: rect(0.1, 0.1, 0.2, 0.2), confidence: 0.8 },
-      { objectId: 'tr', type: 'rectangle', bbox: rect(0.3, 0.1, 0.2, 0.2), confidence: 0.8 },
-      { objectId: 'bl', type: 'rectangle', bbox: rect(0.1, 0.3, 0.2, 0.2), confidence: 0.8 },
-      { objectId: 'br', type: 'rectangle', bbox: rect(0.3, 0.3, 0.2, 0.2), confidence: 0.8 }
-    ]);
-
-    const tableNode = hierarchy.objects.find((node) => node.objectId === 'table')!;
     const pageNode = hierarchy.objects.find((node) => node.objectId === 'page')!;
+    const middleNode = hierarchy.objects.find((node) => node.objectId === 'middle')!;
 
-    expect(tableNode.parentObjectId).toBe('page');
-    expect(tableNode.type).toBe('table-like');
-    // The page contains exactly one direct child (the table) — that's not a
-    // grid, so it should be a group-region, not a table-like itself.
-    expect(pageNode.type).toBe('group-region');
+    expect(pageNode.depth).toBe(0);
+    expect(middleNode.parentObjectId).toBe('page');
+    expect(middleNode.depth).toBe(1);
 
-    // All four cells should be parented to the table.
     for (const id of ['tl', 'tr', 'bl', 'br']) {
       const cell = hierarchy.objects.find((node) => node.objectId === id)!;
-      expect(cell.parentObjectId).toBe('table');
+      expect(cell.parentObjectId).toBe('middle');
+      expect(cell.depth).toBe(2);
+    }
+  });
+
+  it('does not assign any semantic type to any node (object-only model)', () => {
+    const hierarchy = buildObjectHierarchy([
+      { objectId: 'a', bbox: rect(0, 0, 0.5, 0.5), confidence: 0.9 },
+      { objectId: 'b', bbox: rect(0.1, 0.1, 0.1, 0.1), confidence: 0.9 }
+    ]);
+    for (const node of hierarchy.objects) {
+      expect((node as Record<string, unknown>).type).toBeUndefined();
     }
   });
 });

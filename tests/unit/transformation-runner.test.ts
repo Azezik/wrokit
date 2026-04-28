@@ -5,7 +5,6 @@ import type {
   StructuralModel,
   StructuralNormalizedRect,
   StructuralObjectNode,
-  StructuralObjectType,
   StructuralPage,
   StructuralRefinedBorder,
   StructuralRelativeAnchorRect
@@ -38,19 +37,19 @@ const ratio = (
 
 const node = (
   objectId: string,
-  type: StructuralObjectType,
   r: StructuralNormalizedRect,
   parentObjectId: string | null = null,
   childObjectIds: string[] = [],
-  confidence = 0.9
+  confidence = 0.9,
+  depth = 0
 ): StructuralObjectNode => ({
   objectId,
-  type,
   objectRectNorm: r,
   bbox: r,
   parentObjectId,
   childObjectIds,
-  confidence
+  confidence,
+  depth
 });
 
 const refinedFullPage: StructuralRefinedBorder = {
@@ -108,8 +107,8 @@ const buildPage = (
 
 const buildModel = (id: string, fingerprint: string, page: StructuralPage): StructuralModel => ({
   schema: 'wrokit/structural-model',
-  version: '3.0',
-  structureVersion: 'wrokit/structure/v2',
+  version: '4.0',
+  structureVersion: 'wrokit/structure/v3',
   id,
   documentFingerprint: fingerprint,
   cvAdapter: { name: 'opencv-js', version: '1.0' },
@@ -122,7 +121,7 @@ const sortByOrder = (cands: TransformationFieldCandidate[]): TransformationField
 
 describe('computeFieldAlignments — fallback chain', () => {
   it('matched object yields a high-confidence matched-object candidate first', () => {
-    const objects = [node('o1', 'container', rect(0.1, 0.1, 0.4, 0.4))];
+    const objects = [node('o1', rect(0.1, 0.1, 0.4, 0.4))];
     const fields = [buildField('f1', 'o1')];
     const config = buildPage(objects, fields);
     const runtime = buildPage(objects);
@@ -146,12 +145,12 @@ describe('computeFieldAlignments — fallback chain', () => {
 
   it('falls back to parent-object when the primary anchor is not matched', () => {
     const configObjects = [
-      node('parent', 'container', rect(0.0, 0.0, 0.6, 0.6), null, ['child']),
-      node('child', 'rectangle', rect(0.1, 0.1, 0.1, 0.1), 'parent')
+      node('parent', rect(0.0, 0.0, 0.6, 0.6), null, ['child']),
+      node('child', rect(0.1, 0.1, 0.1, 0.1), 'parent')
     ];
     // Runtime missing the child entirely — only the parent matches.
     const runtimeObjects = [
-      node('rParent', 'container', rect(0.0, 0.0, 0.6, 0.6), null, [])
+      node('rParent', rect(0.0, 0.0, 0.6, 0.6), null, [])
     ];
     const fields = [buildField('f1', 'child')];
     const config = buildPage(configObjects, fields);
@@ -186,11 +185,11 @@ describe('computeFieldAlignments — fallback chain', () => {
     //   => field absolute = (0.4, 0.4, 0.2, 0.2)
     //   => field-rel-parent = (0.4, 0.4, 0.2, 0.2)
     const configObjects = [
-      node('parent', 'container', rect(0.0, 0.0, 1.0, 1.0), null, ['child']),
-      node('child', 'rectangle', rect(0.2, 0.2, 0.4, 0.4), 'parent')
+      node('parent', rect(0.0, 0.0, 1.0, 1.0), null, ['child']),
+      node('child', rect(0.2, 0.2, 0.4, 0.4), 'parent')
     ];
     // Runtime missing the child entirely; only the parent matches.
-    const runtimeObjects = [node('rParent', 'container', rect(0.0, 0.0, 1.0, 1.0), null, [])];
+    const runtimeObjects = [node('rParent', rect(0.0, 0.0, 1.0, 1.0), null, [])];
     const fields = [buildField('f1', 'child', ratio(0.5, 0.5, 0.5, 0.5))];
     const config = buildPage(configObjects, fields);
     const runtime = buildPage(runtimeObjects);
@@ -217,8 +216,8 @@ describe('computeFieldAlignments — fallback chain', () => {
   });
 
   it('uses refined-border + border when no anchor and no ancestor match', () => {
-    const configObjects = [node('orphan', 'rectangle', rect(0.4, 0.4, 0.1, 0.1))];
-    const runtimeObjects = [node('completelyDifferent', 'header', rect(0.0, 0.0, 0.05, 0.02))];
+    const configObjects = [node('orphan', rect(0.4, 0.4, 0.1, 0.1))];
+    const runtimeObjects = [node('completelyDifferent', rect(0.0, 0.0, 0.05, 0.02))];
     const fields = [buildField('f1', 'orphan')];
     const config = buildPage(configObjects, fields);
     const runtime = buildPage(runtimeObjects);
@@ -236,7 +235,7 @@ describe('computeFieldAlignments — fallback chain', () => {
   });
 
   it('emits the matched-object candidate with the anchor relativeFieldRect', () => {
-    const objects = [node('o1', 'container', rect(0.1, 0.1, 0.4, 0.4))];
+    const objects = [node('o1', rect(0.1, 0.1, 0.4, 0.4))];
     const customRel = ratio(0.25, 0.25, 0.5, 0.1);
     const fields = [buildField('f1', 'o1', customRel)];
     const config = buildPage(objects, fields);
@@ -252,7 +251,7 @@ describe('computeFieldAlignments — fallback chain', () => {
   });
 
   it('fallbackOrder is strictly increasing', () => {
-    const objects = [node('o1', 'container', rect(0.1, 0.1, 0.4, 0.4))];
+    const objects = [node('o1', rect(0.1, 0.1, 0.4, 0.4))];
     const fields = [buildField('f1', 'o1')];
     const config = buildPage(objects, fields);
     const runtime = buildPage(objects);
@@ -272,8 +271,8 @@ describe('computeFieldAlignments — fallback chain', () => {
 describe('transformation-runner — end-to-end', () => {
   it('identical Config+Runtime yields identity transforms and matched-object candidates first', () => {
     const objects = [
-      node('o1', 'container', rect(0.1, 0.1, 0.4, 0.4)),
-      node('o2', 'rectangle', rect(0.6, 0.1, 0.3, 0.3))
+      node('o1', rect(0.1, 0.1, 0.4, 0.4)),
+      node('o2', rect(0.6, 0.1, 0.3, 0.3))
     ];
     const fields = [buildField('f1', 'o1')];
     const configModel = buildModel('cfg', 'cfg-fp', buildPage(objects, fields));
@@ -302,15 +301,14 @@ describe('transformation-runner — end-to-end', () => {
 
   it('uniformly shifted+scaled runtime is recovered in the consensus transform within tolerance', () => {
     const configObjects = [
-      node('c1', 'container', rect(0.0, 0.0, 0.3, 0.3)),
-      node('c2', 'rectangle', rect(0.5, 0.0, 0.3, 0.3)),
-      node('c3', 'rectangle', rect(0.0, 0.5, 0.3, 0.3))
+      node('c1', rect(0.0, 0.0, 0.3, 0.3)),
+      node('c2', rect(0.5, 0.0, 0.3, 0.3)),
+      node('c3', rect(0.0, 0.5, 0.3, 0.3))
     ];
     // Runtime: scaled to 1.1x and shifted by (+0.05, -0.02).
     const runtimeObjects = configObjects.map((o, i) =>
       node(
         `r${i + 1}`,
-        o.type,
         rect(
           o.objectRectNorm.xNorm * 1.1 + 0.05,
           o.objectRectNorm.yNorm * 1.1 - 0.02,
@@ -336,12 +334,12 @@ describe('transformation-runner — end-to-end', () => {
 
   it('reports unmatched config and runtime objects honestly', () => {
     const configObjects = [
-      node('shared', 'container', rect(0.1, 0.1, 0.3, 0.3)),
-      node('configOnly', 'rectangle', rect(0.7, 0.7, 0.1, 0.1))
+      node('shared', rect(0.1, 0.1, 0.3, 0.3)),
+      node('configOnly', rect(0.7, 0.7, 0.1, 0.1))
     ];
     const runtimeObjects = [
-      node('shared', 'container', rect(0.1, 0.1, 0.3, 0.3)),
-      node('runtimeOnly', 'header', rect(0.0, 0.0, 0.05, 0.02))
+      node('shared', rect(0.1, 0.1, 0.3, 0.3)),
+      node('runtimeOnly', rect(0.0, 0.0, 0.05, 0.02))
     ];
     const configModel = buildModel('cfg', 'cfg-fp', buildPage(configObjects));
     const runtimeModel = buildModel('rt', 'rt-fp', buildPage(runtimeObjects));
@@ -357,7 +355,7 @@ describe('transformation-runner — end-to-end', () => {
     const configModel = buildModel(
       'cfg',
       'cfg-fp',
-      buildPage([node('o1', 'container', rect(0.1, 0.1, 0.4, 0.4))])
+      buildPage([node('o1', rect(0.1, 0.1, 0.4, 0.4))])
     );
     const runtimeModel = buildModel('rt', 'rt-fp', buildPage([]));
     const runner = createTransformationRunner();

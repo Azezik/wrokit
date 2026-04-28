@@ -8,6 +8,13 @@
  *   authoritative; the structural model never overrides, shrinks, or relocates it.
  * - StructuralModel is persisted separately from GeometryFile.
  *
+ * Object model:
+ * - The structural hierarchy contains only `object`s. There is no semantic
+ *   classification (table, cell, container, group, line, etc.). A ruled grid
+ *   is an object whose children are objects; a form section is an object
+ *   whose children are objects; a standalone box is an object with no
+ *   children. Hierarchy is conveyed entirely through parent/child links.
+ *
  * `structureVersion` identifies the human-readable structural contract family
  * (mirrors `geometryFileVersion` on `GeometryFile`). `version` is the object schema
  * version. Both must match exactly to be considered a valid structural model.
@@ -74,20 +81,8 @@ export interface StructuralPage {
 
 export type StructuralCvExecutionMode = 'opencv-runtime' | 'heuristic-fallback';
 
-export type StructuralObjectType =
-  | 'rectangle'
-  | 'container'
-  | 'line-horizontal'
-  | 'line-vertical'
-  | 'table-like'
-  | 'header'
-  | 'footer'
-  | 'group-region'
-  | 'nested-region';
-
 export interface StructuralObjectNode {
   objectId: string;
-  type: StructuralObjectType;
   /**
    * Machine-detected structural object rect, normalized over the page surface.
    */
@@ -99,6 +94,12 @@ export interface StructuralObjectNode {
   parentObjectId: string | null;
   childObjectIds: string[];
   confidence: number;
+  /**
+   * Depth of this object in the hierarchy. 0 = top-level object (no parent),
+   * 1 = child of a top-level object, etc. Used by overlays to render nesting
+   * without inventing semantic categories.
+   */
+  depth: number;
 }
 
 export interface StructuralObjectHierarchy {
@@ -228,8 +229,8 @@ export interface StructuralCvAdapterRef {
 
 export interface StructuralModel {
   schema: 'wrokit/structural-model';
-  version: '3.0';
-  structureVersion: 'wrokit/structure/v2';
+  version: '4.0';
+  structureVersion: 'wrokit/structure/v3';
   id: string;
   documentFingerprint: string;
   cvAdapter: StructuralCvAdapterRef;
@@ -293,17 +294,6 @@ const isStructuralRefinedBorder = (value: unknown): value is StructuralRefinedBo
   );
 };
 
-const isStructuralObjectType = (value: unknown): value is StructuralObjectType =>
-  value === 'rectangle' ||
-  value === 'container' ||
-  value === 'line-horizontal' ||
-  value === 'line-vertical' ||
-  value === 'table-like' ||
-  value === 'header' ||
-  value === 'footer' ||
-  value === 'group-region' ||
-  value === 'nested-region';
-
 const isStructuralObjectNode = (value: unknown): value is StructuralObjectNode => {
   if (!isRecord(value)) {
     return false;
@@ -317,11 +307,11 @@ const isStructuralObjectNode = (value: unknown): value is StructuralObjectNode =
 
   return (
     typeof value.objectId === 'string' &&
-    isStructuralObjectType(value.type) &&
     (value.parentObjectId === null || typeof value.parentObjectId === 'string') &&
     Array.isArray(value.childObjectIds) &&
     value.childObjectIds.every((id) => typeof id === 'string') &&
-    isFiniteNumber(value.confidence)
+    isFiniteNumber(value.confidence) &&
+    isFiniteNumber(value.depth)
   );
 };
 
@@ -573,8 +563,8 @@ export const isStructuralModel = (value: unknown): value is StructuralModel => {
 
   if (
     value.schema !== 'wrokit/structural-model' ||
-    value.version !== '3.0' ||
-    value.structureVersion !== 'wrokit/structure/v2' ||
+    value.version !== '4.0' ||
+    value.structureVersion !== 'wrokit/structure/v3' ||
     typeof value.id !== 'string' ||
     typeof value.documentFingerprint !== 'string' ||
     typeof value.createdAtIso !== 'string' ||

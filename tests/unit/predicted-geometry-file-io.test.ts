@@ -12,7 +12,7 @@ const sample: PredictedGeometryFile = {
   schema: 'wrokit/predicted-geometry-file',
   version: '1.0',
   geometryFileVersion: 'wrokit/geometry/v1',
-  structureVersion: 'wrokit/structure/v2',
+  structureVersion: 'wrokit/structure/v3',
   id: 'pred_round_trip',
   wizardId: 'My Wizard',
   sourceGeometryFileId: 'geo_1',

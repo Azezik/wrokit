@@ -18,11 +18,7 @@
  * TransformationModel.
  */
 
-import type {
-  StructuralModel,
-  StructuralObjectType,
-  StructuralRelativeAnchorRect
-} from './structural-model';
+import type { StructuralModel, StructuralRelativeAnchorRect } from './structural-model';
 
 export interface TransformationAffine {
   scaleX: number;
@@ -37,7 +33,6 @@ export type TransformationMatchBasis =
   | 'refined-border-relation'
   | 'border-relation'
   | 'overlap-iou'
-  | 'type-match'
   | 'sibling-consistency';
 
 export type TransformationMatchLevel =
@@ -55,8 +50,6 @@ export interface TransformationStructuralModelRef {
 export interface TransformationObjectMatch {
   configObjectId: string;
   runtimeObjectId: string;
-  configType: StructuralObjectType;
-  runtimeType: StructuralObjectType;
   /**
    * Aggregate match confidence in [0, 1]. Below the runner's threshold the match
    * is rejected and not emitted.
@@ -200,17 +193,6 @@ const isTransformationAffine = (value: unknown): value is TransformationAffine =
 const isTransformationAffineOrNull = (value: unknown): value is TransformationAffine | null =>
   value === null || isTransformationAffine(value);
 
-const isStructuralObjectType = (value: unknown): value is StructuralObjectType =>
-  value === 'rectangle' ||
-  value === 'container' ||
-  value === 'line-horizontal' ||
-  value === 'line-vertical' ||
-  value === 'table-like' ||
-  value === 'header' ||
-  value === 'footer' ||
-  value === 'group-region' ||
-  value === 'nested-region';
-
 const isStructuralRelativeAnchorRect = (
   value: unknown
 ): value is StructuralRelativeAnchorRect => {
@@ -231,7 +213,6 @@ const isTransformationMatchBasis = (value: unknown): value is TransformationMatc
   value === 'refined-border-relation' ||
   value === 'border-relation' ||
   value === 'overlap-iou' ||
-  value === 'type-match' ||
   value === 'sibling-consistency';
 
 const isTransformationMatchLevel = (value: unknown): value is TransformationMatchLevel =>
@@ -265,8 +246,6 @@ const isTransformationObjectMatch = (value: unknown): value is TransformationObj
   return (
     typeof value.configObjectId === 'string' &&
     typeof value.runtimeObjectId === 'string' &&
-    isStructuralObjectType(value.configType) &&
-    isStructuralObjectType(value.runtimeType) &&
     isFiniteNumber(value.confidence) &&
     Array.isArray(value.basis) &&
     value.basis.every(isTransformationMatchBasis) &&

@@ -9,7 +9,6 @@ import {
   buildLineBoundedRects,
   detectLineSegments,
   lineBoundedRectsToObjects,
-  lineSegmentsToObjects,
   type PixelBounds as SharedPixelBounds
 } from './line-grid-detector';
 
@@ -340,6 +339,17 @@ const detectConnectedBounds = (
 };
 
 
+const isLineShaped = (
+  rect: { width: number; height: number },
+  thresholds: SizeRelativeThresholds
+): boolean => {
+  const isHorizontalLine =
+    rect.height <= thresholds.maxLineThicknessPx && rect.width >= thresholds.minLineLengthPx;
+  const isVerticalLine =
+    rect.width <= thresholds.maxLineThicknessPx && rect.height >= thresholds.minLineLengthPx;
+  return isHorizontalLine || isVerticalLine;
+};
+
 const detectHeuristicSurfaceObjects = (
   pixels: ImageData,
   backgroundThreshold: number,
@@ -350,7 +360,8 @@ const detectHeuristicSurfaceObjects = (
   const minBlobSide = Math.max(8, Math.round(Math.min(width, height) * MIN_BLOB_MIN_SIDE_FRAC));
 
   // 1. Connected components — kept for non-line-bounded shapes (logos, signatures).
-  //    Word-noise is dropped via min-side and area floors.
+  //    Word-noise is dropped via min-side and area floors. Line-shaped blobs
+  //    are skipped because they belong to the line-grid pipeline.
   const components = detectConnectedBounds(pixels, backgroundThreshold, thresholds.minObjectAreaPx);
   let id = 0;
   for (const component of components) {
@@ -362,21 +373,21 @@ const detectHeuristicSurfaceObjects = (
     if (Math.min(rect.width, rect.height) < minBlobSide) {
       continue; // glyph-shaped noise
     }
+    if (isLineShaped(rect, thresholds)) {
+      continue; // a 1D line is a primitive, not an object
+    }
     const area = rect.width * rect.height;
     const pageArea = Math.max(1, width * height);
     objects.push({
       objectId: `obj_blob_${id++}`,
-      type: classifyObjectType(rect, width, height, thresholds),
       bboxSurface: rect,
       confidence: Math.min(0.99, 0.62 + Math.min(1, area / pageArea) * 0.38)
     });
   }
 
-  // 2. Shared line-grid pipeline: line objects + line-bounded rects (cells).
-  //    This is the primitive for ruled forms; both heuristic and OpenCV paths
-  //    use it so identical documents produce comparable structure.
+  // 2. Shared line-grid pipeline: line-bounded rects only. The line segments
+  //    themselves are an internal primitive and are not emitted as objects.
   const segments = detectLineSegments(pixels, backgroundThreshold, thresholds);
-  objects.push(...lineSegmentsToObjects(segments, 'obj'));
   const cellRects = buildLineBoundedRects(segments, {
     surfaceWidth: width,
     surfaceHeight: height
@@ -390,36 +401,6 @@ const detectHeuristicSurfaceObjects = (
   );
 
   return objects;
-};
-
-const classifyObjectType = (
-  rect: { width: number; height: number },
-  surfaceWidth: number,
-  surfaceHeight: number,
-  thresholds: SizeRelativeThresholds
-): CvSurfaceObject['type'] => {
-  const area = rect.width * rect.height;
-  const pageArea = Math.max(1, surfaceWidth * surfaceHeight);
-  const isContainer = area / pageArea >= 0.12;
-  const isHorizontalLine =
-    rect.height <= thresholds.maxLineThicknessPx && rect.width >= thresholds.minLineLengthPx;
-  const isVerticalLine =
-    rect.width <= thresholds.maxLineThicknessPx && rect.height >= thresholds.minLineLengthPx;
-  const isTableLike = rect.width >= surfaceWidth * 0.35 && rect.height >= surfaceHeight * 0.15;
-
-  if (isHorizontalLine) {
-    return 'line-horizontal';
-  }
-  if (isVerticalLine) {
-    return 'line-vertical';
-  }
-  if (isTableLike) {
-    return 'table-like';
-  }
-  if (isContainer) {
-    return 'container';
-  }
-  return 'rectangle';
 };
 
 const detectWithHeuristicFallback = (
@@ -478,7 +459,8 @@ const buildObjectsFromContourRects = (
   surfaceHeight: number,
   idPrefix: string,
   confidenceBase: number,
-  thresholds: SizeRelativeThresholds
+  thresholds: SizeRelativeThresholds,
+  options: { skipLineShaped?: boolean } = {}
 ): CvSurfaceObject[] => {
   const pageArea = Math.max(1, surfaceWidth * surfaceHeight);
 
@@ -489,10 +471,12 @@ const buildObjectsFromContourRects = (
       if (rect.width <= 0 || rect.height <= 0 || area < thresholds.minObjectAreaPx) {
         return null;
       }
+      if (options.skipLineShaped && isLineShaped(rect, thresholds)) {
+        return null;
+      }
 
       return {
         objectId: `${idPrefix}_${index}`,
-        type: classifyObjectType(rect, surfaceWidth, surfaceHeight, thresholds),
         bboxSurface: rect,
         confidence: Math.min(0.99, confidenceBase + Math.min(1, area / pageArea) * (1 - confidenceBase))
       } satisfies CvSurfaceObject;
@@ -666,22 +650,22 @@ const detectWithOpenCvRuntime = (
       lineRects = [];
     }
 
+    // Contour rects: 2D shapes. Line-shaped rects are dropped because they
+    // are 1D primitives that belong to the line-grid pipeline.
     const objectsFromContours = buildObjectsFromContourRects(
       contourRects,
       surface.surfaceWidth,
       surface.surfaceHeight,
       'obj_cv',
       0.62,
-      thresholds
+      thresholds,
+      { skipLineShaped: true }
     );
-    const objectsFromLines = buildObjectsFromContourRects(
-      lineRects,
-      surface.surfaceWidth,
-      surface.surfaceHeight,
-      'obj_cv_line',
-      0.72,
-      thresholds
-    );
+    // HoughLinesP output (`lineRects`) is retained ONLY for content-bounds
+    // computation. Line segments themselves are not emitted as structural
+    // objects — they are an internal primitive that feeds line-bounded rect
+    // detection.
+    const objectsFromLines: CvSurfaceObject[] = [];
 
     // Shared line-grid cell pipeline. The OpenCV path benefits from the same
     // primitive: HoughLinesP gives us crisp segments, but the cell

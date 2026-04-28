@@ -5,18 +5,20 @@
  *
  * The scorer is intentionally tolerant. It is meant to surface candidate matches
  * for the hierarchical matcher to choose between, not to make final decisions.
+ *
+ * Object scoring uses geometry, parent chain, and refined-border relation.
+ * There is no semantic type-matching component — every structural detection
+ * is just an "object", and matching is purely structural.
  */
 
 import type {
   StructuralNormalizedRect,
   StructuralObjectNode,
-  StructuralObjectType,
   StructuralRefinedBorder
 } from '../../contracts/structural-model';
 import type { TransformationMatchBasis } from '../../contracts/transformation-model';
 
 export interface SimilarityWeights {
-  type: number;
   position: number;
   size: number;
   aspect: number;
@@ -25,11 +27,10 @@ export interface SimilarityWeights {
 }
 
 export const DEFAULT_SIMILARITY_WEIGHTS: SimilarityWeights = {
-  type: 0.2,
-  position: 0.2,
-  size: 0.15,
+  position: 0.3,
+  size: 0.2,
   aspect: 0.1,
-  parentChain: 0.2,
+  parentChain: 0.25,
   refinedBorderRelation: 0.15
 };
 
@@ -62,7 +63,6 @@ export interface SimilarityResult {
    * Per-component scores in [0, 1], for diagnostics and tests.
    */
   components: {
-    type: number;
     position: number;
     size: number;
     aspect: number;
@@ -81,33 +81,6 @@ const rectCenter = (r: StructuralNormalizedRect): { x: number; y: number } => ({
 
 const safeDiv = (n: number, d: number, fallback: number): number =>
   d > 1e-9 || d < -1e-9 ? n / d : fallback;
-
-/**
- * Type compatibility map. Identical types: 1.0. Closely related types: 0.5.
- * Otherwise: 0.
- */
-const typeScore = (a: StructuralObjectType, b: StructuralObjectType): number => {
-  if (a === b) {
-    return 1;
-  }
-  const containerLike: ReadonlyArray<StructuralObjectType> = [
-    'container',
-    'group-region',
-    'nested-region',
-    'rectangle'
-  ];
-  const lineLike: ReadonlyArray<StructuralObjectType> = [
-    'line-horizontal',
-    'line-vertical'
-  ];
-  if (containerLike.includes(a) && containerLike.includes(b)) {
-    return 0.5;
-  }
-  if (lineLike.includes(a) && lineLike.includes(b)) {
-    return 0.5;
-  }
-  return 0;
-};
 
 const positionScore = (
   a: StructuralNormalizedRect,
@@ -212,7 +185,6 @@ export const computeObjectSimilarity = (
   const weights = context.weights ?? DEFAULT_SIMILARITY_WEIGHTS;
 
   const components = {
-    type: typeScore(config.type, runtime.type),
     position: positionScore(config.objectRectNorm, runtime.objectRectNorm),
     size: sizeScore(config.objectRectNorm, runtime.objectRectNorm),
     aspect: aspectScore(config.objectRectNorm, runtime.objectRectNorm),
@@ -231,8 +203,7 @@ export const computeObjectSimilarity = (
   };
 
   const score = clamp01(
-    weights.type * components.type +
-      weights.position * components.position +
+    weights.position * components.position +
       weights.size * components.size +
       weights.aspect * components.aspect +
       weights.parentChain * components.parentChain +
@@ -240,9 +211,6 @@ export const computeObjectSimilarity = (
   );
 
   const basis: TransformationMatchBasis[] = [];
-  if (components.type >= 0.5) {
-    basis.push('type-match');
-  }
   if (components.position >= 0.5 || components.size >= 0.5 || components.aspect >= 0.5) {
     basis.push('object-similarity');
   }
@@ -254,9 +222,6 @@ export const computeObjectSimilarity = (
   }
 
   const notes: string[] = [];
-  if (components.type === 0) {
-    notes.push(`type mismatch (${config.type} vs ${runtime.type})`);
-  }
   if (components.position < 0.4) {
     notes.push('center-of-mass differs noticeably');
   }
