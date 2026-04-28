@@ -1,3 +1,54 @@
+## 2026-04-28 — Refactor: Phase 1D (delete or wire dead surfaces)
+
+### Why this step
+- Several code paths existed in the source tree but were unmounted, unimported, or half-implemented. Each was a drift surface that future readers could mistake for live code, and each diluted the per-stage / artifact-driven architecture that Phases 1A–1C established.
+- Verified each candidate with a repo-wide grep before deletion to confirm zero external consumers.
+
+### What changed
+- **Deleted `src/features/normalization/ui/NormalizationIntake.tsx` and `normalization-intake.css`.** The component was unmounted and rendered its own `<img>` outside the canonical `NormalizedPageViewport`, which would have been an alternate page-surface authority if it ever shipped. Confirmed grep: only self-references. Removed the `src/features/normalization/ui/` and `src/features/normalization/` directories.
+- **Deleted `src/app/routes.ts`.** Defined `routes` and `AppRoute` constants that were imported nowhere. The app renders all four pages stacked inside `App.tsx` with no router; if a real router is introduced later, it can build its own constants. Verified with grep: no consumers in `src/` or `tests/`.
+- **Deleted `src/demo/sample-wizard.ts`.** Exported `sampleWizard` had zero consumers in `src/` or `tests/`. The empty `src/demo/` directory was removed. The foundation audit noted "move to `tests/fixtures/` when wired to an Insert sample action"; that wiring has not landed and the file should not sit dormant.
+- **Dropped `imageBlobUrl` from `NormalizedPage`.**
+  - `src/core/contracts/normalized-page.ts` — removed `imageBlobUrl?: string`; tightened `imageDataUrl` from optional to required, since both rasterizers (`pdf-rasterizer.ts` and `image-rasterizer.ts`) always produce it. The `isNormalizedPage` guard now requires `imageDataUrl: string` directly instead of the previous `hasImageSurface` either-or check.
+  - `src/core/page-surface/ui/NormalizedPageViewport.tsx` — collapsed the `?? page.imageBlobUrl` fallback to a direct read of `page.imageDataUrl`; effect deps simplified; the local `imageSrc` indirection deleted.
+  - `src/core/engines/structure/page-raster-loader.ts` — same simplification; the defensive "no raster surface to read" branch is gone because the type now guarantees the field.
+- **Updated `docs/architecture.md`:**
+  - The `NormalizedPage` data-contracts entry now states `imageDataUrl` is required.
+  - The `features/` section drops the "library component but not mounted" caveat for `normalization`; there is no standalone normalization UI.
+  - The CSS-organization example replaces `normalization-intake.css` with the live `config-capture.css` / `run-mode.css`.
+
+### Authority + anti-drift behavior
+- One canonical viewport (`NormalizedPageViewport`) is now the only `<img>` reader of NormalizedPage rasters. There is no longer a parallel image-rendering path in the tree.
+- One canonical routing surface: there is no `routes.ts`, so any future routing work has to wire a real router rather than build on dormant constants.
+- One canonical NormalizedPage raster field (`imageDataUrl`); the contract no longer admits an alternate URL form that nothing produces.
+- No engine, runner, store, or test file in the codebase references the deleted files, the deleted directory paths, or the dropped field. Confirmed by grep before commit.
+
+### Files deleted
+- `src/features/normalization/ui/NormalizationIntake.tsx`
+- `src/features/normalization/ui/normalization-intake.css`
+- `src/features/normalization/ui/` (empty directory)
+- `src/features/normalization/` (empty directory)
+- `src/app/routes.ts`
+- `src/demo/sample-wizard.ts`
+- `src/demo/` (empty directory)
+
+### Files modified
+- `src/core/contracts/normalized-page.ts` (drop `imageBlobUrl`; require `imageDataUrl`)
+- `src/core/page-surface/ui/NormalizedPageViewport.tsx` (collapse image-src logic)
+- `src/core/engines/structure/page-raster-loader.ts` (drop defensive fallback)
+- `docs/architecture.md` (NormalizedPage entry + features section + CSS example)
+- `docs/dev-log.md` (this entry)
+
+### Checks run
+- `npm run check` (clean)
+- `npm test` — 156/156 passing across 19 files. No test fixtures used `imageBlobUrl`, so no test changes were required.
+- `npm run build` (clean)
+
+### Recommended next step
+- Phase 1A–1D are complete. Phase 2 — make TransformationModel the source of truth for localization — can begin. `localization-runner` should consume `TransformationModel.fieldAlignments` (already complete with confidences and fallback chain) instead of re-deriving its own anchor resolution.
+
+---
+
 ## 2026-04-28 — Refactor: Phase 1C (complete the artifact set)
 
 ### Why this step

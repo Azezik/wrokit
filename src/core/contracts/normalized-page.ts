@@ -11,8 +11,7 @@ export interface NormalizedPage {
   width: number;
   height: number;
   aspectRatio: number;
-  imageDataUrl?: string;
-  imageBlobUrl?: string;
+  imageDataUrl: string;
   sourceName: string; // display-only metadata; must not drive downstream logic
   normalization: NormalizationMetadata;
 }
@@ -37,9 +36,6 @@ export const isNormalizedPage = (value: unknown): value is NormalizedPage => {
     return false;
   }
 
-  const hasImageSurface =
-    typeof value.imageDataUrl === 'string' || typeof value.imageBlobUrl === 'string';
-
   return (
     value.schema === 'wrokit/normalized-page' &&
     value.version === '2.0' &&
@@ -47,7 +43,7 @@ export const isNormalizedPage = (value: unknown): value is NormalizedPage => {
     typeof value.width === 'number' &&
     typeof value.height === 'number' &&
     typeof value.aspectRatio === 'number' &&
-    hasImageSurface &&
+    typeof value.imageDataUrl === 'string' &&
     typeof value.sourceName === 'string' &&
     isNormalizationMetadata(value.normalization)
   );

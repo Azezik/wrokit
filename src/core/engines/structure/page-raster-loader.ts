@@ -45,11 +45,6 @@ export const loadPageSurfaceRaster = async (
   surface: PageSurface,
   env: PageRasterLoaderEnv = browserEnv
 ): Promise<ImageData> => {
-  const src = page.imageDataUrl ?? page.imageBlobUrl;
-  if (!src) {
-    throw new Error('NormalizedPage has no raster surface to read.');
-  }
-
   const surfaceWidth = Math.round(surface.surfaceWidth);
   const surfaceHeight = Math.round(surface.surfaceHeight);
 
@@ -59,7 +54,7 @@ export const loadPageSurfaceRaster = async (
     throw new Error('Could not create 2d canvas context for structural raster read.');
   }
 
-  const image = await env.loadImage(src);
+  const image = await env.loadImage(page.imageDataUrl);
   try {
     context.drawImage(image as CanvasImageSource, 0, 0, surfaceWidth, surfaceHeight);
   } finally {

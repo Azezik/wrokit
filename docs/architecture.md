@@ -28,7 +28,7 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
 - `src/core/ui/components`: reusable visual primitives (`Button`, `Input`, `Panel`, `Section`).
 - `src/core/ui/layout`: app-wide layout wrappers (`AppShell`).
 - `src/core/ui/styles`: centralized visual tokens + global base styles.
-- `src/features/<feature>/ui`: feature-owned UI modules (`wizard-builder`, `config-capture`, `run-mode`). Features import from `core/*`. `core/*` never imports from `features/*`. The `normalization` feature UI exists as a library component but is not mounted in the app; normalization is surfaced through Config Capture and Run Mode upload flows.
+- `src/features/<feature>/ui`: feature-owned UI modules (`wizard-builder`, `config-capture`, `run-mode`). Features import from `core/*`. `core/*` never imports from `features/*`. There is no standalone normalization UI; normalization is surfaced through Config Capture and Run Mode upload flows, which both run intake through `src/core/engines/normalization`.
 - `src/app`: page composition and shell wiring only.
 
 ## Engines vs Runtime Rule
@@ -67,12 +67,12 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
 - Visual tokens (colors, spacing, borders, shadows, radii, font sizes) are defined in `src/core/ui/styles/tokens.css`.
 - Global element defaults and shared classes live in `src/core/ui/styles/global.css`.
 - Reusable UI primitives are imported by feature UIs; feature UIs do not redefine core styling systems.
-- Feature-specific UI styling lives beside each feature (e.g., `src/features/wizard-builder/ui/wizard-builder.css`, `src/features/normalization/ui/normalization-intake.css`).
+- Feature-specific UI styling lives beside each feature (e.g., `src/features/wizard-builder/ui/wizard-builder.css`, `src/features/config-capture/ui/config-capture.css`, `src/features/run-mode/ui/run-mode.css`).
 - Business logic stays in stores/contracts/io/engines and is consumed by UI through typed interfaces.
 
 ## Data Contracts
 - `WizardFile` (`src/core/contracts/wizard.ts`): `schema: 'wrokit/wizard-file'`, `version: '1.0'`. Guard: `isWizardFile`.
-- `NormalizedPage` (`src/core/contracts/normalized-page.ts`): `schema: 'wrokit/normalized-page'`, `version: '2.0'`, includes pixel width/height/aspect ratio and raster image URL surface data, plus display-only `sourceName`. Guard: `isNormalizedPage`.
+- `NormalizedPage` (`src/core/contracts/normalized-page.ts`): `schema: 'wrokit/normalized-page'`, `version: '2.0'`, includes pixel width/height/aspect ratio, a required `imageDataUrl` raster surface (data URL produced by the rasterizer), and display-only `sourceName`. Guard: `isNormalizedPage`.
 - `GeometryFile` (`src/core/contracts/geometry.ts`): `schema: 'wrokit/geometry-file'`, `version: '1.1'`, `geometryFileVersion: 'wrokit/geometry/v1'`. Each `FieldGeometry` carries a normalized `bbox` (`xNorm/yNorm/wNorm/hNorm`) as canonical authority, a derived `pixelBbox` in NormalizedPage surface pixels, and a `pageSurface` reference so validation can detect drift against the loaded NormalizedPage. Guard: `isGeometryFile`.
 - `StructuralModel` (`src/core/contracts/structural-model.ts`): `schema: 'wrokit/structural-model'`, `version: '3.0'`, `structureVersion: 'wrokit/structure/v2'`. Each `StructuralPage` carries a `pageSurface` reference, two normalized rects (`border`, `refinedBorder`), an `objectHierarchy` (typed objects with `objectId/type/objectRectNorm/parent/children/confidence`), `pageAnchorRelations`, and `fieldRelationships`. Stored separately from `GeometryFile`. Guard: `isStructuralModel`.
 - `TransformationModel` (`src/core/contracts/transformation-model.ts`): `schema: 'wrokit/transformation-model'`, `version: '1.0'`, `transformVersion: 'wrokit/transformation/v1'`. Read-only Config↔Runtime alignment report. Persisted separately. Guard: `isTransformationModel`.
