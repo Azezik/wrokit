@@ -255,9 +255,10 @@ export function RunMode() {
       });
       setRuntimeStructuralModel(runtimeStructuralModel);
 
-      // Read-only alignment report between Config and Runtime StructuralModels.
-      // Does not influence localization in this phase; it is exposed for
-      // inspection and for future localization consumers.
+      // Alignment report between Config and Runtime StructuralModels. Now
+      // load-bearing for localization: per-field candidate chains drive
+      // predicted BBOX placement, with the legacy stable-anchor path as a
+      // fallback when a field has no candidates.
       const transformationReport = transformationRunnerRef.current.compute({
         config: configStructuralModel,
         runtime: runtimeStructuralModel
@@ -269,7 +270,8 @@ export function RunMode() {
         configGeometry: geometry,
         configStructuralModel,
         runtimeStructuralModel,
-        runtimePages
+        runtimePages,
+        transformationModel: transformationReport
       });
 
       setPredicted(result);
