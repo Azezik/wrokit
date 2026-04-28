@@ -242,6 +242,103 @@ describe('createOpenCvJsAdapter', () => {
     expect(horizontals).toHaveLength(0);
   });
 
+  it('detects nested line-bounded cells from a ruled form (heuristic path)', async () => {
+    // A 240x240 raster with a 2x2 ruled grid. Before the fix, the heuristic
+    // fallback only produced text-blob connected components and full-page
+    // line objects, so internal cells were silently lost. With the shared
+    // line-grid detector, we expect both the lines and the cells.
+    const adapter = createOpenCvJsAdapter();
+    const raster = makeRaster(240, 240, (data) => {
+      // 3 horizontal lines + 3 vertical lines forming a 2x2 grid.
+      for (const y of [20, 120, 220]) {
+        paintContentRect(data, 240, { left: 20, top: y, right: 221, bottom: y + 2 });
+      }
+      for (const x of [20, 120, 220]) {
+        paintContentRect(data, 240, { left: x, top: 20, right: x + 2, bottom: 221 });
+      }
+    });
+
+    const result = await adapter.detectContentRect(raster);
+    expect(result.executionMode).toBe('heuristic-fallback');
+
+    const horizontals = result.objectsSurface.filter((o) => o.type === 'line-horizontal');
+    const verticals = result.objectsSurface.filter((o) => o.type === 'line-vertical');
+    const cells = result.objectsSurface.filter((o) => o.type === 'rectangle');
+
+    expect(horizontals).toHaveLength(3);
+    expect(verticals).toHaveLength(3);
+    // Outer frame + 4 inner cells + 4 row/column spans = 9 line-bounded rects.
+    // We just assert that the four leaf cells AND the outer frame are present
+    // — the exact total may vary as we tune the detector.
+    expect(cells.length).toBeGreaterThanOrEqual(5);
+
+    const matches = (
+      bbox: { x: number; y: number; width: number; height: number },
+      expected: { x: number; y: number; width: number; height: number }
+    ) =>
+      Math.abs(bbox.x - expected.x) <= 2 &&
+      Math.abs(bbox.y - expected.y) <= 2 &&
+      Math.abs(bbox.width - expected.width) <= 2 &&
+      Math.abs(bbox.height - expected.height) <= 2;
+
+    const expectedCells = [
+      { x: 20, y: 20, width: 100, height: 100 },
+      { x: 120, y: 20, width: 100, height: 100 },
+      { x: 20, y: 120, width: 100, height: 100 },
+      { x: 120, y: 120, width: 100, height: 100 },
+      { x: 20, y: 20, width: 200, height: 200 }
+    ];
+    for (const expected of expectedCells) {
+      expect(cells.some((cell) => matches(cell.bboxSurface, expected))).toBe(true);
+    }
+  });
+
+  it('produces comparable structure for the same ruled form regardless of CV mode', async () => {
+    // Identical-document parity: the heuristic fallback and a (mock) OpenCV
+    // runtime that runs the same shared cell pipeline must agree on the leaf
+    // cell set. This is the contract that allows config-time and run-time to
+    // compare structures.
+    const paintGrid = (data: Uint8ClampedArray) => {
+      for (const y of [20, 120, 220]) {
+        paintContentRect(data, 240, { left: 20, top: y, right: 221, bottom: y + 2 });
+      }
+      for (const x of [20, 120, 220]) {
+        paintContentRect(data, 240, { left: x, top: 20, right: x + 2, bottom: 221 });
+      }
+    };
+    const heuristicAdapter = createOpenCvJsAdapter();
+    const heuristicResult = await heuristicAdapter.detectContentRect(
+      makeRaster(240, 240, paintGrid)
+    );
+
+    const heuristicCellSet = new Set(
+      heuristicResult.objectsSurface
+        .filter((o) => o.type === 'rectangle')
+        .map((o) => `${o.bboxSurface.x},${o.bboxSurface.y},${o.bboxSurface.width},${o.bboxSurface.height}`)
+    );
+
+    // OpenCV path: even an inert mock runtime (no contours) must still emit
+    // the same line-bounded cells, because the shared pipeline runs on raw
+    // pixels independent of contour discovery.
+    const inertRuntime = createMockOpenCvRuntime();
+    inertRuntime.findContours = () => {}; // no contour emissions
+    inertRuntime.HoughLinesP = (_image, lines) => {
+      lines.data32S = new Int32Array([]);
+    };
+    const cvAdapter = createOpenCvJsAdapter({ opencvRuntime: inertRuntime });
+    const cvResult = await cvAdapter.detectContentRect(makeRaster(240, 240, paintGrid));
+    const cvCellSet = new Set(
+      cvResult.objectsSurface
+        .filter((o) => o.type === 'rectangle')
+        .map((o) => `${o.bboxSurface.x},${o.bboxSurface.y},${o.bboxSurface.width},${o.bboxSurface.height}`)
+    );
+
+    // Every heuristic cell must also appear in the OpenCV result.
+    for (const key of heuristicCellSet) {
+      expect(cvCellSet.has(key)).toBe(true);
+    }
+  });
+
   it('extracts contour and line objects through the OpenCV runtime boundary when runtime is provided', async () => {
     const adapter = createOpenCvJsAdapter({
       opencvRuntime: createMockOpenCvRuntime()
