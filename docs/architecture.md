@@ -58,7 +58,7 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
 - Stores are observable. Public surface: async mutators returning `Promise<void>`, `getSnapshot(): TSnapshot`, `subscribe(listener): () => void`.
 - The base shape lives in `src/core/storage/observable-store.ts`.
 - React consumers attach via `useSyncExternalStore(store.subscribe, store.getSnapshot)`.
-- `src/core/storage/normalized-page-session-store.ts` is the canonical NormalizedPage session authority for page-aware modules. It owns exactly one active normalized document/session (`pages`, `selectedPageIndex`, `sourceName`, `documentFingerprint`, `sessionId`) and exposes thin async mutators (`setNormalizedDocument`, `selectPage`, `clearSession`). Both Config Capture and Run Mode read and write through this **single shared session**: there is no per-feature page state. Loading a runtime document in Run Mode replaces the active session in the same way a Config Capture upload does, with `clearSession()` as the single tear-down boundary. The exported `buildDocumentFingerprint(sourceName, pages)` helper is the only place that produces a `surface:<sourceName>#<signature>` fingerprint; no feature reconstructs it inline.
+- `src/core/storage/normalized-page-session-store.ts` is the canonical NormalizedPage session authority for page-aware modules. It owns exactly one active normalized document/session (`pages`, `selectedPageIndex`, `sourceName`, `documentFingerprint`, `sessionId`) and exposes thin async mutators (`setNormalizedDocument`, `selectPage`, `clearSession`).
 - Current implementations are in-memory; persistence adapters can be substituted without changing consumers.
 
 ## UI Organization Rules
@@ -173,8 +173,7 @@ Not yet implemented:
 ## Run Mode (Basic Transform Matching)
 - Run Mode UI lives in `src/features/run-mode/ui/RunMode.tsx` and is mounted via `src/app/pages/RunModePage.tsx`.
 - Inputs: WizardFile, GeometryFile, Config StructuralModel, runtime document upload. Runtime upload always flows through the normalization engine (`NormalizedPage[]` authority preserved).
-- Run Mode consumes the same canonical `NormalizedPageSessionStore` that Config Capture uses. Runtime pages, selected page index, and document fingerprint live in the shared session — there is no Run-Mode-local `runtimePages`/`selectedPageIndex`/`runtimeDocumentFingerprint` state and no inline fingerprint construction.
-- Per-input load confirmations (WizardFile / GeometryFile / Config StructuralModel / runtime normalization) render as small captions next to each input. The structural-readiness status (CV adapter, page CV mode, OpenCV runtime, TransformationModel confidence) collapses into the single `statusText` line on `StructuralOverlayControls`, composed by the shared `buildStructuralStatusText` helper that Config Capture also uses, so both screens describe the same engine state with one wording shape.
+- Run Mode now publishes explicit input/status confirmations for each authority artifact: WizardFile loaded/not loaded (wizard name), GeometryFile loaded/not loaded (field count), Config StructuralModel loaded/not loaded (page count), runtime normalized/not normalized (runtime page count + selected page), and parse/validation errors per input.
 - Runtime structure is computed by reusing `structural-runner` (same composition path used by Config Capture); no border/refined-border logic is duplicated in UI.
 - Structural comparison basis: config `refinedBorder.rectNorm` vs runtime `refinedBorder.rectNorm` per page.
 - Transform solve: `scaleX = runtime.w/config.w`, `scaleY = runtime.h/config.h`, `translateX = runtime.x - config.x*scaleX`, `translateY = runtime.y - config.y*scaleY`.
