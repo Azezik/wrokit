@@ -1532,6 +1532,345 @@ describe('localization-runner', () => {
       // legacy path falls all the way to the refined-border tier.
       expect(result.fields[0].anchorTierUsed).toBe('refined-border');
     });
+
+    // The field rect from configGeometry is (0.25, 0.20, 0.20, 0.10).
+    // We construct a chain config model where:
+    //   cfg_child (A): (0.25, 0.20, 0.20, 0.10) — field-rel-A = (0,0,1,1)
+    //   cfg_parent (B): (0.10, 0.10, 0.50, 0.50)
+    //   A-rel-B (container): (0.3, 0.2, 0.4, 0.2)
+    //   field-rel-B: (0.3, 0.2, 0.4, 0.2)
+    const buildChainConfigModel = (): StructuralModel => ({
+      ...baseConfigModel,
+      id: 'config_chain_tm',
+      documentFingerprint: 'config_chain_tm-fingerprint',
+      pages: [
+        {
+          ...baseConfigModel.pages[0],
+          objectHierarchy: {
+            objects: [
+              {
+                objectId: 'cfg_parent',
+                type: 'container',
+                objectRectNorm: { xNorm: 0.10, yNorm: 0.10, wNorm: 0.50, hNorm: 0.50 },
+                bbox: { xNorm: 0.10, yNorm: 0.10, wNorm: 0.50, hNorm: 0.50 },
+                parentObjectId: null,
+                childObjectIds: ['cfg_child'],
+                confidence: 0.9
+              },
+              {
+                objectId: 'cfg_child',
+                type: 'rectangle',
+                objectRectNorm: { xNorm: 0.25, yNorm: 0.20, wNorm: 0.20, hNorm: 0.10 },
+                bbox: { xNorm: 0.25, yNorm: 0.20, wNorm: 0.20, hNorm: 0.10 },
+                parentObjectId: 'cfg_parent',
+                childObjectIds: [],
+                confidence: 0.85
+              }
+            ]
+          },
+          pageAnchorRelations: {
+            objectToObject: [
+              {
+                fromObjectId: 'cfg_parent',
+                toObjectId: 'cfg_child',
+                relationKind: 'container',
+                relativeRect: { xRatio: 0.3, yRatio: 0.2, wRatio: 0.4, hRatio: 0.2 },
+                fallbackOrder: 0,
+                distance: 0
+              }
+            ],
+            objectToRefinedBorder: [],
+            refinedBorderToBorder: {
+              relativeRect: { xRatio: 0.05, yRatio: 0.05, wRatio: 0.9, hRatio: 0.9 }
+            }
+          },
+          fieldRelationships: [
+            {
+              fieldId: 'invoice_number',
+              fieldAnchors: {
+                objectAnchors: [
+                  { rank: 'primary', objectId: 'cfg_child', relativeFieldRect: { xRatio: 0, yRatio: 0, wRatio: 1, hRatio: 1 } },
+                  { rank: 'secondary', objectId: 'cfg_parent', relativeFieldRect: { xRatio: 0.3, yRatio: 0.2, wRatio: 0.4, hRatio: 0.2 } }
+                ],
+                stableObjectAnchors: [
+                  { label: 'A', objectId: 'cfg_child', distance: 0, relativeFieldRect: { xRatio: 0, yRatio: 0, wRatio: 1, hRatio: 1 } },
+                  { label: 'B', objectId: 'cfg_parent', distance: 0, relativeFieldRect: { xRatio: 0.3, yRatio: 0.2, wRatio: 0.4, hRatio: 0.2 } }
+                ],
+                refinedBorderAnchor: {
+                  relativeFieldRect: { xRatio: 0.22222, yRatio: 0.16667, wRatio: 0.22222, hRatio: 0.11111 },
+                  distanceToEdge: 0.05
+                },
+                borderAnchor: {
+                  relativeFieldRect: { xRatio: 0.25, yRatio: 0.20, wRatio: 0.20, hRatio: 0.10 },
+                  distanceToEdge: 0.20
+                }
+              },
+              objectAnchorGraph: [],
+              containedBy: 'cfg_child',
+              nearestObjects: [],
+              relativePositionWithinParent: null,
+              distanceToBorder: 0.20,
+              distanceToRefinedBorder: 0.05
+            }
+          ]
+        }
+      ]
+    });
+
+    it('rescues a missing matched-object candidate via the parent in the TM-driven path', async () => {
+      const runner = createLocalizationRunner();
+      const chainConfigModel = buildChainConfigModel();
+
+      // Runtime: cfg_child is missing entirely (no rectangles), but the
+      // parent is present with the same id (id-match → unambiguous rescuer).
+      const chainRuntimeModel: StructuralModel = {
+        ...baseRuntimeModel,
+        id: 'runtime_chain_tm',
+        documentFingerprint: 'runtime_chain_tm-fingerprint',
+        pages: [
+          {
+            ...baseRuntimeModel.pages[0],
+            objectHierarchy: {
+              objects: [
+                {
+                  objectId: 'cfg_parent',
+                  type: 'container',
+                  objectRectNorm: { xNorm: 0.30, yNorm: 0.20, wNorm: 0.50, hNorm: 0.50 },
+                  bbox: { xNorm: 0.30, yNorm: 0.20, wNorm: 0.50, hNorm: 0.50 },
+                  parentObjectId: null,
+                  childObjectIds: [],
+                  confidence: 0.9
+                }
+              ]
+            }
+          }
+        ]
+      };
+
+      const transformationModel: TransformationModel = {
+        schema: 'wrokit/transformation-model',
+        version: '1.0',
+        transformVersion: 'wrokit/transformation/v1',
+        id: 'xform_chain_tm',
+        config: { id: chainConfigModel.id, documentFingerprint: chainConfigModel.documentFingerprint },
+        runtime: { id: chainRuntimeModel.id, documentFingerprint: chainRuntimeModel.documentFingerprint },
+        pages: [
+          {
+            pageIndex: 0,
+            levelSummaries: [],
+            objectMatches: [],
+            unmatchedConfigObjectIds: [],
+            unmatchedRuntimeObjectIds: [],
+            consensus: {
+              transform: null,
+              confidence: 0,
+              contributingMatchCount: 0,
+              outliers: [],
+              notes: [],
+              warnings: []
+            },
+            fieldAlignments: [
+              {
+                fieldId: 'invoice_number',
+                candidates: [
+                  {
+                    // matched-object pointing at the missing child — fails.
+                    source: 'matched-object',
+                    fallbackOrder: 0,
+                    configObjectId: 'cfg_child',
+                    runtimeObjectId: 'rt_missing_child',
+                    transform: { scaleX: 1, scaleY: 1, translateX: 9, translateY: 9 },
+                    relativeFieldRect: { xRatio: 0, yRatio: 0, wRatio: 1, hRatio: 1 },
+                    confidence: 0.9,
+                    notes: []
+                  },
+                  {
+                    // parent-object that *would* resolve directly. The
+                    // rescue must take priority over this so the artifact
+                    // reports the rescued tier-A rather than dropping to
+                    // tier-B.
+                    source: 'parent-object',
+                    fallbackOrder: 1,
+                    configObjectId: 'cfg_parent',
+                    runtimeObjectId: 'cfg_parent',
+                    transform: { scaleX: 1, scaleY: 1, translateX: 0.2, translateY: 0.1 },
+                    relativeFieldRect: { xRatio: 0.3, yRatio: 0.2, wRatio: 0.4, hRatio: 0.2 },
+                    confidence: 0.78,
+                    notes: []
+                  }
+                ],
+                warnings: []
+              }
+            ],
+            notes: [],
+            warnings: []
+          }
+        ],
+        overallConfidence: 0,
+        notes: [],
+        warnings: [],
+        createdAtIso: '2026-04-27T00:00:00Z'
+      };
+
+      const result = await runner.run({
+        wizardId: 'Invoice Wizard',
+        configGeometry,
+        configStructuralModel: chainConfigModel,
+        runtimeStructuralModel: chainRuntimeModel,
+        runtimePages: [runtimePage],
+        transformationModel,
+        predictedId: 'pred_tm_rescue',
+        nowIso: '2026-04-27T00:00:00Z'
+      });
+
+      const predicted = result.fields[0];
+      // Rescue path was taken — tier reflects the missing direct anchor (A),
+      // not the surviving parent (B).
+      expect(predicted.anchorTierUsed).toBe('field-object-a');
+      expect(predicted.transform.basis).toBe('field-object-a');
+      expect(predicted.transform.configObjectId).toBe('cfg_child');
+      // No real runtime object backs the virtual reconstruction.
+      expect(predicted.transform.runtimeObjectId).toBeUndefined();
+      expect(predicted.transform.objectMatchStrategy).toBe('id');
+
+      // virtualA = (0.30 + 0.3*0.50, 0.20 + 0.2*0.50, 0.4*0.50, 0.2*0.50)
+      //         = (0.45, 0.30, 0.20, 0.10)
+      // field-rel-A is identity-like (0,0,1,1) so predicted == virtualA.
+      expect(predicted.bbox.xNorm).toBeCloseTo(0.45, 6);
+      expect(predicted.bbox.yNorm).toBeCloseTo(0.30, 6);
+      expect(predicted.bbox.wNorm).toBeCloseTo(0.20, 6);
+      expect(predicted.bbox.hNorm).toBeCloseTo(0.10, 6);
+    });
+
+    it('falls through to parent-object candidate when matched-object missing and rescuer is ambiguous', async () => {
+      const runner = createLocalizationRunner();
+      const chainConfigModel = buildChainConfigModel();
+
+      // Runtime: cfg_child is missing, AND there is no `cfg_parent` id.
+      // Two same-type containers exist instead — an ambiguous rescuer pool.
+      // Strict rescue must reject; the runner must continue to the
+      // parent-object TM candidate, which resolves directly because its
+      // stored runtimeObjectId names one of the two containers.
+      const chainRuntimeModel: StructuralModel = {
+        ...baseRuntimeModel,
+        id: 'runtime_chain_tm_ambig',
+        documentFingerprint: 'runtime_chain_tm_ambig-fingerprint',
+        pages: [
+          {
+            ...baseRuntimeModel.pages[0],
+            objectHierarchy: {
+              objects: [
+                {
+                  objectId: 'rt_alt_a',
+                  type: 'container',
+                  objectRectNorm: { xNorm: 0.30, yNorm: 0.20, wNorm: 0.50, hNorm: 0.50 },
+                  bbox: { xNorm: 0.30, yNorm: 0.20, wNorm: 0.50, hNorm: 0.50 },
+                  parentObjectId: null,
+                  childObjectIds: [],
+                  confidence: 0.9
+                },
+                {
+                  objectId: 'rt_alt_b',
+                  type: 'container',
+                  objectRectNorm: { xNorm: 0.05, yNorm: 0.55, wNorm: 0.40, hNorm: 0.40 },
+                  bbox: { xNorm: 0.05, yNorm: 0.55, wNorm: 0.40, hNorm: 0.40 },
+                  parentObjectId: null,
+                  childObjectIds: [],
+                  confidence: 0.85
+                }
+              ]
+            }
+          }
+        ]
+      };
+
+      const transformationModel: TransformationModel = {
+        schema: 'wrokit/transformation-model',
+        version: '1.0',
+        transformVersion: 'wrokit/transformation/v1',
+        id: 'xform_chain_tm_ambig',
+        config: { id: chainConfigModel.id, documentFingerprint: chainConfigModel.documentFingerprint },
+        runtime: { id: chainRuntimeModel.id, documentFingerprint: chainRuntimeModel.documentFingerprint },
+        pages: [
+          {
+            pageIndex: 0,
+            levelSummaries: [],
+            objectMatches: [],
+            unmatchedConfigObjectIds: [],
+            unmatchedRuntimeObjectIds: [],
+            consensus: {
+              transform: null,
+              confidence: 0,
+              contributingMatchCount: 0,
+              outliers: [],
+              notes: [],
+              warnings: []
+            },
+            fieldAlignments: [
+              {
+                fieldId: 'invoice_number',
+                candidates: [
+                  {
+                    source: 'matched-object',
+                    fallbackOrder: 0,
+                    configObjectId: 'cfg_child',
+                    runtimeObjectId: 'rt_missing_child',
+                    transform: { scaleX: 1, scaleY: 1, translateX: 9, translateY: 9 },
+                    relativeFieldRect: { xRatio: 0, yRatio: 0, wRatio: 1, hRatio: 1 },
+                    confidence: 0.9,
+                    notes: []
+                  },
+                  {
+                    // parent-object names a runtime object that *does* exist
+                    // — the matcher already chose rt_alt_a as the parent
+                    // counterpart. The rescue must reject before we get
+                    // here, but this candidate must then resolve.
+                    source: 'parent-object',
+                    fallbackOrder: 1,
+                    configObjectId: 'cfg_parent',
+                    runtimeObjectId: 'rt_alt_a',
+                    transform: { scaleX: 1, scaleY: 1, translateX: 0.2, translateY: 0.1 },
+                    relativeFieldRect: { xRatio: 0.3, yRatio: 0.2, wRatio: 0.4, hRatio: 0.2 },
+                    confidence: 0.6,
+                    notes: []
+                  }
+                ],
+                warnings: []
+              }
+            ],
+            notes: [],
+            warnings: []
+          }
+        ],
+        overallConfidence: 0,
+        notes: [],
+        warnings: [],
+        createdAtIso: '2026-04-27T00:00:00Z'
+      };
+
+      const result = await runner.run({
+        wizardId: 'Invoice Wizard',
+        configGeometry,
+        configStructuralModel: chainConfigModel,
+        runtimeStructuralModel: chainRuntimeModel,
+        runtimePages: [runtimePage],
+        transformationModel,
+        predictedId: 'pred_tm_rescue_ambig',
+        nowIso: '2026-04-27T00:00:00Z'
+      });
+
+      const predicted = result.fields[0];
+      // Rescue rejected (ambiguous parent), parent-object candidate wins.
+      expect(predicted.anchorTierUsed).toBe('field-object-b');
+      expect(predicted.transform.configObjectId).toBe('cfg_parent');
+      expect(predicted.transform.runtimeObjectId).toBe('rt_alt_a');
+      // Field bbox (0.25, 0.20, 0.20, 0.10) under affine (1,1,0.2,0.1) ->
+      // (0.45, 0.30, 0.20, 0.10).
+      expect(predicted.bbox.xNorm).toBeCloseTo(0.45, 6);
+      expect(predicted.bbox.yNorm).toBeCloseTo(0.30, 6);
+      expect(predicted.bbox.wNorm).toBeCloseTo(0.20, 6);
+      expect(predicted.bbox.hNorm).toBeCloseTo(0.10, 6);
+    });
   });
 
   describe('relational rescue (chained anchor reconstruction)', () => {

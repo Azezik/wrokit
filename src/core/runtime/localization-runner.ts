@@ -844,6 +844,39 @@ export const createLocalizationRunner = (): LocalizationRunner => ({
               resolution = candidateResolution;
               break;
             }
+
+            // Relational rescue rung inside the TM-driven path: when a
+            // `matched-object` candidate failed because its runtime object is
+            // missing, attempt to reconstruct a virtual runtime version of
+            // that object inside an unambiguously-matched parent (another
+            // stable anchor of the same field) using the config's
+            // `objectToObject` container relation. If that succeeds we keep
+            // the missing anchor's tier — the prediction reflects the
+            // field's relationship to its direct anchor, just reconstructed
+            // through a surviving parent — instead of dropping all the way
+            // to the parent-object candidate's tier.
+            if (candidate.source === 'matched-object' && candidate.configObjectId) {
+              const fieldRelationship = getFieldRelationship(
+                configStructuralPage,
+                field.fieldId
+              );
+              const missingAnchor = fieldRelationship?.fieldAnchors.stableObjectAnchors.find(
+                (anchor) => anchor.objectId === candidate.configObjectId
+              );
+              if (fieldRelationship && missingAnchor) {
+                const rescued = resolveFromRelationalRescue(
+                  field,
+                  configStructuralPage,
+                  runtimeStructuralPage,
+                  missingAnchor,
+                  fieldRelationship.fieldAnchors.stableObjectAnchors
+                );
+                if (rescued) {
+                  resolution = rescued;
+                  break;
+                }
+              }
+            }
           }
 
           // Consensus / global-affine rescue rung: when no object anchor
