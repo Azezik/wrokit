@@ -1533,4 +1533,312 @@ describe('localization-runner', () => {
       expect(result.fields[0].anchorTierUsed).toBe('refined-border');
     });
   });
+
+  describe('relational rescue (chained anchor reconstruction)', () => {
+    // Field at (0.30, 0.30, 0.05, 0.05) in config.
+    // obj_inner (A) at (0.25, 0.25, 0.20, 0.20) — field-rel-A = (0.25, 0.25, 0.25, 0.25).
+    // obj_outer (B) at (0.10, 0.10, 0.50, 0.50) — field-rel-B = (0.4, 0.4, 0.1, 0.1).
+    // A-rel-B (container relation) = (0.3, 0.3, 0.4, 0.4).
+    const fieldRel = configGeometry.fields[0];
+
+    const buildChainConfigPage = (extraObjectToObject: StructuralPage['pageAnchorRelations']['objectToObject'] = []): StructuralPage => ({
+      pageIndex: 0,
+      pageSurface: { pageIndex: 0, surfaceWidth: 1000, surfaceHeight: 2000 },
+      cvExecutionMode: 'heuristic-fallback',
+      border: { rectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 } },
+      refinedBorder: {
+        rectNorm: { xNorm: 0.05, yNorm: 0.05, wNorm: 0.9, hNorm: 0.9 },
+        source: 'cv-content',
+        influencedByBBoxCount: 0,
+        containsAllSavedBBoxes: true
+      },
+      objectHierarchy: {
+        objects: [
+          {
+            objectId: 'obj_outer',
+            type: 'container',
+            objectRectNorm: { xNorm: 0.10, yNorm: 0.10, wNorm: 0.50, hNorm: 0.50 },
+            bbox: { xNorm: 0.10, yNorm: 0.10, wNorm: 0.50, hNorm: 0.50 },
+            parentObjectId: null,
+            childObjectIds: ['obj_inner'],
+            confidence: 0.9
+          },
+          {
+            objectId: 'obj_inner',
+            type: 'rectangle',
+            objectRectNorm: { xNorm: 0.25, yNorm: 0.25, wNorm: 0.20, hNorm: 0.20 },
+            bbox: { xNorm: 0.25, yNorm: 0.25, wNorm: 0.20, hNorm: 0.20 },
+            parentObjectId: 'obj_outer',
+            childObjectIds: [],
+            confidence: 0.85
+          }
+        ]
+      },
+      pageAnchorRelations: {
+        objectToObject: [
+          {
+            fromObjectId: 'obj_outer',
+            toObjectId: 'obj_inner',
+            relationKind: 'container',
+            relativeRect: { xRatio: 0.3, yRatio: 0.3, wRatio: 0.4, hRatio: 0.4 },
+            fallbackOrder: 0,
+            distance: 0
+          },
+          ...extraObjectToObject
+        ],
+        objectToRefinedBorder: [],
+        refinedBorderToBorder: {
+          relativeRect: { xRatio: 0.05, yRatio: 0.05, wRatio: 0.9, hRatio: 0.9 }
+        }
+      },
+      fieldRelationships: [
+        {
+          fieldId: fieldRel.fieldId,
+          fieldAnchors: {
+            objectAnchors: [
+              { rank: 'primary', objectId: 'obj_inner', relativeFieldRect: { xRatio: 0.25, yRatio: 0.25, wRatio: 0.25, hRatio: 0.25 } },
+              { rank: 'secondary', objectId: 'obj_outer', relativeFieldRect: { xRatio: 0.4, yRatio: 0.4, wRatio: 0.1, hRatio: 0.1 } }
+            ],
+            stableObjectAnchors: [
+              { label: 'A', objectId: 'obj_inner', distance: 0, relativeFieldRect: { xRatio: 0.25, yRatio: 0.25, wRatio: 0.25, hRatio: 0.25 } },
+              { label: 'B', objectId: 'obj_outer', distance: 0, relativeFieldRect: { xRatio: 0.4, yRatio: 0.4, wRatio: 0.1, hRatio: 0.1 } }
+            ],
+            refinedBorderAnchor: {
+              relativeFieldRect: { xRatio: 0.27778, yRatio: 0.27778, wRatio: 0.05556, hRatio: 0.05556 },
+              distanceToEdge: 0.05
+            },
+            borderAnchor: {
+              relativeFieldRect: { xRatio: 0.3, yRatio: 0.3, wRatio: 0.05, hRatio: 0.05 },
+              distanceToEdge: 0.3
+            }
+          },
+          objectAnchorGraph: [],
+          containedBy: 'obj_inner',
+          nearestObjects: [],
+          relativePositionWithinParent: null,
+          distanceToBorder: 0.3,
+          distanceToRefinedBorder: 0.05
+        }
+      ]
+    });
+
+    it('reconstructs a virtual A inside a resolved B when A is missing in runtime', () => {
+      const configPage = buildChainConfigPage();
+
+      // Runtime: A (rectangle) missing entirely; only B (container) survives,
+      // shifted/scaled. There is no rectangle anywhere, so direct A cannot
+      // resolve.
+      const runtimePageStructural: StructuralPage = {
+        ...configPage,
+        objectHierarchy: {
+          objects: [
+            {
+              objectId: 'obj_outer',
+              type: 'container',
+              objectRectNorm: { xNorm: 0.30, yNorm: 0.20, wNorm: 0.40, hNorm: 0.40 },
+              bbox: { xNorm: 0.30, yNorm: 0.20, wNorm: 0.40, hNorm: 0.40 },
+              parentObjectId: null,
+              childObjectIds: [],
+              confidence: 0.9
+            }
+          ]
+        },
+        fieldRelationships: []
+      };
+
+      const resolution = __testing.resolveFieldAnchor(fieldRel, configPage, runtimePageStructural);
+
+      // The rescue path keeps the *missing* anchor's tier — the prediction
+      // reflects the field's relationship to its direct anchor (A),
+      // reconstructed through the surviving parent.
+      expect(resolution.tier).toBe('field-object-a');
+      expect(resolution.transform.configObjectId).toBe('obj_inner');
+      // No real runtime object backs the virtual reconstruction.
+      expect(resolution.transform.runtimeObjectId).toBeUndefined();
+      expect(resolution.transform.objectMatchStrategy).toBe('id');
+
+      // virtualA = (0.30 + 0.3*0.40, 0.20 + 0.3*0.40, 0.4*0.40, 0.4*0.40)
+      //         = (0.42, 0.32, 0.16, 0.16)
+      // field   = (0.42 + 0.25*0.16, 0.32 + 0.25*0.16, 0.25*0.16, 0.25*0.16)
+      //         = (0.46, 0.36, 0.04, 0.04)
+      expect(resolution.predictedBox.xNorm).toBeCloseTo(0.46, 6);
+      expect(resolution.predictedBox.yNorm).toBeCloseTo(0.36, 6);
+      expect(resolution.predictedBox.wNorm).toBeCloseTo(0.04, 6);
+      expect(resolution.predictedBox.hNorm).toBeCloseTo(0.04, 6);
+
+      // The transform's runtime source rect must be the virtual A — not the
+      // rescuer's own rect — so consumers reading the artifact see the
+      // reconstructed anchor explicitly.
+      expect(resolution.transform.sourceRuntimeRectNorm).toEqual({
+        xNorm: 0.42,
+        yNorm: 0.32,
+        wNorm: 0.16000000000000003,
+        hNorm: 0.16000000000000003
+      });
+      expect(resolution.transform.sourceConfigRectNorm).toEqual(
+        configPage.objectHierarchy.objects.find((o) => o.objectId === 'obj_inner')?.objectRectNorm
+      );
+    });
+
+    it('does not chain through an ambiguous parent (multiple same-type candidates, no id match)', () => {
+      const configPage = buildChainConfigPage();
+
+      // Runtime has TWO containers with non-matching ids. Direct A (rectangle)
+      // cannot resolve. Strict rescuer match for obj_outer fails because the
+      // id is absent and there are multiple same-type candidates. The runner
+      // must therefore fall back to a *direct* B match (lenient picker), not
+      // perform a rescue.
+      const runtimePageStructural: StructuralPage = {
+        ...configPage,
+        objectHierarchy: {
+          objects: [
+            {
+              objectId: 'rt_container_left',
+              type: 'container',
+              objectRectNorm: { xNorm: 0.30, yNorm: 0.20, wNorm: 0.40, hNorm: 0.40 },
+              bbox: { xNorm: 0.30, yNorm: 0.20, wNorm: 0.40, hNorm: 0.40 },
+              parentObjectId: null,
+              childObjectIds: [],
+              confidence: 0.9
+            },
+            {
+              objectId: 'rt_container_right',
+              type: 'container',
+              objectRectNorm: { xNorm: 0.55, yNorm: 0.20, wNorm: 0.40, hNorm: 0.40 },
+              bbox: { xNorm: 0.55, yNorm: 0.20, wNorm: 0.40, hNorm: 0.40 },
+              parentObjectId: null,
+              childObjectIds: [],
+              confidence: 0.9
+            }
+          ]
+        },
+        fieldRelationships: []
+      };
+
+      const resolution = __testing.resolveFieldAnchor(fieldRel, configPage, runtimePageStructural);
+
+      // Rescue rejected → direct B path takes over.
+      expect(resolution.tier).toBe('field-object-b');
+      // The lenient direct picker selects one of the two same-type runtime
+      // candidates and exposes it explicitly.
+      expect(resolution.transform.runtimeObjectId).toBeDefined();
+    });
+
+    it('does not chain when no container relation between B and A exists in config', () => {
+      // Build a config page where the objectToObject graph is empty —
+      // there is no container relation FROM obj_outer TO obj_inner.
+      const configPage = buildChainConfigPage();
+      configPage.pageAnchorRelations.objectToObject = [];
+
+      const runtimePageStructural: StructuralPage = {
+        ...configPage,
+        objectHierarchy: {
+          objects: [
+            {
+              objectId: 'obj_outer',
+              type: 'container',
+              objectRectNorm: { xNorm: 0.30, yNorm: 0.20, wNorm: 0.40, hNorm: 0.40 },
+              bbox: { xNorm: 0.30, yNorm: 0.20, wNorm: 0.40, hNorm: 0.40 },
+              parentObjectId: null,
+              childObjectIds: [],
+              confidence: 0.9
+            }
+          ]
+        },
+        fieldRelationships: []
+      };
+
+      const resolution = __testing.resolveFieldAnchor(fieldRel, configPage, runtimePageStructural);
+
+      // Without a container relation we never trust the chain — fall through
+      // to the next direct stable anchor.
+      expect(resolution.tier).toBe('field-object-b');
+      expect(resolution.transform.runtimeObjectId).toBe('obj_outer');
+    });
+
+    it('does not chain through a non-container relation (sibling / adjacent)', () => {
+      // Provide a sibling relation between B and A; the rescuer must still
+      // be rejected because non-container relations are not geometrically
+      // strong enough to reconstruct a missing child.
+      const configPage = buildChainConfigPage();
+      configPage.pageAnchorRelations.objectToObject = [
+        {
+          fromObjectId: 'obj_outer',
+          toObjectId: 'obj_inner',
+          relationKind: 'sibling',
+          relativeRect: { xRatio: 0.3, yRatio: 0.3, wRatio: 0.4, hRatio: 0.4 },
+          fallbackOrder: 0,
+          distance: 0.1
+        }
+      ];
+
+      const runtimePageStructural: StructuralPage = {
+        ...configPage,
+        objectHierarchy: {
+          objects: [
+            {
+              objectId: 'obj_outer',
+              type: 'container',
+              objectRectNorm: { xNorm: 0.30, yNorm: 0.20, wNorm: 0.40, hNorm: 0.40 },
+              bbox: { xNorm: 0.30, yNorm: 0.20, wNorm: 0.40, hNorm: 0.40 },
+              parentObjectId: null,
+              childObjectIds: [],
+              confidence: 0.9
+            }
+          ]
+        },
+        fieldRelationships: []
+      };
+
+      const resolution = __testing.resolveFieldAnchor(fieldRel, configPage, runtimePageStructural);
+      expect(resolution.tier).toBe('field-object-b');
+      expect(resolution.transform.runtimeObjectId).toBe('obj_outer');
+    });
+
+    it('exposes a unit-level resolveFromRelationalRescue helper', () => {
+      const configPage = buildChainConfigPage();
+      const runtimePageStructural: StructuralPage = {
+        ...configPage,
+        objectHierarchy: {
+          objects: [
+            {
+              objectId: 'obj_outer',
+              type: 'container',
+              objectRectNorm: { xNorm: 0.30, yNorm: 0.20, wNorm: 0.40, hNorm: 0.40 },
+              bbox: { xNorm: 0.30, yNorm: 0.20, wNorm: 0.40, hNorm: 0.40 },
+              parentObjectId: null,
+              childObjectIds: [],
+              confidence: 0.9
+            }
+          ]
+        },
+        fieldRelationships: []
+      };
+
+      const stableAnchors = configPage.fieldRelationships[0].fieldAnchors.stableObjectAnchors;
+      const missingAnchor = stableAnchors[0]; // A
+      const rescue = __testing.resolveFromRelationalRescue(
+        fieldRel,
+        configPage,
+        runtimePageStructural,
+        missingAnchor,
+        stableAnchors
+      );
+
+      expect(rescue).not.toBeNull();
+      expect(rescue?.tier).toBe('field-object-a');
+      expect(rescue?.transform.configObjectId).toBe('obj_inner');
+      expect(rescue?.transform.runtimeObjectId).toBeUndefined();
+
+      // No-rescuer-available: an empty candidate list returns null.
+      const noRescue = __testing.resolveFromRelationalRescue(
+        fieldRel,
+        configPage,
+        runtimePageStructural,
+        missingAnchor,
+        []
+      );
+      expect(noRescue).toBeNull();
+    });
+  });
 });
