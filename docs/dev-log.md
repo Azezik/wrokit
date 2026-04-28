@@ -1,3 +1,111 @@
+## 2026-04-28 — Refactor: Phase 1C (complete the artifact set)
+
+### Why this step
+- The Computer-A → Computer-B → Computer-C portability test required every cross-stage artifact to be a first-class versioned contract with parse/serialize/download IO and a runtime guard. Three artifacts violated this:
+  - `PredictedGeometryFile` was defined inline inside `localization-runner.ts` with no contract file, no `is*` guard, and no IO module.
+  - `TransformationModel` had full IO but no Run Mode download / re-upload UI; it was only visible as a JSON preview.
+  - Runtime `StructuralModel` had no Run Mode download UI; the existing `downloadStructuralModel` IO helper was unused.
+  - The `Download Predicted Geometry` button used a hand-rolled blob/URL/click pattern in `RunMode.tsx` instead of the IO module.
+
+### What changed
+- New `src/core/contracts/predicted-geometry-file.ts` — promotes the persisted shape (and the supporting `RuntimeAnchorTier`, `RuntimeObjectMatchStrategy`, `RuntimeStructuralTransform`, `PredictedFieldGeometry`, `PredictedGeometryFile` types) out of the runner. Adds `isPredictedGeometryFile` runtime guard with full sub-record validation: `bbox`, `pixelBbox`, `pageSurface`, anchor tier whitelist, transform rect validation, optional match-strategy whitelist, and finite-number guards on all transform scalars.
+- New `src/core/io/predicted-geometry-file-io.ts` — `serializePredictedGeometryFile`, `parsePredictedGeometryFile`, `predictedGeometryFileDownloadName`, `downloadPredictedGeometryFile`, `PredictedGeometryFileParseError`. Mirrors the shape of `geometry-file-io` and `transformation-model-io` exactly, including the optional `*DownloadEnv` injection seam used by tests.
+- `src/core/runtime/localization-runner.ts` — now imports `PredictedFieldGeometry`, `PredictedGeometryFile`, `RuntimeAnchorTier`, `RuntimeObjectMatchStrategy`, and `RuntimeStructuralTransform` from the new contract. The runner re-exports the same types so existing call sites continue to work; no behavior change.
+- `src/features/run-mode/ui/RunMode.tsx`:
+  - Replaces the hand-rolled `Blob` / `URL.createObjectURL` / anchor-click pattern with `downloadPredictedGeometryFile`.
+  - Adds explicit download buttons for the runtime `StructuralModel` (`downloadStructuralModel`) and the `TransformationModel` (`downloadTransformationModel`). Buttons disable when their artifact is null, so the UI accurately reflects readiness.
+  - Adds a collapsible "Re-upload runtime artifacts (diagnostic)" panel exposing parse paths for runtime `StructuralModel`, `TransformationModel`, and `PredictedGeometryFile`. Re-uploaded artifacts populate the same state slots as the computed values so the JSON previews and overlays render correctly; they do not re-run prediction.
+- `src/features/run-mode/ui/run-mode.css` — small `.run-mode__diagnostic` styling for the diagnostic re-upload panel.
+- `docs/architecture.md`:
+  - "Contract Versioning Rule" lists `PredictedGeometryFile` and `TransformationModel`, and corrects `StructuralModel` to its actual current version (`3.0` / `wrokit/structure/v2`).
+  - "Data Contracts" section adds full entries for `TransformationModel` and `PredictedGeometryFile`, and updates `StructuralModel` wording to reflect the current shape.
+  - `src/core/io` description enumerates all five IO modules and states the rule that every cross-stage artifact has both a download path and a parse path.
+  - "Run Mode" outputs are documented with the IO helper names and the diagnostic re-upload requirement.
+
+### Tests added
+- `tests/unit/contracts.test.ts` — 5 new tests for `isPredictedGeometryFile`: accepts a valid file, accepts a file with optional transform fields omitted, rejects wrong schema/version/sub-version markers, rejects unknown anchor tier or match strategy, rejects malformed transform rect or non-finite scalar.
+- `tests/unit/predicted-geometry-file-io.test.ts` — 5 tests covering serialize/parse round-trip, invalid JSON, schema mismatch, safe download filename from wizardId, and empty-wizardId fallback.
+
+### Files added
+- `src/core/contracts/predicted-geometry-file.ts`
+- `src/core/io/predicted-geometry-file-io.ts`
+- `tests/unit/predicted-geometry-file-io.test.ts`
+
+### Files modified
+- `src/core/runtime/localization-runner.ts` (lift types out; re-export for callers)
+- `src/features/run-mode/ui/RunMode.tsx` (use IO helpers; add download buttons; add diagnostic re-upload)
+- `src/features/run-mode/ui/run-mode.css` (diagnostic panel styling)
+- `tests/unit/contracts.test.ts` (new `isPredictedGeometryFile` describe block)
+- `docs/architecture.md` (contract list + data contracts + IO module list + Run Mode outputs)
+- `docs/dev-log.md` (this entry)
+
+### Authority + anti-drift behavior
+- Predicted geometry remains non-mutating: `PredictedGeometryFile` is a separate persisted artifact that never overwrites the source `GeometryFile`. The contract carries `geometryFileVersion` and `structureVersion` so re-ingest can verify it is compatible with the loaded ground-truth GeometryFile + StructuralModel.
+- Diagnostic re-upload populates UI state slots only — it does not feed back into the prediction pipeline. The Match Runtime Document button still requires a fresh runtime structural compute to produce predicted geometry.
+- Public engine and runner contracts are unchanged. Localization runner output is byte-identical to before; the type just lives in a different file.
+
+### Checks run
+- `npm run check` (clean)
+- `npm test` — 156/156 passing across 19 files (146 + 10 new in this phase: 5 IO + 5 contract).
+- `npm run build` (clean)
+
+### Recommended next step
+- Phase 1D — Delete or wire dead surfaces. Remove the unmounted `NormalizationIntake.tsx`, the unused `routes.ts` constants, the unreferenced `sample-wizard.ts` (verify), and the `imageBlobUrl` half-implementation on `NormalizedPage`.
+
+---
+
+## 2026-04-28 — Refactor: Phase 1A + 1B (per-stage NormalizedPage isolation + pure shared helpers)
+
+### Why this step
+- The original Phase 1 in `docs/audits/WROKIT_REFACTOR_PLAN.md` proposed unifying Config Capture and Run Mode on a single shared `NormalizedPageSessionStore`. Architectural review rejected that direction: NormalizedPage is a calibrated page-surface *standard*, not a shared live document. Each stage must own its own active document, and the only things crossing stage boundaries are explicit, downloadable, versioned artifacts.
+- Phase 1A removes the latent cross-stage coupling potential (the module-level singleton) before any later phase can lean on it. Phase 1B extracts the deduplication wins (one fingerprint formula, one status-text formula) as pure helpers — no shared state.
+
+### Phase 1A — De-singleton the NormalizedPage session store
+- `src/core/storage/normalized-page-session-store.ts`: removed the module-level `normalizedPageSessionStore` instance and the `getNormalizedPageSessionStore` accessor. The factory `createNormalizedPageSessionStore` is now the sole export, matching the per-instance convention used by every other store in `src/core/storage/`.
+- `src/features/config-capture/ui/ConfigCapture.tsx`: switched `useRef(getNormalizedPageSessionStore())` → `useRef(createNormalizedPageSessionStore())`.
+- Run Mode was already independent (local React state) and required no change.
+- `docs/architecture.md`: replaced "single session authority" / "page-aware modules must consume `NormalizedPage` through this session authority" wording with a "single page-surface coordinate authority" rule. The canonical authority is `page-surface.ts` + `NormalizedPageViewport.tsx` (coordinate math + viewport), not the session store. Each stage owns its own session.
+
+### Phase 1B — Extract pure shared helpers
+- New `src/core/page-surface/page-surface-fingerprint.ts` exports `buildDocumentFingerprint({ sourceName, pages })`. Stateless. The session store now imports this helper for its own fingerprint construction; Run Mode replaces its inline `surface:${sourceName}#${signature}` string with a call to the same helper. One fingerprint formula in the codebase.
+- New `src/core/page-surface/ui/structural-status-text.ts` exports `buildStructuralStatusText({ isComputing?, structuralModel, structuralPage, runtimeLoadStatus, hasNormalizedPages, transformationModel?, computingLabel?, pendingLabel?, emptyLabel? })`. Stateless. Both Config Capture and Run Mode now call this helper instead of constructing their `StructuralOverlayControls` `statusText` inline. Run Mode's status text gains the structural details + OpenCV runtime status it was previously missing (it used to show only the transformation line); the empty-state copy "No runtime structure yet." is preserved via the override labels.
+- Both helpers exported through `src/core/page-surface/index.ts` and `src/core/page-surface/ui/index.ts`.
+
+### Tests added
+- `tests/unit/page-surface-fingerprint.test.ts` — 4 tests including a regression that verifies the session store and a Run Mode-style call site produce byte-identical fingerprints for the same input, and that two independent stages computing the same fingerprint do not share session state.
+- `tests/unit/structural-status-text.test.ts` — 8 tests covering empty / pending / computing fallbacks, override labels, structural detail, OpenCV runtime status (with and without reason), and transformation suffix.
+
+### Files added
+- `src/core/page-surface/page-surface-fingerprint.ts`
+- `src/core/page-surface/ui/structural-status-text.ts`
+- `tests/unit/page-surface-fingerprint.test.ts`
+- `tests/unit/structural-status-text.test.ts`
+
+### Files modified
+- `src/core/storage/normalized-page-session-store.ts` (drop singleton; consume helper)
+- `src/core/page-surface/index.ts` (export new helper)
+- `src/core/page-surface/ui/index.ts` (export new helper)
+- `src/features/config-capture/ui/ConfigCapture.tsx` (factory + helper)
+- `src/features/run-mode/ui/RunMode.tsx` (helper + helper)
+- `docs/architecture.md` (per-stage session wording)
+- `docs/dev-log.md` (this entry)
+
+### Authority + anti-drift behavior
+- No shared live document state between Config Capture and Run Mode. Each stage instantiates its own NormalizedPage session.
+- Pure helpers only — no cross-stage runtime coupling reintroduced.
+- Public IO contracts, engine contracts, runner shapes, and the `NormalizedPageViewport` viewport authority are unchanged.
+- The session store's external test surface is unchanged (factory + mutators); the existing test file continues to pass without modification.
+
+### Checks run
+- `npm run check` (clean)
+- `npm test` — 146/146 passing across 18 files (134 baseline + 12 new in 2 new test files).
+- `npm run build` (clean)
+
+### Recommended next step
+- Phase 1C — Complete the artifact set: promote `PredictedGeometryFile` to a first-class versioned contract under `src/core/contracts/` with `is*` guard and IO module; wire `downloadTransformationModel` and a runtime `downloadStructuralModel` into Run Mode; replace the hand-rolled blob in `RunMode.tsx`.
+
+---
+
 ## 2026-04-27 — UI: Shared structural overlay controls, presets, anchor + match visibility
 
 ### What overlay/UI problems were found

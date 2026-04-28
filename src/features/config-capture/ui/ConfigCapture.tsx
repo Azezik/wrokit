@@ -37,6 +37,7 @@ import {
   StructuralDebugOverlay,
   StructuralOverlayControls,
   DEFAULT_STRUCTURAL_OVERLAY_OPTIONS,
+  buildStructuralStatusText,
   pointerToImageRect,
   type NormalizedPageViewportHandle,
   type StructuralOverlayFieldBox,
@@ -45,7 +46,7 @@ import {
 import { createConfigRunner } from '../../../core/runtime/config-runner';
 import { createStructuralRunner } from '../../../core/runtime/structural-runner';
 import { createGeometryBuilderStore } from '../../../core/storage/geometry-builder-store';
-import { getNormalizedPageSessionStore } from '../../../core/storage/normalized-page-session-store';
+import { createNormalizedPageSessionStore } from '../../../core/storage/normalized-page-session-store';
 import { createStructuralStore } from '../../../core/storage/structural-store';
 import { Button } from '../../../core/ui/components/Button';
 import { Input } from '../../../core/ui/components/Input';
@@ -67,7 +68,7 @@ export function ConfigCapture() {
   const structuralRunnerRef = useRef(createStructuralRunner());
   const builderStoreRef = useRef(createGeometryBuilderStore());
   const builderStore = builderStoreRef.current;
-  const pageSessionStoreRef = useRef(getNormalizedPageSessionStore());
+  const pageSessionStoreRef = useRef(createNormalizedPageSessionStore());
   const pageSessionStore = pageSessionStoreRef.current;
   const structuralStoreRef = useRef(createStructuralStore());
   const structuralStore = structuralStoreRef.current;
@@ -552,19 +553,13 @@ export function ConfigCapture() {
             options={structuralOverlayOptions}
             onOptionsChange={setStructuralOverlayOptions}
             transformationAvailable={false}
-            statusText={
-              isComputingStructure
-                ? 'Computing StructuralModel…'
-                : activeStructuralModel
-                  ? `Structural: ${activeStructuralModel.cvAdapter.name} v${activeStructuralModel.cvAdapter.version} · ${activeStructuralModel.pages.length} page(s) · page CV ${activeStructuralPage?.cvExecutionMode ?? 'n/a'}${
-                      structuralRuntimeLoadStatus
-                        ? ` · OpenCV runtime ${structuralRuntimeLoadStatus.status}${structuralRuntimeLoadStatus.reason ? ` (${structuralRuntimeLoadStatus.reason})` : ''}`
-                        : ''
-                    }`
-                  : pageSession.pages.length > 0
-                    ? 'StructuralModel pending.'
-                    : 'No NormalizedPage loaded.'
-            }
+            statusText={buildStructuralStatusText({
+              isComputing: isComputingStructure,
+              structuralModel: activeStructuralModel,
+              structuralPage: activeStructuralPage,
+              runtimeLoadStatus: structuralRuntimeLoadStatus,
+              hasNormalizedPages: pageSession.pages.length > 0
+            })}
           />
           {structuralError ? <p className="config-capture__error">{structuralError}</p> : null}
         </Panel>

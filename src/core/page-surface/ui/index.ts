@@ -25,3 +25,7 @@ export {
   type StructuralOverlayMode,
   type StructuralOverlayOptions
 } from './structural-overlay-options';
+export {
+  buildStructuralStatusText,
+  type StructuralStatusTextInput
+} from './structural-status-text';
