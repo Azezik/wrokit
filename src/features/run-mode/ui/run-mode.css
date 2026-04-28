@@ -23,9 +23,11 @@
   align-items: center;
 }
 
-.run-mode__input-caption {
-  font-size: var(--font-size-sm);
-  color: var(--color-text-muted);
+.run-mode__status-list {
+  margin: 0;
+  padding-left: var(--space-4);
+  display: grid;
+  gap: var(--space-1);
 }
 
 .run-mode__meta {

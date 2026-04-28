@@ -1,14 +1,8 @@
-import {
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-  type ChangeEvent
-} from 'react';
+import { useMemo, useRef, useState, type ChangeEvent } from 'react';
 
 import type { GeometryFile } from '../../../core/contracts/geometry';
+import type { NormalizedPage } from '../../../core/contracts/normalized-page';
 import type { StructuralModel } from '../../../core/contracts/structural-model';
-import type { TransformationModel } from '../../../core/contracts/transformation-model';
 import type { WizardFile } from '../../../core/contracts/wizard';
 import { createNormalizationEngine } from '../../../core/engines/normalization';
 import {
@@ -24,7 +18,6 @@ import {
   type SurfaceTransform
 } from '../../../core/page-surface/page-surface';
 import {
-  buildStructuralStatusText,
   DEFAULT_STRUCTURAL_OVERLAY_OPTIONS,
   NormalizedPageViewport,
   StructuralDebugOverlay,
@@ -35,7 +28,7 @@ import {
 import { createLocalizationRunner, type PredictedGeometryFile } from '../../../core/runtime/localization-runner';
 import { createStructuralRunner } from '../../../core/runtime/structural-runner';
 import { createTransformationRunner } from '../../../core/runtime/transformation-runner';
-import { getNormalizedPageSessionStore } from '../../../core/storage/normalized-page-session-store';
+import type { TransformationModel } from '../../../core/contracts/transformation-model';
 import { Button } from '../../../core/ui/components/Button';
 import { Input } from '../../../core/ui/components/Input';
 import { Panel } from '../../../core/ui/components/Panel';
@@ -50,16 +43,14 @@ export function RunMode() {
   const structuralRunnerRef = useRef(createStructuralRunner());
   const localizationRunnerRef = useRef(createLocalizationRunner());
   const transformationRunnerRef = useRef(createTransformationRunner());
-  const pageSessionStoreRef = useRef(getNormalizedPageSessionStore());
-  const pageSessionStore = pageSessionStoreRef.current;
-  const pageSession = useSyncExternalStore(
-    pageSessionStore.subscribe,
-    pageSessionStore.getSnapshot
-  );
 
   const [wizard, setWizard] = useState<WizardFile | null>(null);
   const [geometry, setGeometry] = useState<GeometryFile | null>(null);
   const [configStructuralModel, setConfigStructuralModel] = useState<StructuralModel | null>(null);
+
+  const [runtimePages, setRuntimePages] = useState<NormalizedPage[]>([]);
+  const [runtimeDocumentFingerprint, setRuntimeDocumentFingerprint] = useState('');
+  const [selectedPageIndex, setSelectedPageIndex] = useState(0);
 
   const [predicted, setPredicted] = useState<PredictedGeometryFile | null>(null);
   const [runtimeStructuralModel, setRuntimeStructuralModel] = useState<StructuralModel | null>(null);
@@ -78,10 +69,6 @@ export function RunMode() {
 
   const [surfaceTransform, setSurfaceTransform] = useState<SurfaceTransform | null>(null);
   const structuralRuntimeLoadStatus = structuralRunnerRef.current.runtimeLoadStatus;
-
-  const runtimePages = pageSession.pages;
-  const runtimeDocumentFingerprint = pageSession.documentFingerprint;
-  const selectedPageIndex = pageSession.selectedPageIndex;
 
   const selectedPage = useMemo(
     () => runtimePages.find((page) => page.pageIndex === selectedPageIndex) ?? null,
@@ -144,26 +131,6 @@ export function RunMode() {
   const transformationPreview = useMemo(
     () => (transformationModel ? JSON.stringify(transformationModel, null, 2) : ''),
     [transformationModel]
-  );
-
-  const overlayStatusText = useMemo(
-    () =>
-      buildStructuralStatusText({
-        hasPages: runtimePages.length > 0,
-        isComputing: isComputingPredictions,
-        structuralModel: runtimeStructuralModel,
-        structuralPage: runtimeStructuralPage,
-        runtimeLoadStatus: structuralRuntimeLoadStatus,
-        transformationModel
-      }),
-    [
-      runtimePages.length,
-      isComputingPredictions,
-      runtimeStructuralModel,
-      runtimeStructuralPage,
-      structuralRuntimeLoadStatus,
-      transformationModel
-    ]
   );
 
   const handleWizardImport = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -241,12 +208,15 @@ export function RunMode() {
 
     try {
       const result = await normalizationEngineRef.current.normalize(file);
-      await pageSessionStore.setNormalizedDocument({
-        sourceName: result.sourceName,
-        pages: result.pages
-      });
+      setRuntimePages(result.pages);
+      setSelectedPageIndex(result.pages[0]?.pageIndex ?? 0);
+      const signature = result.pages
+        .map((page) => `${page.pageIndex}:${Math.round(page.width)}x${Math.round(page.height)}`)
+        .join('|');
+      setRuntimeDocumentFingerprint(`surface:${result.sourceName}#${signature}`);
     } catch (uploadError) {
-      await pageSessionStore.clearSession();
+      setRuntimePages([]);
+      setRuntimeDocumentFingerprint('');
       setRuntimeNormalizationError(
         uploadError instanceof Error ? uploadError.message : 'Runtime normalization failed.'
       );
@@ -327,51 +297,21 @@ export function RunMode() {
           <label className="run-mode__upload-label">
             <strong>WizardFile (JSON)</strong>
             <Input type="file" accept="application/json" onChange={handleWizardImport} />
-            <span className="run-mode__input-caption">
-              {wizard
-                ? `Loaded · ${wizard.wizardName} · ${wizard.fields.length} field(s)`
-                : 'Not loaded'}
-            </span>
-            {wizardError ? <span className="run-mode__error">{wizardError}</span> : null}
           </label>
 
           <label className="run-mode__upload-label">
             <strong>GeometryFile (JSON)</strong>
             <Input type="file" accept="application/json" onChange={handleGeometryImport} />
-            <span className="run-mode__input-caption">
-              {geometry
-                ? `Loaded · ${geometry.fields.length} field(s)`
-                : 'Not loaded'}
-            </span>
-            {geometryError ? <span className="run-mode__error">{geometryError}</span> : null}
           </label>
 
           <label className="run-mode__upload-label">
             <strong>Config StructuralModel (JSON)</strong>
             <Input type="file" accept="application/json" onChange={handleStructuralImport} />
-            <span className="run-mode__input-caption">
-              {configStructuralModel
-                ? `Loaded · ${configStructuralModel.pages.length} page(s)`
-                : 'Not loaded'}
-            </span>
-            {configStructuralError ? (
-              <span className="run-mode__error">{configStructuralError}</span>
-            ) : null}
           </label>
 
           <label className="run-mode__upload-label">
             <strong>Runtime document upload</strong>
             <Input type="file" accept={ACCEPTED_DOC_FORMATS} onChange={handleRuntimeUpload} />
-            <span className="run-mode__input-caption">
-              {isNormalizing
-                ? 'Normalizing runtime upload…'
-                : runtimePages.length > 0
-                  ? `Normalized · ${pageSession.sourceName} · ${runtimePages.length} page(s)`
-                  : 'Not normalized'}
-            </span>
-            {runtimeNormalizationError ? (
-              <span className="run-mode__error">{runtimeNormalizationError}</span>
-            ) : null}
           </label>
 
           <StructuralOverlayControls
@@ -380,7 +320,13 @@ export function RunMode() {
             options={structuralOverlayOptions}
             onOptionsChange={setStructuralOverlayOptions}
             transformationAvailable
-            statusText={overlayStatusText}
+            statusText={
+              transformationModel
+                ? `TransformationModel · overall confidence ${transformationModel.overallConfidence.toFixed(3)}`
+                : runtimeStructuralModel
+                  ? 'Run matching to produce TransformationModel.'
+                  : 'No runtime structure yet.'
+            }
           />
 
           <div className="run-mode__toolbar">
@@ -392,8 +338,53 @@ export function RunMode() {
             </Button>
           </div>
 
-          {isComputingPredictions ? (
-            <p className="run-mode__meta">Building runtime structure + predictions…</p>
+          <ul className="run-mode__status-list">
+            <li>
+              WizardFile: {wizard ? 'loaded' : 'not loaded'}
+              {wizard ? ` (${wizard.wizardName})` : ''}
+            </li>
+            <li>
+              GeometryFile: {geometry ? 'loaded' : 'not loaded'}
+              {geometry ? ` (${geometry.fields.length} fields)` : ''}
+            </li>
+            <li>
+              Config StructuralModel: {configStructuralModel ? 'loaded' : 'not loaded'}
+              {configStructuralModel ? ` (${configStructuralModel.pages.length} pages)` : ''}
+            </li>
+            <li>
+              Runtime document: {runtimePages.length > 0 ? 'normalized' : 'not normalized'}
+              {runtimePages.length > 0 ? ` (${runtimePages.length} pages)` : ''}
+            </li>
+            <li>
+              Selected runtime page:{' '}
+              {selectedPage ? `${selectedPage.pageIndex + 1} of ${runtimePages.length}` : 'none'}
+            </li>
+            <li>
+              Runtime structure status:{' '}
+              {runtimeStructuralModel
+                ? `computed via ${runtimeStructuralModel.cvAdapter.name}@${runtimeStructuralModel.cvAdapter.version} · page CV ${runtimeStructuralPage?.cvExecutionMode ?? 'n/a'}`
+                : 'not computed'}
+              {structuralRuntimeLoadStatus
+                ? ` · OpenCV runtime ${structuralRuntimeLoadStatus.status}${structuralRuntimeLoadStatus.reason ? ` (${structuralRuntimeLoadStatus.reason})` : ''}`
+                : ''}
+            </li>
+            <li>
+              TransformationModel:{' '}
+              {transformationModel
+                ? `computed · overall confidence ${transformationModel.overallConfidence.toFixed(3)}`
+                : 'not computed'}
+            </li>
+          </ul>
+
+          {isNormalizing ? <p className="run-mode__meta">Normalizing runtime upload…</p> : null}
+          {isComputingPredictions ? <p className="run-mode__meta">Building runtime structure + predictions…</p> : null}
+          {wizardError ? <p className="run-mode__error">WizardFile error: {wizardError}</p> : null}
+          {geometryError ? <p className="run-mode__error">GeometryFile error: {geometryError}</p> : null}
+          {configStructuralError ? (
+            <p className="run-mode__error">Config StructuralModel error: {configStructuralError}</p>
+          ) : null}
+          {runtimeNormalizationError ? (
+            <p className="run-mode__error">Runtime normalization error: {runtimeNormalizationError}</p>
           ) : null}
           {runError ? <p className="run-mode__error">Run Mode error: {runError}</p> : null}
         </Panel>
@@ -407,9 +398,7 @@ export function RunMode() {
                   key={page.pageIndex}
                   type="button"
                   variant={selectedPageIndex === page.pageIndex ? 'primary' : 'default'}
-                  onClick={() => {
-                    void pageSessionStore.selectPage(page.pageIndex);
-                  }}
+                  onClick={() => setSelectedPageIndex(page.pageIndex)}
                 >
                   Page {page.pageIndex + 1}
                 </Button>

@@ -33,7 +33,6 @@ import {
   type SurfaceTransform
 } from '../../../core/page-surface/page-surface';
 import {
-  buildStructuralStatusText,
   NormalizedPageViewport,
   StructuralDebugOverlay,
   StructuralOverlayControls,
@@ -553,13 +552,19 @@ export function ConfigCapture() {
             options={structuralOverlayOptions}
             onOptionsChange={setStructuralOverlayOptions}
             transformationAvailable={false}
-            statusText={buildStructuralStatusText({
-              hasPages: pageSession.pages.length > 0,
-              isComputing: isComputingStructure,
-              structuralModel: activeStructuralModel,
-              structuralPage: activeStructuralPage,
-              runtimeLoadStatus: structuralRuntimeLoadStatus
-            })}
+            statusText={
+              isComputingStructure
+                ? 'Computing StructuralModel…'
+                : activeStructuralModel
+                  ? `Structural: ${activeStructuralModel.cvAdapter.name} v${activeStructuralModel.cvAdapter.version} · ${activeStructuralModel.pages.length} page(s) · page CV ${activeStructuralPage?.cvExecutionMode ?? 'n/a'}${
+                      structuralRuntimeLoadStatus
+                        ? ` · OpenCV runtime ${structuralRuntimeLoadStatus.status}${structuralRuntimeLoadStatus.reason ? ` (${structuralRuntimeLoadStatus.reason})` : ''}`
+                        : ''
+                    }`
+                  : pageSession.pages.length > 0
+                    ? 'StructuralModel pending.'
+                    : 'No NormalizedPage loaded.'
+            }
           />
           {structuralError ? <p className="config-capture__error">{structuralError}</p> : null}
         </Panel>
