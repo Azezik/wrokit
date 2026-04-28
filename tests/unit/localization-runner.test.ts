@@ -1361,13 +1361,10 @@ describe('localization-runner', () => {
       expect(predicted.transform.configObjectId).toBeUndefined();
       expect(predicted.transform.runtimeObjectId).toBeUndefined();
       expect(predicted.transform.objectMatchStrategy).toBeUndefined();
-      // Source rect pair is the page refined-border (page-level reference).
-      expect(predicted.transform.sourceConfigRectNorm).toEqual(
-        baseConfigModel.pages[0].refinedBorder.rectNorm
-      );
-      expect(predicted.transform.sourceRuntimeRectNorm).toEqual(
-        baseRuntimeModel.pages[0].refinedBorder.rectNorm
-      );
+      // The contract requires source rects to be omitted for page-consensus —
+      // the affine is the consensus, not derived from any source rect pair.
+      expect(predicted.transform.sourceConfigRectNorm).toBeUndefined();
+      expect(predicted.transform.sourceRuntimeRectNorm).toBeUndefined();
     });
 
     it('skips consensus rescue when its confidence is below the threshold', async () => {
@@ -1467,8 +1464,6 @@ describe('localization-runner', () => {
 
     it('exposes a unit-level consensus-rescue helper that respects the confidence threshold', () => {
       const sourceField = configGeometry.fields[0];
-      const configPage = baseConfigModel.pages[0];
-      const runtimePage = baseRuntimeModel.pages[0];
 
       const aboveThreshold = __testing.resolveFromConsensusRescue(
         sourceField,
@@ -1480,12 +1475,13 @@ describe('localization-runner', () => {
           notes: [],
           warnings: []
         },
-        configPage,
-        runtimePage,
         __testing.CONSENSUS_RESCUE_MIN_CONFIDENCE
       );
       expect(aboveThreshold).not.toBeNull();
       expect(aboveThreshold?.tier).toBe('page-consensus');
+      // Honest representation: no source rect pair on page-consensus.
+      expect(aboveThreshold?.transform.sourceConfigRectNorm).toBeUndefined();
+      expect(aboveThreshold?.transform.sourceRuntimeRectNorm).toBeUndefined();
 
       const belowThreshold = __testing.resolveFromConsensusRescue(
         sourceField,
@@ -1497,8 +1493,6 @@ describe('localization-runner', () => {
           notes: [],
           warnings: []
         },
-        configPage,
-        runtimePage,
         __testing.CONSENSUS_RESCUE_MIN_CONFIDENCE
       );
       expect(belowThreshold).toBeNull();
@@ -1513,8 +1507,6 @@ describe('localization-runner', () => {
           notes: [],
           warnings: []
         },
-        configPage,
-        runtimePage,
         __testing.CONSENSUS_RESCUE_MIN_CONFIDENCE
       );
       expect(nullTransform).toBeNull();

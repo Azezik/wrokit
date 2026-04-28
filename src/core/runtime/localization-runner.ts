@@ -476,8 +476,6 @@ const isObjectAnchorCandidate = (
 const resolveFromConsensusRescue = (
   source: FieldGeometry,
   consensus: TransformationConsensus,
-  configPage: StructuralPage,
-  runtimePage: StructuralPage,
   minConfidence: number
 ): AnchorResolution | null => {
   if (!consensus.transform) {
@@ -490,16 +488,15 @@ const resolveFromConsensusRescue = (
     return null;
   }
 
-  // The consensus is a page-level affine derived from object matches; it is
-  // not bound to any single object. We attribute the page's refined-border
-  // rects as the source pair purely so downstream consumers have a concrete
-  // page-level reference, but the affine itself is the consensus transform —
-  // not a re-derivation from the refined-border pair.
+  // The consensus is a page-level affine derived from object matches across
+  // the page; it is not bound to any single object or source rect pair. The
+  // PredictedGeometryFile contract intentionally omits `sourceConfigRectNorm`
+  // / `sourceRuntimeRectNorm` for `page-consensus` so downstream consumers
+  // are not misled into treating an attributed pair as the basis of the
+  // affine.
   const transform: RuntimeStructuralTransform = {
     pageIndex: source.pageIndex,
     basis: 'page-consensus',
-    sourceConfigRectNorm: { ...configPage.refinedBorder.rectNorm },
-    sourceRuntimeRectNorm: { ...runtimePage.refinedBorder.rectNorm },
     scaleX: consensus.transform.scaleX,
     scaleY: consensus.transform.scaleY,
     translateX: consensus.transform.translateX,
@@ -705,8 +702,6 @@ export const createLocalizationRunner = (): LocalizationRunner => ({
               resolution = resolveFromConsensusRescue(
                 field,
                 transformationPage.consensus,
-                configStructuralPage,
-                runtimeStructuralPage,
                 CONSENSUS_RESCUE_MIN_CONFIDENCE
               );
             }
