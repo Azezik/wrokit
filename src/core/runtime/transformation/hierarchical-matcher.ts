@@ -47,6 +47,32 @@ export const DEFAULT_MATCHER_OPTIONS: Required<MatcherOptions> = {
   weights: DEFAULT_SIMILARITY_WEIGHTS
 };
 
+/**
+ * Score gap below which a runner-up pair is considered to "tie" the chosen
+ * pair. When repeated / near-duplicate objects are present (table cells,
+ * repeated headers, identical row stripes) the greedy assignment can pick a
+ * winner whose score is within rounding of several alternatives — there is
+ * no actual reason to prefer it. We don't reject those matches (the IoU
+ * multi-anchor warning is the safety net for that), but we mark them as
+ * ambiguous so downstream consumers can see how thin the win was.
+ */
+export const AMBIGUITY_SCORE_MARGIN = 0.05;
+
+/**
+ * Confidence multiplier applied to a match flagged as ambiguous. The match is
+ * still emitted (downstream consensus / multi-anchor checks decide whether to
+ * keep using it), but its reported confidence is lowered so weak-match
+ * detection downstream can react appropriately.
+ */
+export const AMBIGUITY_CONFIDENCE_PENALTY = 0.85;
+
+interface AmbiguityInfo {
+  rivalConfigId?: string;
+  rivalRuntimeId?: string;
+  chosenScore: number;
+  rivalScore: number;
+}
+
 export interface PageMatchResult {
   matches: TransformationObjectMatch[];
   unmatchedConfigObjectIds: string[];
@@ -61,26 +87,81 @@ interface CandidatePair {
   score: number;
 }
 
+interface GreedyAssignment {
+  configId: string;
+  runtimeId: string;
+  score: number;
+  ambiguity: AmbiguityInfo | null;
+}
+
 /**
  * Greedy max-score 1:1 assignment within a candidate pool. We pick the
  * highest-scoring pair, remove both endpoints, repeat until the pool is empty
  * or no pair clears the threshold.
+ *
+ * Each emitted assignment also reports whether it had a near-tying rival.
+ * A "rival" is any unassigned alternative pair that shares one endpoint with
+ * the chosen pair (same configId XOR same runtimeId — i.e. an alternative
+ * runtime object that wanted this config object, or vice versa) and whose
+ * score is within {@link AMBIGUITY_SCORE_MARGIN} of the winner. This catches
+ * the repeated-object case (table cells, identical headers) where the
+ * matcher's "best" pick is statistically indistinguishable from another.
  */
 const greedyAssign = (
   candidates: CandidatePair[],
-  threshold: number
-): Map<string, string> => {
-  const sorted = [...candidates]
+  threshold: number,
+  ambiguityMargin: number = AMBIGUITY_SCORE_MARGIN
+): GreedyAssignment[] => {
+  const eligible = [...candidates]
     .filter((c) => c.score >= threshold)
     .sort((a, b) => b.score - a.score);
   const usedConfig = new Set<string>();
   const usedRuntime = new Set<string>();
-  const assignments = new Map<string, string>();
-  for (const pair of sorted) {
+  const assignments: GreedyAssignment[] = [];
+  for (let i = 0; i < eligible.length; i += 1) {
+    const pair = eligible[i];
     if (usedConfig.has(pair.configId) || usedRuntime.has(pair.runtimeId)) {
       continue;
     }
-    assignments.set(pair.configId, pair.runtimeId);
+    let ambiguity: AmbiguityInfo | null = null;
+    for (let j = 0; j < eligible.length; j += 1) {
+      if (j === i) {
+        continue;
+      }
+      const rival = eligible[j];
+      const sharesConfig =
+        rival.configId === pair.configId && rival.runtimeId !== pair.runtimeId;
+      const sharesRuntime =
+        rival.runtimeId === pair.runtimeId && rival.configId !== pair.configId;
+      if (!sharesConfig && !sharesRuntime) {
+        continue;
+      }
+      // Don't count rivals whose endpoints have ALREADY been claimed by an
+      // earlier (stronger) assignment — those could never have been picked
+      // and their score isn't a real challenge to this match.
+      if (sharesConfig && usedRuntime.has(rival.runtimeId)) {
+        continue;
+      }
+      if (sharesRuntime && usedConfig.has(rival.configId)) {
+        continue;
+      }
+      if (pair.score - rival.score > ambiguityMargin) {
+        continue;
+      }
+      ambiguity = {
+        chosenScore: pair.score,
+        rivalScore: rival.score,
+        ...(sharesConfig ? { rivalRuntimeId: rival.runtimeId } : {}),
+        ...(sharesRuntime ? { rivalConfigId: rival.configId } : {})
+      };
+      break;
+    }
+    assignments.push({
+      configId: pair.configId,
+      runtimeId: pair.runtimeId,
+      score: pair.score,
+      ambiguity
+    });
     usedConfig.add(pair.configId);
     usedRuntime.add(pair.runtimeId);
   }
@@ -90,19 +171,37 @@ const greedyAssign = (
 const buildMatch = (
   config: StructuralObjectNode,
   runtime: StructuralObjectNode,
-  context: SimilarityContext
+  context: SimilarityContext,
+  ambiguity: AmbiguityInfo | null = null
 ): TransformationObjectMatch => {
   const sim = computeObjectSimilarity(config, runtime, context);
+  const warnings: string[] = [];
+  let confidence = sim.score;
+  if (ambiguity) {
+    const rivalDescription = ambiguity.rivalRuntimeId
+      ? `runtime object ${ambiguity.rivalRuntimeId}`
+      : ambiguity.rivalConfigId
+      ? `config object ${ambiguity.rivalConfigId}`
+      : 'an alternative pair';
+    warnings.push(
+      `ambiguous match: ${config.objectId}↔${runtime.objectId} ` +
+        `score ${ambiguity.chosenScore.toFixed(3)} only beats ${rivalDescription} ` +
+        `by ${(ambiguity.chosenScore - ambiguity.rivalScore).toFixed(3)} ` +
+        `(margin ≤ ${AMBIGUITY_SCORE_MARGIN.toFixed(2)}); ` +
+        `confidence demoted ×${AMBIGUITY_CONFIDENCE_PENALTY.toFixed(2)} for inspection`
+    );
+    confidence = sim.score * AMBIGUITY_CONFIDENCE_PENALTY;
+  }
   return {
     configObjectId: config.objectId,
     runtimeObjectId: runtime.objectId,
     configType: config.type,
     runtimeType: runtime.type,
-    confidence: sim.score,
+    confidence,
     basis: sim.basis,
     transform: affineFromRects(config.objectRectNorm, runtime.objectRectNorm),
     notes: sim.notes,
-    warnings: []
+    warnings
   };
 };
 
@@ -164,13 +263,18 @@ export const matchPage = (
       }
     }
     const assignments = greedyAssign(pairs, threshold);
-    for (const [configId, runtimeId] of assignments) {
+    for (const assignment of assignments) {
+      const { configId, runtimeId, ambiguity } = assignment;
       const cNode = configCandidates.find((o) => o.objectId === configId);
       const rNode = runtimeCandidates.find((o) => o.objectId === runtimeId);
       if (!cNode || !rNode) {
         continue;
       }
-      matches.push(buildMatch(cNode, rNode, baseContext(parentMatches)));
+      const match = buildMatch(cNode, rNode, baseContext(parentMatches), ambiguity);
+      matches.push(match);
+      if (ambiguity) {
+        warnings.push(match.warnings[0]);
+      }
       parentMatches.set(configId, runtimeId);
       unmatchedConfig.delete(configId);
       unmatchedRuntime.delete(runtimeId);
