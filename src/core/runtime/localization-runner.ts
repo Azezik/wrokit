@@ -14,9 +14,11 @@ import {
 } from '../contracts/predicted-geometry-file';
 import type {
   StructuralFieldRelationship,
+  StructuralFieldStableObjectAnchor,
   StructuralModel,
   StructuralNormalizedRect,
   StructuralObjectNode,
+  StructuralObjectToObjectAnchorRelation,
   StructuralPage,
   StructuralRelativeAnchorRect,
   StructuralStableFieldAnchorLabel
@@ -384,6 +386,150 @@ interface AnchorResolution {
   predictedBox: NormalizedBoundingBox;
 }
 
+const stableAnchorLabelToTier = (
+  label: StructuralStableFieldAnchorLabel
+): RuntimeAnchorTier =>
+  label === 'A' ? 'field-object-a' : label === 'B' ? 'field-object-b' : 'field-object-c';
+
+/**
+ * Strict rescuer match: only accept an unambiguous runtime object for the
+ * rescuer. A rescuer is unambiguous when:
+ *   - the runtime model contains the same object id with the same type, or
+ *   - exactly one runtime object shares the rescuer's structural type.
+ *
+ * Anything else (multiple same-type candidates with no id match) is ambiguous
+ * and rejected, so we never reconstruct a child anchor from a guessed parent.
+ */
+const resolveRescuerObjectStrict = (
+  configPage: StructuralPage,
+  runtimePage: StructuralPage,
+  rescuerObjectId: string
+): { object: StructuralObjectNode; strategy: RuntimeObjectMatchStrategy } | null => {
+  const configObject = getObjectById(configPage, rescuerObjectId);
+
+  const runtimeById = runtimePage.objectHierarchy.objects.find(
+    (object) => object.objectId === rescuerObjectId
+  );
+  if (runtimeById && (!configObject || runtimeById.type === configObject.type)) {
+    return { object: runtimeById, strategy: 'id' };
+  }
+
+  if (!configObject) {
+    return null;
+  }
+
+  const sameType = runtimePage.objectHierarchy.objects.filter(
+    (object) => object.type === configObject.type
+  );
+  if (sameType.length === 1) {
+    return { object: sameType[0], strategy: 'type-hierarchy-geometry' };
+  }
+
+  return null;
+};
+
+const findContainerRelation = (
+  configPage: StructuralPage,
+  fromObjectId: string,
+  toObjectId: string
+): StructuralObjectToObjectAnchorRelation | undefined =>
+  configPage.pageAnchorRelations.objectToObject.find(
+    (relation) =>
+      relation.fromObjectId === fromObjectId &&
+      relation.toObjectId === toObjectId &&
+      relation.relationKind === 'container'
+  );
+
+/**
+ * Relational (chained) rescue: when the stable anchor `missingAnchor` cannot
+ * be resolved directly in the runtime page, attempt to reconstruct a virtual
+ * runtime version of it inside an unambiguously-matched rescuer anchor (a
+ * surviving parent in the config containment graph). The field is then
+ * projected through the missing anchor's own `relativeFieldRect` against the
+ * virtual rect.
+ *
+ * Restrictions enforced here so we don't over-trust ambiguous chains:
+ *   - The config relationship must be `container` (parent geometrically holds
+ *     the child). Sibling / adjacent / near are not used as rescue baselines.
+ *   - The rescuer must resolve unambiguously (id match, or unique same-type
+ *     runtime object).
+ *
+ * The reported anchor tier is the missing anchor's tier (A/B/C) — this is
+ * intentional: the predicted box reflects the field's relationship to its
+ * direct anchor, just reconstructed through a surviving parent.
+ */
+const resolveFromRelationalRescue = (
+  source: FieldGeometry,
+  configPage: StructuralPage,
+  runtimePage: StructuralPage,
+  missingAnchor: StructuralFieldStableObjectAnchor,
+  candidateRescuers: readonly StructuralFieldStableObjectAnchor[]
+): AnchorResolution | null => {
+  const configMissingObject = getObjectById(configPage, missingAnchor.objectId);
+  if (!configMissingObject) {
+    return null;
+  }
+
+  const tier = stableAnchorLabelToTier(missingAnchor.label);
+
+  for (const rescuer of candidateRescuers) {
+    if (rescuer.objectId === missingAnchor.objectId) {
+      continue;
+    }
+
+    const relation = findContainerRelation(
+      configPage,
+      rescuer.objectId,
+      missingAnchor.objectId
+    );
+    if (!relation) {
+      continue;
+    }
+
+    const rescuerMatch = resolveRescuerObjectStrict(configPage, runtimePage, rescuer.objectId);
+    if (!rescuerMatch) {
+      continue;
+    }
+
+    const virtualMissingBox = projectRelativeRect(
+      relation.relativeRect,
+      rescuerMatch.object.objectRectNorm
+    );
+    const virtualMissingRect: StructuralNormalizedRect = {
+      xNorm: virtualMissingBox.xNorm,
+      yNorm: virtualMissingBox.yNorm,
+      wNorm: virtualMissingBox.wNorm,
+      hNorm: virtualMissingBox.hNorm
+    };
+
+    const predictedBox = projectRelativeRect(missingAnchor.relativeFieldRect, virtualMissingRect);
+
+    const transform = solveRectTransform(
+      source.pageIndex,
+      tier,
+      configMissingObject.objectRectNorm,
+      virtualMissingRect,
+      {
+        configObjectId: missingAnchor.objectId,
+        // No real runtime object backs the virtual reconstruction; we
+        // intentionally omit `runtimeObjectId` so consumers can see this came
+        // from a chain rather than a direct match. The match strategy mirrors
+        // the rescuer's strategy because that is the actual ambiguity the
+        // rescue inherits.
+        objectMatchStrategy: rescuerMatch.strategy
+      }
+    );
+
+    return {
+      tier,
+      transform,
+      predictedBox
+    };
+  }
+
+  return null;
+};
+
 const candidateSourceToAnchorTier = (
   source: TransformationFieldCandidate['source']
 ): RuntimeAnchorTier => {
@@ -540,12 +686,7 @@ const resolveFieldAnchor = (
     const stableAnchorOrder = sortStableAnchors(configPage, relationship);
 
     for (const stableAnchor of stableAnchorOrder) {
-      const tier: RuntimeAnchorTier =
-        stableAnchor.label === 'A'
-          ? 'field-object-a'
-          : stableAnchor.label === 'B'
-            ? 'field-object-b'
-            : 'field-object-c';
+      const tier = stableAnchorLabelToTier(stableAnchor.label);
 
       const configObject = configPage.objectHierarchy.objects.find(
         (object) => object.objectId === stableAnchor.objectId
@@ -555,26 +696,43 @@ const resolveFieldAnchor = (
       }
 
       const runtimeMatch = resolveRuntimeObject(configPage, runtimePage, stableAnchor.objectId);
-      if (!runtimeMatch) {
-        continue;
+      if (runtimeMatch) {
+        const predictedBox = projectRelativeRect(
+          stableAnchor.relativeFieldRect,
+          runtimeMatch.object.objectRectNorm
+        );
+        return {
+          tier,
+          transform: solveRectTransform(
+            source.pageIndex,
+            tier,
+            configObject.objectRectNorm,
+            runtimeMatch.object.objectRectNorm,
+            {
+              configObjectId: configObject.objectId,
+              runtimeObjectId: runtimeMatch.object.objectId,
+              objectMatchStrategy: runtimeMatch.strategy
+            }
+          ),
+          predictedBox
+        };
       }
 
-      const predictedBox = projectRelativeRect(stableAnchor.relativeFieldRect, runtimeMatch.object.objectRectNorm);
-      return {
-        tier,
-        transform: solveRectTransform(
-          source.pageIndex,
-          tier,
-          configObject.objectRectNorm,
-          runtimeMatch.object.objectRectNorm,
-          {
-            configObjectId: configObject.objectId,
-            runtimeObjectId: runtimeMatch.object.objectId,
-            objectMatchStrategy: runtimeMatch.strategy
-          }
-        ),
-        predictedBox
-      };
+      // Direct match failed — try relational rescue: reconstruct a virtual
+      // runtime version of this anchor inside a surviving parent (other
+      // stable anchor of the same field) using the config's `objectToObject`
+      // container relation. This recovers the field through a known
+      // child-inside-parent chain rather than discarding the anchor.
+      const rescued = resolveFromRelationalRescue(
+        source,
+        configPage,
+        runtimePage,
+        stableAnchor,
+        relationship.fieldAnchors.stableObjectAnchors
+      );
+      if (rescued) {
+        return rescued;
+      }
     }
 
     const refinedBorderAnchor = relationship.fieldAnchors.refinedBorderAnchor;
@@ -760,6 +918,7 @@ export const __testing = {
   resolveFieldAnchor,
   resolveFromTransformationCandidate,
   resolveFromConsensusRescue,
+  resolveFromRelationalRescue,
   findFieldCandidates,
   CONSENSUS_RESCUE_MIN_CONFIDENCE
 };
