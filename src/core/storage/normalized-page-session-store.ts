@@ -28,7 +28,16 @@ const generateSessionId = (): string => {
   return `nps_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 };
 
-const buildDocumentFingerprint = (sourceName: string, pages: NormalizedPage[]): string => {
+/**
+ * Canonical document-fingerprint formula. Exported so any caller that needs to
+ * derive a fingerprint from a normalized document uses the exact same string
+ * the session store will commit. Both Config Capture and Run Mode read this
+ * shape through the session store; no feature should reconstruct it inline.
+ */
+export const buildDocumentFingerprint = (
+  sourceName: string,
+  pages: NormalizedPage[]
+): string => {
   const surfaceSignature = pages
     .map((page) => `${page.pageIndex}:${Math.round(page.width)}x${Math.round(page.height)}`)
     .join('|');
