@@ -78,13 +78,44 @@ The core spine is sound. NormalizedPage authority, page-surface coordinates, the
 
 ## 9. Recommended fixes — five phases
 
-### Phase 1 — Reunify Run Mode under canonical authorities
-- **Goal:** make Run Mode behave like Config Capture's twin instead of a parallel implementation.
-- **Issues addressed:** (§2) RunMode bypasses the session store; (§2) duplicate fingerprint code; (§3) per-feature `surfaceTransform`/status duplication.
-- **Files:** `src/features/run-mode/ui/RunMode.tsx`, `src/core/storage/normalized-page-session-store.ts` (consider a second named session for runtime, or document that the same store services both screens with a clear/restore protocol), `src/core/page-surface/ui/StructuralOverlayControls.tsx` (status text composition could become a small helper).
-- **Risk:** medium — touches the most visible feature; needs care so Config Capture's session is not clobbered when the user navigates between modes.
-- **Expected outcome:** one canonical NormalizedPage session authority, one fingerprint formula, one viewport, one status-text shape across both screens. No duplicate logic.
-- **Order rationale:** has to come before integrating TransformationModel into localization, because the integration is much easier when the runtime page surface is owned by the canonical store.
+### Phase 1 — Per-stage NormalizedPage isolation + complete artifact set
+
+> Replaces the original "Reunify Run Mode under canonical authorities" Phase 1.
+> The original direction proposed *one shared* `NormalizedPageSessionStore` consumed by both Config Capture and Run Mode. That direction was rejected after architectural review: `NormalizedPage` is a calibrated *page-surface standard*, not a shared live document. Config and Run must each own their own active document; the only things crossing the stage boundary are explicit, downloadable, versioned artifacts. The shared elements should be pure helpers and pure UI primitives, not live state.
+>
+> Phase 1 is now executed as four small, low-risk sub-phases (1A → 1D). Each must complete before Phase 2 begins.
+
+#### Phase 1A — De-singleton the NormalizedPage session store
+- **Goal:** treat `NormalizedPageSessionStore` as a per-stage instance, not a module-level global, so each stage owns its own active document.
+- **Issues addressed:** the module-level singleton at `src/core/storage/normalized-page-session-store.ts:92-95` violates the per-instance store convention used by every other store under `src/core/storage/`; it is latent cross-stage coupling that would activate the moment a second consumer mounts (e.g. if the original Phase 1 had been executed).
+- **Files:** `src/core/storage/normalized-page-session-store.ts` (remove the module-level `normalizedPageSessionStore` instance and the `getNormalizedPageSessionStore` accessor; export only the `createNormalizedPageSessionStore` factory), `src/features/config-capture/ui/ConfigCapture.tsx` (instantiate via `useRef(createNormalizedPageSessionStore())` exactly like every other store), `docs/architecture.md` (replace "single session authority" wording with "single page-surface coordinate authority"; clarify that the canonical authority is `page-surface.ts` + `NormalizedPageViewport.tsx`, not the session store), `tests/unit/normalized-page-session-store.test.ts` (no behavior change; verify the factory remains correct).
+- **Risk:** low. Config Capture is the only consumer today; behavior is unchanged because there was always exactly one mount.
+- **Expected outcome:** every stage is artifact-driven and instance-isolated. Two stages running in the same browser, on different machines, or on different mounts behave identically.
+- **Order rationale:** must come first. All later phases assume that no two stages share a live document.
+
+#### Phase 1B — Extract pure shared helpers (no shared state)
+- **Goal:** keep the deduplication wins around `documentFingerprint` and overlay status text without re-introducing any cross-stage runtime coupling.
+- **Issues addressed:** (§2) duplicated fingerprint construction in `RunMode.tsx:213-216` vs `normalized-page-session-store.ts:31-37`; (§3) per-feature `statusText` strings drifting between `ConfigCapture.tsx` and `RunMode.tsx`.
+- **Files:** new pure helper module under `src/core/page-surface/` (e.g. `page-surface-fingerprint.ts` exporting `buildDocumentFingerprint({ sourceName, pages })`); new `src/core/page-surface/ui/structural-status-text.ts` exporting a pure `buildStructuralStatusText({ structuralModel, page, runtimeLoadStatus, transformationModel? })`; both consumed from `ConfigCapture.tsx` and `RunMode.tsx` in place of inline construction.
+- **Risk:** low. Pure functions only.
+- **Expected outcome:** one fingerprint formula and one status-text formula in the codebase, both stateless, used by both stages without sharing live state.
+- **Order rationale:** must come after Phase 1A so the fingerprint helper is consumed only by per-instance stores; must come before Phase 2 so the helper API is stable when localization starts consuming the TransformationModel.
+
+#### Phase 1C — Complete the artifact set (close the portability gap)
+- **Goal:** make every cross-stage artifact a first-class versioned contract with parse/serialize/download IO and a runtime guard, so the Computer-A → Computer-B → Computer-C portability test passes for every output, not just the three on the critical path.
+- **Issues addressed:** `PredictedGeometryFile` defined inline in `localization-runner.ts:53-66` with no contract file, no `is*` guard, and no IO module; `TransformationModel` has full IO (`transformation-model-io.ts`) but no download/upload UI in Run Mode; runtime `StructuralModel` has no download UI; predicted-geometry download is hand-rolled in `RunMode.tsx:273-287`.
+- **Files:** new `src/core/contracts/predicted-geometry-file.ts` (lift the type out of the runner; add `schema`, `version`, `isPredictedGeometryFile` guard); new `src/core/io/predicted-geometry-file-io.ts` (serialize/parse/download mirroring the other IO modules); update `src/core/runtime/localization-runner.ts` to import from the new contract; update `src/features/run-mode/ui/RunMode.tsx` to call `downloadPredictedGeometryFile`, `downloadTransformationModel`, and a runtime `downloadStructuralModel` (already exported from `structural-model-io.ts`); optional re-upload inputs for runtime StructuralModel / TransformationModel / PredictedGeometryFile for diagnostic replays; new contract tests under `tests/unit/contracts.test.ts`.
+- **Risk:** low; additive only.
+- **Expected outcome:** every output of every stage can be downloaded, re-uploaded, and re-validated by an `is*` guard. The artifact set itself is the handoff boundary — no UI state, no in-memory object, no shared session is required to move between machines.
+- **Order rationale:** can run in parallel with Phase 1B; must be complete before Phase 2 so TransformationModel-driven localization has a stable, downloadable output contract for predicted geometry.
+
+#### Phase 1D — Delete or wire dead surfaces
+- **Goal:** remove unmounted/unused code paths so future readers cannot mistake them for live ones.
+- **Issues addressed:** `src/features/normalization/ui/NormalizationIntake.tsx` is unmounted and renders an `<img>` outside the canonical viewport; `src/app/routes.ts` defines route constants imported nowhere because `App.tsx` mounts all four pages stacked with no router; `src/demo/sample-wizard.ts` may be orphaned (verify before deletion); `imageBlobUrl` on `NormalizedPage` is supported by the contract but never produced by the engine.
+- **Files:** delete `src/features/normalization/ui/NormalizationIntake.tsx` and its CSS (or rewrite it through `NormalizedPageViewport` if a use case appears), delete `src/app/routes.ts` (or wire a real router), verify and delete `src/demo/sample-wizard.ts` if unused, drop `imageBlobUrl` from `src/core/contracts/normalized-page.ts` and simplify the viewport's image-src logic.
+- **Risk:** low — removals only. None of these are mounted today.
+- **Expected outcome:** the codebase only contains code that runs. No drift surface left for the next refactor.
+- **Order rationale:** safe at this point because Phases 1A–1C have stabilized the canonical surface; deleting earlier risks taking out code that the new helpers or contracts still touch.
 
 ### Phase 2 — Make TransformationModel the source of truth for localization
 - **Goal:** collapse the two parallel matchers into one. `localization-runner` should consume `TransformationModel.fieldAlignments` (already complete with confidences and fallback chain), not re-derive its own anchor resolution.
@@ -92,7 +123,7 @@ The core spine is sound. NormalizedPage authority, page-surface coordinates, the
 - **Files:** `src/core/runtime/localization-runner.ts` (replace `resolveRuntimeObject`/`resolveFieldAnchor` with a thin consumer of `TransformationFieldAlignment.candidates`), `src/features/run-mode/ui/RunMode.tsx` (compute TransformationModel before localization and pass it in), `src/core/runtime/transformation/field-candidates.ts` (no change in math; possibly minor API surface), tests (`localization-runner.test.ts`).
 - **Risk:** medium-high — touches the predicted-box path users see. Needs equivalence tests before removing the old code.
 - **Expected outcome:** one matching engine, predicted boxes derived from explicit candidate confidences, the TransformationModel becomes load-bearing instead of decorative.
-- **Order rationale:** depends on Phase 1's session unification; must precede Phase 3 because the legacy fields it removes are read by the old localization path.
+- **Order rationale:** Phase 2 begins only after Phases 1A–1D are all complete. The per-stage isolation (1A), pure shared helpers (1B), and full first-class artifact set (1C) together provide the stable foundation TransformationModel-driven localization depends on; 1D ensures no dead code path is co-evolved during this phase. Phase 2 must still precede Phase 3 because the legacy fields Phase 3 removes are read by the old localization path.
 
 ### Phase 3 — StructuralModel v4: drop the deprecated/legacy fields
 - **Goal:** finish the migration that v3.0 started. Make the contract say what the engine actually authors today.
@@ -121,18 +152,19 @@ The core spine is sound. NormalizedPage authority, page-surface coordinates, the
 
 ---
 
-## 10. Suggested Phase 1 prompt
+## 10. Suggested Phase 1A prompt
 
-> Reunify Run Mode under the canonical NormalizedPage authorities so it behaves as Config Capture's twin instead of a parallel implementation.
+> De-singleton the NormalizedPage session store so each stage owns its own active document. Do not unify Config and Run on a shared live session — `NormalizedPage` is a calibrated page-surface *standard*, not a shared live document. The shared elements should be pure helpers and pure UI primitives, not live state.
 >
 > Concretely:
-> 1. Replace Run Mode's local `runtimePages` / `runtimeDocumentFingerprint` / `selectedPageIndex` state in `src/features/run-mode/ui/RunMode.tsx` with consumption of the canonical `NormalizedPageSessionStore`. Decide and document the two-screen sharing protocol — either (a) one shared session that Config and Run both read, with a single `clearSession()` boundary, or (b) extend `normalized-page-session-store.ts` with a named `mode: 'config' | 'run'` partition. Pick (a) unless you find a concrete conflict; the simpler choice is the right one.
-> 2. Delete the hand-rolled `surface:${sourceName}#${signature}` fingerprint construction in `RunMode.tsx`; the session store already owns `buildDocumentFingerprint`. Export it (or expose it through a tiny pure helper) and use it from one place only.
-> 3. Both `ConfigCapture.tsx` and `RunMode.tsx` build their overlay `statusText` inline today. Extract a single pure helper (e.g. `buildStructuralStatusText({ structuralModel, page, runtimeLoadStatus, transformationModel? })`) under `src/core/page-surface/ui/` and call it from both features. Run Mode's `<ul className="run-mode__status-list">` collapses into a single `statusText` line; the per-input "loaded / not loaded" lines stay near their inputs as small captions, not as a wall.
-> 4. Confirm `surfaceTransform` is still produced by `NormalizedPageViewport` only and that no feature stores its own copy beyond a local `useState` for the latest emitted transform.
-> 5. Add a regression test in `tests/unit/normalized-page-session-store.test.ts` proving the runtime session path uses the same fingerprint formula as Config Capture for the same input file.
+> 1. In `src/core/storage/normalized-page-session-store.ts`, delete the module-level `normalizedPageSessionStore` instance and the `getNormalizedPageSessionStore` accessor (lines 92-95 of the current file). Export only the existing `createNormalizedPageSessionStore` factory.
+> 2. In `src/features/config-capture/ui/ConfigCapture.tsx`, replace the `useRef(getNormalizedPageSessionStore())` call with `useRef(createNormalizedPageSessionStore())` so Config Capture instantiates its own session like every other store in the file (`createGeometryBuilderStore`, `createStructuralStore`).
+> 3. Leave Run Mode unchanged. It already uses local React state (`runtimePages`, `runtimeDocumentFingerprint`, `selectedPageIndex`) and that is the correct artifact-driven shape.
+> 4. Update `docs/architecture.md`: replace the "single session authority" / "page-aware modules must consume `NormalizedPage` through this session authority" wording with a "single page-surface coordinate authority" rule. The canonical authority is `src/core/page-surface/page-surface.ts` + `src/core/page-surface/ui/NormalizedPageViewport.tsx` (coordinate math + viewport), not the session store. Each stage owns its own session.
+> 5. Confirm `tests/unit/normalized-page-session-store.test.ts` still passes; it already uses `createNormalizedPageSessionStore()` directly, so behavior should be unchanged.
+> 6. Do not extract the shared fingerprint helper or the shared status-text helper in this phase — those land in Phase 1B. Do not add new contracts or IO — those land in Phase 1C. Do not delete unmounted surfaces — those land in Phase 1D.
 >
-> Do not change the StructuralModel contract, OpenCV adapter, localization-runner, or transformation-runner in this phase. Do not alter overlay visuals. The deliverable is one canonical session authority and one canonical status-text path used by both features, with no behavior change beyond removed duplication. Update `docs/architecture.md` to reflect that the canonical session authority now serves both Config and Run, and that any "page-aware module" rule applies to Run Mode as well.
+> The deliverable for Phase 1A is one architectural change: the session store is no longer a global. No behavior change; only the latent cross-stage coupling potential is removed. Stop after Phase 1A and wait for confirmation before starting Phase 1B.
 
 ---
 
