@@ -2,7 +2,9 @@ import { useMemo, useRef, useState, type ChangeEvent } from 'react';
 
 import type { GeometryFile } from '../../../core/contracts/geometry';
 import type { NormalizedPage } from '../../../core/contracts/normalized-page';
+import type { PredictedGeometryFile } from '../../../core/contracts/predicted-geometry-file';
 import type { StructuralModel } from '../../../core/contracts/structural-model';
+import type { TransformationModel } from '../../../core/contracts/transformation-model';
 import type { WizardFile } from '../../../core/contracts/wizard';
 import { createNormalizationEngine } from '../../../core/engines/normalization';
 import {
@@ -10,9 +12,20 @@ import {
   parseGeometryFile
 } from '../../../core/io/geometry-file-io';
 import {
+  PredictedGeometryFileParseError,
+  downloadPredictedGeometryFile,
+  parsePredictedGeometryFile
+} from '../../../core/io/predicted-geometry-file-io';
+import {
+  downloadStructuralModel,
   parseStructuralModel,
   StructuralModelParseError
 } from '../../../core/io/structural-model-io';
+import {
+  downloadTransformationModel,
+  parseTransformationModel,
+  TransformationModelParseError
+} from '../../../core/io/transformation-model-io';
 import { parseWizardFile, WizardFileParseError } from '../../../core/io/wizard-file-io';
 import { buildDocumentFingerprint } from '../../../core/page-surface/page-surface-fingerprint';
 import {
@@ -27,10 +40,9 @@ import {
   type StructuralOverlayFieldBox,
   type StructuralOverlayOptions
 } from '../../../core/page-surface/ui';
-import { createLocalizationRunner, type PredictedGeometryFile } from '../../../core/runtime/localization-runner';
+import { createLocalizationRunner } from '../../../core/runtime/localization-runner';
 import { createStructuralRunner } from '../../../core/runtime/structural-runner';
 import { createTransformationRunner } from '../../../core/runtime/transformation-runner';
-import type { TransformationModel } from '../../../core/contracts/transformation-model';
 import { Button } from '../../../core/ui/components/Button';
 import { Input } from '../../../core/ui/components/Input';
 import { Panel } from '../../../core/ui/components/Panel';
@@ -275,15 +287,74 @@ export function RunMode() {
     if (!predicted) {
       return;
     }
-    const blob = new Blob([JSON.stringify(predicted, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
+    downloadPredictedGeometryFile(predicted);
+  };
+
+  const handleDownloadRuntimeStructural = () => {
+    if (!runtimeStructuralModel) {
+      return;
+    }
+    downloadStructuralModel(runtimeStructuralModel);
+  };
+
+  const handleDownloadTransformation = () => {
+    if (!transformationModel) {
+      return;
+    }
+    downloadTransformationModel(transformationModel);
+  };
+
+  const handleRuntimeStructuralReimport = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) {
+      return;
+    }
     try {
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `${predicted.wizardId.replace(/\s+/g, '-').toLowerCase()}.predicted-geometry.json`;
-      link.click();
-    } finally {
-      URL.revokeObjectURL(url);
+      setRuntimeStructuralModel(parseStructuralModel(await file.text()));
+      setRunError(null);
+    } catch (uploadError) {
+      setRunError(
+        uploadError instanceof StructuralModelParseError
+          ? `Runtime StructuralModel import: ${uploadError.message}`
+          : 'Could not load runtime StructuralModel.'
+      );
+    }
+  };
+
+  const handleTransformationReimport = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) {
+      return;
+    }
+    try {
+      setTransformationModel(parseTransformationModel(await file.text()));
+      setRunError(null);
+    } catch (uploadError) {
+      setRunError(
+        uploadError instanceof TransformationModelParseError
+          ? `TransformationModel import: ${uploadError.message}`
+          : 'Could not load TransformationModel.'
+      );
+    }
+  };
+
+  const handlePredictedReimport = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) {
+      return;
+    }
+    try {
+      setPredicted(parsePredictedGeometryFile(await file.text()));
+      setRunError(null);
+    } catch (uploadError) {
+      setRunError(
+        uploadError instanceof PredictedGeometryFileParseError
+          ? `PredictedGeometryFile import: ${uploadError.message}`
+          : 'Could not load PredictedGeometryFile.'
+      );
     }
   };
 
@@ -338,10 +409,62 @@ export function RunMode() {
             <Button type="button" variant="primary" onClick={handleRunPrediction}>
               Match Runtime Document
             </Button>
-            <Button type="button" onClick={handleDownloadPredicted}>
+          </div>
+
+          <div className="run-mode__toolbar">
+            <Button
+              type="button"
+              onClick={handleDownloadRuntimeStructural}
+              disabled={!runtimeStructuralModel}
+            >
+              Download Runtime StructuralModel
+            </Button>
+            <Button
+              type="button"
+              onClick={handleDownloadTransformation}
+              disabled={!transformationModel}
+            >
+              Download TransformationModel
+            </Button>
+            <Button
+              type="button"
+              onClick={handleDownloadPredicted}
+              disabled={!predicted}
+            >
               Download Predicted Geometry
             </Button>
           </div>
+
+          <details className="run-mode__diagnostic">
+            <summary>Re-upload runtime artifacts (diagnostic)</summary>
+            <p className="run-mode__meta">
+              Re-uploaded artifacts populate the JSON previews and overlays for inspection. They do not re-run prediction.
+            </p>
+            <label className="run-mode__upload-label">
+              <strong>Runtime StructuralModel (JSON)</strong>
+              <Input
+                type="file"
+                accept="application/json"
+                onChange={handleRuntimeStructuralReimport}
+              />
+            </label>
+            <label className="run-mode__upload-label">
+              <strong>TransformationModel (JSON)</strong>
+              <Input
+                type="file"
+                accept="application/json"
+                onChange={handleTransformationReimport}
+              />
+            </label>
+            <label className="run-mode__upload-label">
+              <strong>PredictedGeometryFile (JSON)</strong>
+              <Input
+                type="file"
+                accept="application/json"
+                onChange={handlePredictedReimport}
+              />
+            </label>
+          </details>
 
           <ul className="run-mode__status-list">
             <li>

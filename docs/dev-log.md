@@ -1,3 +1,59 @@
+## 2026-04-28 — Refactor: Phase 1C (complete the artifact set)
+
+### Why this step
+- The Computer-A → Computer-B → Computer-C portability test required every cross-stage artifact to be a first-class versioned contract with parse/serialize/download IO and a runtime guard. Three artifacts violated this:
+  - `PredictedGeometryFile` was defined inline inside `localization-runner.ts` with no contract file, no `is*` guard, and no IO module.
+  - `TransformationModel` had full IO but no Run Mode download / re-upload UI; it was only visible as a JSON preview.
+  - Runtime `StructuralModel` had no Run Mode download UI; the existing `downloadStructuralModel` IO helper was unused.
+  - The `Download Predicted Geometry` button used a hand-rolled blob/URL/click pattern in `RunMode.tsx` instead of the IO module.
+
+### What changed
+- New `src/core/contracts/predicted-geometry-file.ts` — promotes the persisted shape (and the supporting `RuntimeAnchorTier`, `RuntimeObjectMatchStrategy`, `RuntimeStructuralTransform`, `PredictedFieldGeometry`, `PredictedGeometryFile` types) out of the runner. Adds `isPredictedGeometryFile` runtime guard with full sub-record validation: `bbox`, `pixelBbox`, `pageSurface`, anchor tier whitelist, transform rect validation, optional match-strategy whitelist, and finite-number guards on all transform scalars.
+- New `src/core/io/predicted-geometry-file-io.ts` — `serializePredictedGeometryFile`, `parsePredictedGeometryFile`, `predictedGeometryFileDownloadName`, `downloadPredictedGeometryFile`, `PredictedGeometryFileParseError`. Mirrors the shape of `geometry-file-io` and `transformation-model-io` exactly, including the optional `*DownloadEnv` injection seam used by tests.
+- `src/core/runtime/localization-runner.ts` — now imports `PredictedFieldGeometry`, `PredictedGeometryFile`, `RuntimeAnchorTier`, `RuntimeObjectMatchStrategy`, and `RuntimeStructuralTransform` from the new contract. The runner re-exports the same types so existing call sites continue to work; no behavior change.
+- `src/features/run-mode/ui/RunMode.tsx`:
+  - Replaces the hand-rolled `Blob` / `URL.createObjectURL` / anchor-click pattern with `downloadPredictedGeometryFile`.
+  - Adds explicit download buttons for the runtime `StructuralModel` (`downloadStructuralModel`) and the `TransformationModel` (`downloadTransformationModel`). Buttons disable when their artifact is null, so the UI accurately reflects readiness.
+  - Adds a collapsible "Re-upload runtime artifacts (diagnostic)" panel exposing parse paths for runtime `StructuralModel`, `TransformationModel`, and `PredictedGeometryFile`. Re-uploaded artifacts populate the same state slots as the computed values so the JSON previews and overlays render correctly; they do not re-run prediction.
+- `src/features/run-mode/ui/run-mode.css` — small `.run-mode__diagnostic` styling for the diagnostic re-upload panel.
+- `docs/architecture.md`:
+  - "Contract Versioning Rule" lists `PredictedGeometryFile` and `TransformationModel`, and corrects `StructuralModel` to its actual current version (`3.0` / `wrokit/structure/v2`).
+  - "Data Contracts" section adds full entries for `TransformationModel` and `PredictedGeometryFile`, and updates `StructuralModel` wording to reflect the current shape.
+  - `src/core/io` description enumerates all five IO modules and states the rule that every cross-stage artifact has both a download path and a parse path.
+  - "Run Mode" outputs are documented with the IO helper names and the diagnostic re-upload requirement.
+
+### Tests added
+- `tests/unit/contracts.test.ts` — 5 new tests for `isPredictedGeometryFile`: accepts a valid file, accepts a file with optional transform fields omitted, rejects wrong schema/version/sub-version markers, rejects unknown anchor tier or match strategy, rejects malformed transform rect or non-finite scalar.
+- `tests/unit/predicted-geometry-file-io.test.ts` — 5 tests covering serialize/parse round-trip, invalid JSON, schema mismatch, safe download filename from wizardId, and empty-wizardId fallback.
+
+### Files added
+- `src/core/contracts/predicted-geometry-file.ts`
+- `src/core/io/predicted-geometry-file-io.ts`
+- `tests/unit/predicted-geometry-file-io.test.ts`
+
+### Files modified
+- `src/core/runtime/localization-runner.ts` (lift types out; re-export for callers)
+- `src/features/run-mode/ui/RunMode.tsx` (use IO helpers; add download buttons; add diagnostic re-upload)
+- `src/features/run-mode/ui/run-mode.css` (diagnostic panel styling)
+- `tests/unit/contracts.test.ts` (new `isPredictedGeometryFile` describe block)
+- `docs/architecture.md` (contract list + data contracts + IO module list + Run Mode outputs)
+- `docs/dev-log.md` (this entry)
+
+### Authority + anti-drift behavior
+- Predicted geometry remains non-mutating: `PredictedGeometryFile` is a separate persisted artifact that never overwrites the source `GeometryFile`. The contract carries `geometryFileVersion` and `structureVersion` so re-ingest can verify it is compatible with the loaded ground-truth GeometryFile + StructuralModel.
+- Diagnostic re-upload populates UI state slots only — it does not feed back into the prediction pipeline. The Match Runtime Document button still requires a fresh runtime structural compute to produce predicted geometry.
+- Public engine and runner contracts are unchanged. Localization runner output is byte-identical to before; the type just lives in a different file.
+
+### Checks run
+- `npm run check` (clean)
+- `npm test` — 156/156 passing across 19 files (146 + 10 new in this phase: 5 IO + 5 contract).
+- `npm run build` (clean)
+
+### Recommended next step
+- Phase 1D — Delete or wire dead surfaces. Remove the unmounted `NormalizationIntake.tsx`, the unused `routes.ts` constants, the unreferenced `sample-wizard.ts` (verify), and the `imageBlobUrl` half-implementation on `NormalizedPage`.
+
+---
+
 ## 2026-04-28 — Refactor: Phase 1A + 1B (per-stage NormalizedPage isolation + pure shared helpers)
 
 ### Why this step

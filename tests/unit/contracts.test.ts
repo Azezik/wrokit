@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { isExtractionResult } from '../../src/core/contracts/extraction-result';
 import { isGeometryFile } from '../../src/core/contracts/geometry';
 import { isNormalizedPage } from '../../src/core/contracts/normalized-page';
+import { isPredictedGeometryFile } from '../../src/core/contracts/predicted-geometry-file';
 import { isStructuralModel } from '../../src/core/contracts/structural-model';
 import { isWizardFile } from '../../src/core/contracts/wizard';
 
@@ -442,6 +443,134 @@ describe('isStructuralModel', () => {
     };
 
     expect(isStructuralModel(invalidRanks)).toBe(false);
+  });
+});
+
+describe('isPredictedGeometryFile', () => {
+  const validPredicted = {
+    schema: 'wrokit/predicted-geometry-file',
+    version: '1.0',
+    geometryFileVersion: 'wrokit/geometry/v1',
+    structureVersion: 'wrokit/structure/v2',
+    id: 'pred_1',
+    wizardId: 'Invoice Wizard',
+    sourceGeometryFileId: 'geo_1',
+    sourceStructuralModelId: 'sm_1',
+    runtimeDocumentFingerprint: 'surface:runtime.pdf#0:1000x1400',
+    predictedAtIso: '2026-04-28T00:00:00Z',
+    fields: [
+      {
+        fieldId: 'invoice_number',
+        pageIndex: 0,
+        bbox: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.2, hNorm: 0.05 },
+        pixelBbox: { x: 100, y: 140, width: 200, height: 70 },
+        pageSurface: { pageIndex: 0, surfaceWidth: 1000, surfaceHeight: 1400 },
+        sourceGeometryConfirmedAtIso: '2026-04-25T00:00:00Z',
+        sourceGeometryConfirmedBy: 'user',
+        anchorTierUsed: 'field-object-a',
+        transform: {
+          pageIndex: 0,
+          basis: 'field-object-a',
+          sourceConfigRectNorm: { xNorm: 0.05, yNorm: 0.05, wNorm: 0.9, hNorm: 0.9 },
+          sourceRuntimeRectNorm: { xNorm: 0.06, yNorm: 0.05, wNorm: 0.88, hNorm: 0.9 },
+          scaleX: 0.978,
+          scaleY: 1.0,
+          translateX: 0.01,
+          translateY: 0,
+          configObjectId: 'obj_1',
+          runtimeObjectId: 'obj_42',
+          objectMatchStrategy: 'type-hierarchy-geometry'
+        }
+      }
+    ]
+  };
+
+  it('accepts a valid PredictedGeometryFile', () => {
+    expect(isPredictedGeometryFile(validPredicted)).toBe(true);
+  });
+
+  it('accepts a valid file when optional transform fields are omitted', () => {
+    const noOptionals = {
+      ...validPredicted,
+      fields: [
+        {
+          ...validPredicted.fields[0],
+          transform: {
+            pageIndex: 0,
+            basis: 'refined-border',
+            sourceConfigRectNorm: { xNorm: 0.05, yNorm: 0.05, wNorm: 0.9, hNorm: 0.9 },
+            sourceRuntimeRectNorm: { xNorm: 0.06, yNorm: 0.05, wNorm: 0.88, hNorm: 0.9 },
+            scaleX: 1,
+            scaleY: 1,
+            translateX: 0,
+            translateY: 0
+          }
+        }
+      ]
+    };
+    expect(isPredictedGeometryFile(noOptionals)).toBe(true);
+  });
+
+  it('rejects wrong schema, version, or sub-version markers', () => {
+    expect(isPredictedGeometryFile(null)).toBe(false);
+    expect(
+      isPredictedGeometryFile({ ...validPredicted, schema: 'other' })
+    ).toBe(false);
+    expect(
+      isPredictedGeometryFile({ ...validPredicted, version: '0.9' })
+    ).toBe(false);
+    expect(
+      isPredictedGeometryFile({ ...validPredicted, geometryFileVersion: 'wrokit/geometry/v0' })
+    ).toBe(false);
+    expect(
+      isPredictedGeometryFile({ ...validPredicted, structureVersion: 'wrokit/structure/v1' })
+    ).toBe(false);
+  });
+
+  it('rejects unknown anchor tier or match strategy', () => {
+    const badTier = {
+      ...validPredicted,
+      fields: [{ ...validPredicted.fields[0], anchorTierUsed: 'guessing' }]
+    };
+    expect(isPredictedGeometryFile(badTier)).toBe(false);
+
+    const badStrategy = {
+      ...validPredicted,
+      fields: [
+        {
+          ...validPredicted.fields[0],
+          transform: { ...validPredicted.fields[0].transform, objectMatchStrategy: 'magic' }
+        }
+      ]
+    };
+    expect(isPredictedGeometryFile(badStrategy)).toBe(false);
+  });
+
+  it('rejects a malformed transform rect or non-finite scalar', () => {
+    const badRect = {
+      ...validPredicted,
+      fields: [
+        {
+          ...validPredicted.fields[0],
+          transform: {
+            ...validPredicted.fields[0].transform,
+            sourceRuntimeRectNorm: { xNorm: 'oops', yNorm: 0, wNorm: 1, hNorm: 1 }
+          }
+        }
+      ]
+    };
+    expect(isPredictedGeometryFile(badRect)).toBe(false);
+
+    const badScale = {
+      ...validPredicted,
+      fields: [
+        {
+          ...validPredicted.fields[0],
+          transform: { ...validPredicted.fields[0].transform, scaleX: Number.NaN }
+        }
+      ]
+    };
+    expect(isPredictedGeometryFile(badScale)).toBe(false);
   });
 });
 

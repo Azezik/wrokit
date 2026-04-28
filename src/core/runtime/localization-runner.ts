@@ -1,5 +1,17 @@
-import type { FieldGeometry, GeometryFile, NormalizedBoundingBox, PixelBoundingBox } from '../contracts/geometry';
+import type {
+  FieldGeometry,
+  GeometryFile,
+  NormalizedBoundingBox,
+  PixelBoundingBox
+} from '../contracts/geometry';
 import type { NormalizedPage } from '../contracts/normalized-page';
+import {
+  type PredictedFieldGeometry,
+  type PredictedGeometryFile,
+  type RuntimeAnchorTier,
+  type RuntimeObjectMatchStrategy,
+  type RuntimeStructuralTransform
+} from '../contracts/predicted-geometry-file';
 import type {
   StructuralFieldRelationship,
   StructuralModel,
@@ -11,58 +23,13 @@ import type {
 } from '../contracts/structural-model';
 import { getPageSurface } from '../page-surface/page-surface';
 
-export type RuntimeAnchorTier =
-  | 'field-object-a'
-  | 'field-object-b'
-  | 'field-object-c'
-  | 'refined-border'
-  | 'border';
-
-export type RuntimeObjectMatchStrategy = 'id' | 'type-hierarchy-geometry';
-
-export interface RuntimeStructuralTransform {
-  pageIndex: number;
-  basis: RuntimeAnchorTier;
-  sourceConfigRectNorm: StructuralNormalizedRect;
-  sourceRuntimeRectNorm: StructuralNormalizedRect;
-  scaleX: number;
-  scaleY: number;
-  translateX: number;
-  translateY: number;
-  configObjectId?: string;
-  runtimeObjectId?: string;
-  objectMatchStrategy?: RuntimeObjectMatchStrategy;
-}
-
-export interface PredictedFieldGeometry {
-  fieldId: string;
-  pageIndex: number;
-  bbox: NormalizedBoundingBox;
-  pixelBbox: PixelBoundingBox;
-  pageSurface: {
-    pageIndex: number;
-    surfaceWidth: number;
-    surfaceHeight: number;
-  };
-  sourceGeometryConfirmedAtIso: string;
-  sourceGeometryConfirmedBy: string;
-  anchorTierUsed: RuntimeAnchorTier;
-  transform: RuntimeStructuralTransform;
-}
-
-export interface PredictedGeometryFile {
-  schema: 'wrokit/predicted-geometry-file';
-  version: '1.0';
-  geometryFileVersion: 'wrokit/geometry/v1';
-  structureVersion: 'wrokit/structure/v2';
-  id: string;
-  wizardId: string;
-  sourceGeometryFileId: string;
-  sourceStructuralModelId: string;
-  runtimeDocumentFingerprint: string;
-  predictedAtIso: string;
-  fields: PredictedFieldGeometry[];
-}
+export type {
+  PredictedFieldGeometry,
+  PredictedGeometryFile,
+  RuntimeAnchorTier,
+  RuntimeObjectMatchStrategy,
+  RuntimeStructuralTransform
+};
 
 export interface LocalizationRunnerInput {
   wizardId: string;

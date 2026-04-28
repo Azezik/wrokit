@@ -12,7 +12,7 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
 
 ## Module Boundaries
 - `src/core/contracts`: shared typed contracts. Each persisted contract carries `schema` + `version` and exports a runtime `is<Type>` guard.
-- `src/core/io`: pure serialization / parsing / file-IO helpers (e.g. `wizard-file-io`, `geometry-file-io`). UI calls these; UI does not embed IO.
+- `src/core/io`: pure serialization / parsing / file-IO helpers — one module per persisted contract (`wizard-file-io`, `geometry-file-io`, `structural-model-io`, `transformation-model-io`, `predicted-geometry-file-io`). UI calls these; UI does not embed IO. Every artifact that crosses a stage boundary has both a download path and a parse path so it can be re-ingested for diagnostic or portability replays.
 - `src/core/page-surface`: thin infrastructural orchestration layer that owns canonical NormalizedPage surface authority — page dimensions, display transforms, screen↔surface coordinate mapping, normalized↔surface conversions, and invariant checks. Every module that touches page geometry (Geometry capture, future Structural Engine, Localization, OCR readout, runtime overlays) consumes coordinates through this layer. It is infrastructure, not business logic.
 - `src/core/storage`: UI-agnostic stores. All store mutators are async. All stores expose `subscribe(listener)` and `getSnapshot()` so React can attach via `useSyncExternalStore` and a future persistence adapter is a drop-in.
 - `src/core/engines`: pure transforms. Every engine implements the canonical `Engine<TInput, TOutput>` from `src/core/engines/engine.ts`. Engines never compose other engines and never reach into UI or storage.
@@ -51,7 +51,9 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
   - `WizardFile`: `1.0`
   - `NormalizedPage`: `2.0`
   - `GeometryFile`: `1.1` (also carries `geometryFileVersion: 'wrokit/geometry/v1'` for human-readable schema identity)
-  - `StructuralModel`: `2.0` (also carries `structureVersion: 'wrokit/structure/v1'` for human-readable schema identity)
+  - `StructuralModel`: `3.0` (also carries `structureVersion: 'wrokit/structure/v2'` for human-readable schema identity)
+  - `TransformationModel`: `1.0` (also carries `transformVersion: 'wrokit/transformation/v1'`)
+  - `PredictedGeometryFile`: `1.0` (also carries `geometryFileVersion: 'wrokit/geometry/v1'` and `structureVersion: 'wrokit/structure/v2'` so re-ingest can verify compatibility with the loaded GeometryFile + StructuralModel)
   - `ExtractionResult`: `1.0`
 
 ## Store Pattern
@@ -72,7 +74,9 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
 - `WizardFile` (`src/core/contracts/wizard.ts`): `schema: 'wrokit/wizard-file'`, `version: '1.0'`. Guard: `isWizardFile`.
 - `NormalizedPage` (`src/core/contracts/normalized-page.ts`): `schema: 'wrokit/normalized-page'`, `version: '2.0'`, includes pixel width/height/aspect ratio and raster image URL surface data, plus display-only `sourceName`. Guard: `isNormalizedPage`.
 - `GeometryFile` (`src/core/contracts/geometry.ts`): `schema: 'wrokit/geometry-file'`, `version: '1.1'`, `geometryFileVersion: 'wrokit/geometry/v1'`. Each `FieldGeometry` carries a normalized `bbox` (`xNorm/yNorm/wNorm/hNorm`) as canonical authority, a derived `pixelBbox` in NormalizedPage surface pixels, and a `pageSurface` reference so validation can detect drift against the loaded NormalizedPage. Guard: `isGeometryFile`.
-- `StructuralModel` (`src/core/contracts/structural-model.ts`): `schema: 'wrokit/structural-model'`, `version: '2.0'`, `structureVersion: 'wrokit/structure/v1'`. Each `StructuralPage` carries a `pageSurface` reference, two normalized rects (`border`, `refinedBorder`), an `objectHierarchy` (typed objects with `objectId/type/bbox/parent/children/confidence`), and `fieldRelationships` (per Geometry field: containment, nearest objects, relative position, and border/refined-border distances). Stored separately from `GeometryFile`. Guard: `isStructuralModel`.
+- `StructuralModel` (`src/core/contracts/structural-model.ts`): `schema: 'wrokit/structural-model'`, `version: '3.0'`, `structureVersion: 'wrokit/structure/v2'`. Each `StructuralPage` carries a `pageSurface` reference, two normalized rects (`border`, `refinedBorder`), an `objectHierarchy` (typed objects with `objectId/type/objectRectNorm/parent/children/confidence`), `pageAnchorRelations`, and `fieldRelationships`. Stored separately from `GeometryFile`. Guard: `isStructuralModel`.
+- `TransformationModel` (`src/core/contracts/transformation-model.ts`): `schema: 'wrokit/transformation-model'`, `version: '1.0'`, `transformVersion: 'wrokit/transformation/v1'`. Read-only Config↔Runtime alignment report. Persisted separately. Guard: `isTransformationModel`.
+- `PredictedGeometryFile` (`src/core/contracts/predicted-geometry-file.ts`): `schema: 'wrokit/predicted-geometry-file'`, `version: '1.0'`, `geometryFileVersion: 'wrokit/geometry/v1'`, `structureVersion: 'wrokit/structure/v2'`. Runtime localization output: per-field predicted normalized + pixel bboxes on the runtime page surface, plus the `RuntimeStructuralTransform` (anchor tier, source rects, scale/translate, optional matched object IDs). Never overwrites the source `GeometryFile`. Guard: `isPredictedGeometryFile`.
 - `ExtractionResult` (`src/core/contracts/extraction-result.ts`): `schema: 'wrokit/extraction-result'`, `version: '1.0'`. Guard: `isExtractionResult`.
 
 ## App Shell and Static Hosting
@@ -173,6 +177,7 @@ Not yet implemented:
 ## Run Mode (Basic Transform Matching)
 - Run Mode UI lives in `src/features/run-mode/ui/RunMode.tsx` and is mounted via `src/app/pages/RunModePage.tsx`.
 - Inputs: WizardFile, GeometryFile, Config StructuralModel, runtime document upload. Runtime upload always flows through the normalization engine (`NormalizedPage[]` authority preserved).
+- Outputs (every output is a downloadable, versioned, type-guarded artifact, and every output has a corresponding diagnostic re-upload path so it can be re-ingested for inspection or portability replay): runtime `StructuralModel` (`downloadStructuralModel`), `TransformationModel` (`downloadTransformationModel`), `PredictedGeometryFile` (`downloadPredictedGeometryFile`).
 - Run Mode now publishes explicit input/status confirmations for each authority artifact: WizardFile loaded/not loaded (wizard name), GeometryFile loaded/not loaded (field count), Config StructuralModel loaded/not loaded (page count), runtime normalized/not normalized (runtime page count + selected page), and parse/validation errors per input.
 - Runtime structure is computed by reusing `structural-runner` (same composition path used by Config Capture); no border/refined-border logic is duplicated in UI.
 - Structural comparison basis: config `refinedBorder.rectNorm` vs runtime `refinedBorder.rectNorm` per page.
