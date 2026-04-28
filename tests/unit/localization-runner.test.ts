@@ -1015,6 +1015,253 @@ describe('localization-runner', () => {
       expect(result.fields[0].bbox.yNorm).toBeCloseTo(0.2, 6);
     });
 
+    it('uses a parent-object candidate when matched-object is unavailable, sourcing the parent rects', async () => {
+      const runner = createLocalizationRunner();
+
+      // Config model has a parent container and a (notional) primary anchor
+      // child. Only the parent gets a runtime match; the parent-object
+      // candidate carries the parent's affine.
+      const parentConfigModel: StructuralModel = {
+        ...baseConfigModel,
+        id: 'config_parent',
+        documentFingerprint: 'config_parent-fingerprint',
+        pages: [
+          {
+            ...baseConfigModel.pages[0],
+            objectHierarchy: {
+              objects: [
+                {
+                  objectId: 'cfg_parent',
+                  type: 'container',
+                  objectRectNorm: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.5, hNorm: 0.5 },
+                  bbox: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.5, hNorm: 0.5 },
+                  parentObjectId: null,
+                  childObjectIds: ['cfg_child'],
+                  confidence: 0.9
+                },
+                {
+                  objectId: 'cfg_child',
+                  type: 'rectangle',
+                  objectRectNorm: { xNorm: 0.25, yNorm: 0.2, wNorm: 0.2, hNorm: 0.1 },
+                  bbox: { xNorm: 0.25, yNorm: 0.2, wNorm: 0.2, hNorm: 0.1 },
+                  parentObjectId: 'cfg_parent',
+                  childObjectIds: [],
+                  confidence: 0.85
+                }
+              ]
+            }
+          }
+        ]
+      };
+
+      const parentRuntimeModel: StructuralModel = {
+        ...baseRuntimeModel,
+        id: 'runtime_parent',
+        documentFingerprint: 'runtime_parent-fingerprint',
+        pages: [
+          {
+            ...baseRuntimeModel.pages[0],
+            objectHierarchy: {
+              objects: [
+                {
+                  objectId: 'rt_parent',
+                  type: 'container',
+                  objectRectNorm: { xNorm: 0.3, yNorm: 0.2, wNorm: 0.5, hNorm: 0.5 },
+                  bbox: { xNorm: 0.3, yNorm: 0.2, wNorm: 0.5, hNorm: 0.5 },
+                  parentObjectId: null,
+                  childObjectIds: [],
+                  confidence: 0.9
+                }
+              ]
+            }
+          }
+        ]
+      };
+
+      // Affine maps cfg_parent (0.1,0.1,0.5,0.5) -> rt_parent (0.3,0.2,0.5,0.5):
+      // scaleX=1, scaleY=1, translateX=0.2, translateY=0.1.
+      const transformationModel: TransformationModel = {
+        schema: 'wrokit/transformation-model',
+        version: '1.0',
+        transformVersion: 'wrokit/transformation/v1',
+        id: 'xform_parent',
+        config: {
+          id: parentConfigModel.id,
+          documentFingerprint: parentConfigModel.documentFingerprint
+        },
+        runtime: {
+          id: parentRuntimeModel.id,
+          documentFingerprint: parentRuntimeModel.documentFingerprint
+        },
+        pages: [
+          {
+            pageIndex: 0,
+            levelSummaries: [],
+            objectMatches: [],
+            unmatchedConfigObjectIds: [],
+            unmatchedRuntimeObjectIds: [],
+            consensus: {
+              transform: null,
+              confidence: 0,
+              contributingMatchCount: 0,
+              outliers: [],
+              notes: [],
+              warnings: []
+            },
+            fieldAlignments: [
+              {
+                fieldId: 'invoice_number',
+                candidates: [
+                  {
+                    source: 'parent-object',
+                    fallbackOrder: 0,
+                    configObjectId: 'cfg_parent',
+                    runtimeObjectId: 'rt_parent',
+                    transform: { scaleX: 1, scaleY: 1, translateX: 0.2, translateY: 0.1 },
+                    relativeFieldRect: { xRatio: 0.3, yRatio: 0.2, wRatio: 0.4, hRatio: 0.2 },
+                    confidence: 0.78,
+                    notes: []
+                  }
+                ],
+                warnings: []
+              }
+            ],
+            notes: [],
+            warnings: []
+          }
+        ],
+        overallConfidence: 0,
+        notes: [],
+        warnings: [],
+        createdAtIso: '2026-04-27T00:00:00Z'
+      };
+
+      const result = await runner.run({
+        wizardId: 'Invoice Wizard',
+        configGeometry,
+        configStructuralModel: parentConfigModel,
+        runtimeStructuralModel: parentRuntimeModel,
+        runtimePages: [runtimePage],
+        transformationModel,
+        predictedId: 'pred_tm_parent',
+        nowIso: '2026-04-27T00:00:00Z'
+      });
+
+      expect(result.fields).toHaveLength(1);
+      const predicted = result.fields[0];
+      expect(predicted.anchorTierUsed).toBe('field-object-b');
+      // sourceConfigRectNorm must be the *parent* config rect, not the child's
+      // primary-anchor rect.
+      expect(predicted.transform.sourceConfigRectNorm).toEqual(
+        parentConfigModel.pages[0].objectHierarchy.objects[0].objectRectNorm
+      );
+      expect(predicted.transform.sourceRuntimeRectNorm).toEqual(
+        parentRuntimeModel.pages[0].objectHierarchy.objects[0].objectRectNorm
+      );
+      expect(predicted.transform.configObjectId).toBe('cfg_parent');
+      expect(predicted.transform.runtimeObjectId).toBe('rt_parent');
+      expect(predicted.transform.objectMatchStrategy).toBe('type-hierarchy-geometry');
+      // Field bbox (0.25,0.20,0.20,0.10) under affine (1,1,0.2,0.1) ->
+      // (0.45,0.30,0.20,0.10).
+      expect(predicted.bbox.xNorm).toBeCloseTo(0.45, 6);
+      expect(predicted.bbox.yNorm).toBeCloseTo(0.3, 6);
+      expect(predicted.bbox.wNorm).toBeCloseTo(0.2, 6);
+      expect(predicted.bbox.hNorm).toBeCloseTo(0.1, 6);
+    });
+
+    it('uses a TransformationModel refined-border candidate sourced from the page refined-border rects', async () => {
+      const runner = createLocalizationRunner();
+      const transformationModel = buildTransformationModel([
+        {
+          source: 'refined-border',
+          fallbackOrder: 0,
+          configObjectId: null,
+          runtimeObjectId: null,
+          transform: { scaleX: 1, scaleY: 1, translateX: 0.1, translateY: 0.1 },
+          relativeFieldRect: { xRatio: 0.2, yRatio: 0.2, wRatio: 0.2, hRatio: 0.1 },
+          confidence: 0.7,
+          notes: []
+        }
+      ]);
+
+      const result = await runner.run({
+        wizardId: 'Invoice Wizard',
+        configGeometry,
+        configStructuralModel: baseConfigModel,
+        runtimeStructuralModel: baseRuntimeModel,
+        runtimePages: [runtimePage],
+        transformationModel,
+        predictedId: 'pred_tm_refined',
+        nowIso: '2026-04-27T00:00:00Z'
+      });
+
+      const predicted = result.fields[0];
+      expect(predicted.anchorTierUsed).toBe('refined-border');
+      expect(predicted.transform.basis).toBe('refined-border');
+      expect(predicted.transform.sourceConfigRectNorm).toEqual(
+        baseConfigModel.pages[0].refinedBorder.rectNorm
+      );
+      expect(predicted.transform.sourceRuntimeRectNorm).toEqual(
+        baseRuntimeModel.pages[0].refinedBorder.rectNorm
+      );
+      // refined-border candidates carry no object ids.
+      expect(predicted.transform.configObjectId).toBeUndefined();
+      expect(predicted.transform.runtimeObjectId).toBeUndefined();
+      expect(predicted.transform.objectMatchStrategy).toBeUndefined();
+      // Field bbox (0.25,0.20,0.20,0.10) under affine (1,1,0.1,0.1) ->
+      // (0.35,0.30,0.20,0.10).
+      expect(predicted.bbox.xNorm).toBeCloseTo(0.35, 6);
+      expect(predicted.bbox.yNorm).toBeCloseTo(0.3, 6);
+      expect(predicted.bbox.wNorm).toBeCloseTo(0.2, 6);
+      expect(predicted.bbox.hNorm).toBeCloseTo(0.1, 6);
+    });
+
+    it('uses a TransformationModel border candidate sourced from the page border rects', async () => {
+      const runner = createLocalizationRunner();
+      const transformationModel = buildTransformationModel([
+        {
+          source: 'border',
+          fallbackOrder: 0,
+          configObjectId: null,
+          runtimeObjectId: null,
+          transform: { scaleX: 1, scaleY: 1, translateX: 0.05, translateY: 0.05 },
+          relativeFieldRect: { xRatio: 0.25, yRatio: 0.2, wRatio: 0.2, hRatio: 0.1 },
+          confidence: 0.4,
+          notes: []
+        }
+      ]);
+
+      const result = await runner.run({
+        wizardId: 'Invoice Wizard',
+        configGeometry,
+        configStructuralModel: baseConfigModel,
+        runtimeStructuralModel: baseRuntimeModel,
+        runtimePages: [runtimePage],
+        transformationModel,
+        predictedId: 'pred_tm_border',
+        nowIso: '2026-04-27T00:00:00Z'
+      });
+
+      const predicted = result.fields[0];
+      expect(predicted.anchorTierUsed).toBe('border');
+      expect(predicted.transform.basis).toBe('border');
+      expect(predicted.transform.sourceConfigRectNorm).toEqual(
+        baseConfigModel.pages[0].border.rectNorm
+      );
+      expect(predicted.transform.sourceRuntimeRectNorm).toEqual(
+        baseRuntimeModel.pages[0].border.rectNorm
+      );
+      expect(predicted.transform.configObjectId).toBeUndefined();
+      expect(predicted.transform.runtimeObjectId).toBeUndefined();
+      expect(predicted.transform.objectMatchStrategy).toBeUndefined();
+      // Field bbox (0.25,0.20,0.20,0.10) under affine (1,1,0.05,0.05) ->
+      // (0.30,0.25,0.20,0.10).
+      expect(predicted.bbox.xNorm).toBeCloseTo(0.3, 6);
+      expect(predicted.bbox.yNorm).toBeCloseTo(0.25, 6);
+      expect(predicted.bbox.wNorm).toBeCloseTo(0.2, 6);
+      expect(predicted.bbox.hNorm).toBeCloseTo(0.1, 6);
+    });
+
     it('falls back to the legacy stable-anchor path when no field candidates are emitted', async () => {
       const runner = createLocalizationRunner();
       // Empty candidate list for this field — runner must use legacy resolution.
