@@ -2180,4 +2180,423 @@ describe('localization-runner', () => {
       expect(noRescue).toBeNull();
     });
   });
+
+  describe('multi-anchor validation and robustness checks', () => {
+    const baseConfigModel: StructuralModel = {
+      schema: 'wrokit/structural-model',
+      version: '3.0',
+      structureVersion: 'wrokit/structure/v2',
+      id: 'config_audit',
+      documentFingerprint: 'config_audit-fingerprint',
+      cvAdapter: { name: 'mock-cv', version: '1.0' },
+      pages: [
+        {
+          pageIndex: 0,
+          pageSurface: { pageIndex: 0, surfaceWidth: 1000, surfaceHeight: 2000 },
+          cvExecutionMode: 'opencv-runtime',
+          border: { rectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 } },
+          refinedBorder: {
+            rectNorm: { xNorm: 0.05, yNorm: 0.05, wNorm: 0.9, hNorm: 0.9 },
+            source: 'cv-content',
+            influencedByBBoxCount: 0,
+            containsAllSavedBBoxes: true
+          },
+          objectHierarchy: {
+            objects: [
+              {
+                objectId: 'cfg_a',
+                type: 'rectangle',
+                objectRectNorm: { xNorm: 0.2, yNorm: 0.2, wNorm: 0.4, hNorm: 0.4 },
+                bbox: { xNorm: 0.2, yNorm: 0.2, wNorm: 0.4, hNorm: 0.4 },
+                parentObjectId: null,
+                childObjectIds: [],
+                confidence: 0.9
+              },
+              {
+                objectId: 'cfg_b',
+                type: 'container',
+                objectRectNorm: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.5, hNorm: 0.5 },
+                bbox: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.5, hNorm: 0.5 },
+                parentObjectId: null,
+                childObjectIds: [],
+                confidence: 0.85
+              }
+            ]
+          },
+          pageAnchorRelations: {
+            objectToObject: [],
+            objectToRefinedBorder: [],
+            refinedBorderToBorder: {
+              relativeRect: { xRatio: 0.05, yRatio: 0.05, wRatio: 0.9, hRatio: 0.9 }
+            }
+          },
+          fieldRelationships: []
+        }
+      ],
+      createdAtIso: '2026-04-27T00:00:00Z'
+    };
+
+    const buildRuntimeModel = (
+      cvExecutionMode: 'opencv-runtime' | 'heuristic-fallback'
+    ): StructuralModel => ({
+      ...baseConfigModel,
+      id: 'runtime_audit',
+      documentFingerprint: 'runtime_audit-fingerprint',
+      pages: [
+        {
+          ...baseConfigModel.pages[0],
+          cvExecutionMode,
+          objectHierarchy: {
+            objects: [
+              {
+                objectId: 'rt_a',
+                type: 'rectangle',
+                objectRectNorm: { xNorm: 0.2, yNorm: 0.2, wNorm: 0.4, hNorm: 0.4 },
+                bbox: { xNorm: 0.2, yNorm: 0.2, wNorm: 0.4, hNorm: 0.4 },
+                parentObjectId: null,
+                childObjectIds: [],
+                confidence: 0.9
+              },
+              {
+                objectId: 'rt_b',
+                type: 'container',
+                objectRectNorm: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.5, hNorm: 0.5 },
+                bbox: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.5, hNorm: 0.5 },
+                parentObjectId: null,
+                childObjectIds: [],
+                confidence: 0.85
+              }
+            ]
+          }
+        }
+      ]
+    });
+
+    const buildAuditTransformationModel = (input: {
+      candidates: TransformationModel['pages'][number]['fieldAlignments'][number]['candidates'];
+      consensus?: TransformationModel['pages'][number]['consensus'];
+    }): TransformationModel => ({
+      schema: 'wrokit/transformation-model',
+      version: '1.0',
+      transformVersion: 'wrokit/transformation/v1',
+      id: 'xform_audit',
+      config: { id: baseConfigModel.id, documentFingerprint: baseConfigModel.documentFingerprint },
+      runtime: { id: 'runtime_audit', documentFingerprint: 'runtime_audit-fingerprint' },
+      pages: [
+        {
+          pageIndex: 0,
+          levelSummaries: [],
+          objectMatches: [],
+          unmatchedConfigObjectIds: [],
+          unmatchedRuntimeObjectIds: [],
+          consensus: input.consensus ?? {
+            transform: null,
+            confidence: 0,
+            contributingMatchCount: 0,
+            outliers: [],
+            notes: [],
+            warnings: []
+          },
+          fieldAlignments: [
+            {
+              fieldId: 'invoice_number',
+              candidates: input.candidates,
+              warnings: []
+            }
+          ],
+          notes: [],
+          warnings: []
+        }
+      ],
+      overallConfidence: 0,
+      notes: [],
+      warnings: [],
+      createdAtIso: '2026-04-27T00:00:00Z'
+    });
+
+    it('warns when two object-anchor candidates project to disagreeing boxes (A vs B)', async () => {
+      const runner = createLocalizationRunner();
+      // matched-object (A) projects field to (0.45, 0.50, 0.20, 0.10).
+      // parent-object (B) projects to (0.85, 0.80, 0.20, 0.10) — far away.
+      // IoU between the two projections is 0, well below 0.5 threshold.
+      const transformationModel = buildAuditTransformationModel({
+        candidates: [
+          {
+            source: 'matched-object',
+            fallbackOrder: 0,
+            configObjectId: 'cfg_a',
+            runtimeObjectId: 'rt_a',
+            transform: { scaleX: 1, scaleY: 1, translateX: 0.2, translateY: 0.3 },
+            relativeFieldRect: { xRatio: 0.125, yRatio: 0, wRatio: 0.5, hRatio: 0.25 },
+            confidence: 0.9,
+            notes: []
+          },
+          {
+            source: 'parent-object',
+            fallbackOrder: 1,
+            configObjectId: 'cfg_b',
+            runtimeObjectId: 'rt_b',
+            transform: { scaleX: 1, scaleY: 1, translateX: 0.6, translateY: 0.6 },
+            relativeFieldRect: { xRatio: 0.3, yRatio: 0.2, wRatio: 0.4, hRatio: 0.2 },
+            confidence: 0.7,
+            notes: []
+          }
+        ]
+      });
+
+      const result = await runner.run({
+        wizardId: 'Invoice Wizard',
+        configGeometry,
+        configStructuralModel: baseConfigModel,
+        runtimeStructuralModel: buildRuntimeModel('opencv-runtime'),
+        runtimePages: [runtimePage],
+        transformationModel,
+        predictedId: 'pred_audit_disagree',
+        nowIso: '2026-04-27T00:00:00Z'
+      });
+
+      const predicted = result.fields[0];
+      // Primary still wins — multi-anchor validation never silently mutates
+      // the chosen anchor (preserves working refined-border / border
+      // semantics).
+      expect(predicted.anchorTierUsed).toBe('field-object-a');
+      expect(predicted.warnings).toBeDefined();
+      expect(predicted.warnings?.some((w) => w.startsWith('anchor disagreement'))).toBe(true);
+      // The warning must name the disagreeing alternative.
+      expect(predicted.warnings?.some((w) => w.includes('parent-object(cfg_b)'))).toBe(true);
+    });
+
+    it('does not warn when the chosen anchor agrees with at least one alternative', async () => {
+      const runner = createLocalizationRunner();
+      // Both candidates produce the same projection.
+      const transformationModel = buildAuditTransformationModel({
+        candidates: [
+          {
+            source: 'matched-object',
+            fallbackOrder: 0,
+            configObjectId: 'cfg_a',
+            runtimeObjectId: 'rt_a',
+            transform: { scaleX: 1, scaleY: 1, translateX: 0.2, translateY: 0.3 },
+            relativeFieldRect: { xRatio: 0.125, yRatio: 0, wRatio: 0.5, hRatio: 0.25 },
+            confidence: 0.9,
+            notes: []
+          },
+          {
+            source: 'parent-object',
+            fallbackOrder: 1,
+            configObjectId: 'cfg_b',
+            runtimeObjectId: 'rt_b',
+            transform: { scaleX: 1, scaleY: 1, translateX: 0.2, translateY: 0.3 },
+            relativeFieldRect: { xRatio: 0.3, yRatio: 0.2, wRatio: 0.4, hRatio: 0.2 },
+            confidence: 0.7,
+            notes: []
+          }
+        ]
+      });
+
+      const result = await runner.run({
+        wizardId: 'Invoice Wizard',
+        configGeometry,
+        configStructuralModel: baseConfigModel,
+        runtimeStructuralModel: buildRuntimeModel('opencv-runtime'),
+        runtimePages: [runtimePage],
+        transformationModel,
+        predictedId: 'pred_audit_agree',
+        nowIso: '2026-04-27T00:00:00Z'
+      });
+
+      const predicted = result.fields[0];
+      const disagreeWarnings = (predicted.warnings ?? []).filter((w) =>
+        w.startsWith('anchor disagreement')
+      );
+      expect(disagreeWarnings).toHaveLength(0);
+    });
+
+    it('warns about a weak object match with no agreeing alternative', async () => {
+      const runner = createLocalizationRunner();
+      // Single low-confidence matched-object candidate, no other alternatives,
+      // no consensus — the runner cannot cross-check it.
+      const transformationModel = buildAuditTransformationModel({
+        candidates: [
+          {
+            source: 'matched-object',
+            fallbackOrder: 0,
+            configObjectId: 'cfg_a',
+            runtimeObjectId: 'rt_a',
+            transform: { scaleX: 1, scaleY: 1, translateX: 0.2, translateY: 0.3 },
+            relativeFieldRect: { xRatio: 0.125, yRatio: 0, wRatio: 0.5, hRatio: 0.25 },
+            confidence: 0.3,
+            notes: []
+          }
+        ]
+      });
+
+      const result = await runner.run({
+        wizardId: 'Invoice Wizard',
+        configGeometry,
+        configStructuralModel: baseConfigModel,
+        runtimeStructuralModel: buildRuntimeModel('opencv-runtime'),
+        runtimePages: [runtimePage],
+        transformationModel,
+        predictedId: 'pred_audit_weak',
+        nowIso: '2026-04-27T00:00:00Z'
+      });
+
+      const predicted = result.fields[0];
+      expect(predicted.warnings?.some((w) => w.startsWith('weak object match'))).toBe(true);
+    });
+
+    it('does not warn about a weak object match when a confident consensus is present', async () => {
+      const runner = createLocalizationRunner();
+      const transformationModel = buildAuditTransformationModel({
+        candidates: [
+          {
+            source: 'matched-object',
+            fallbackOrder: 0,
+            configObjectId: 'cfg_a',
+            runtimeObjectId: 'rt_a',
+            transform: { scaleX: 1, scaleY: 1, translateX: 0.2, translateY: 0.3 },
+            relativeFieldRect: { xRatio: 0.125, yRatio: 0, wRatio: 0.5, hRatio: 0.25 },
+            confidence: 0.3,
+            notes: []
+          }
+        ],
+        consensus: {
+          transform: { scaleX: 1, scaleY: 1, translateX: 0.2, translateY: 0.3 },
+          confidence: 0.9,
+          contributingMatchCount: 4,
+          outliers: [],
+          notes: [],
+          warnings: []
+        }
+      });
+
+      const result = await runner.run({
+        wizardId: 'Invoice Wizard',
+        configGeometry,
+        configStructuralModel: baseConfigModel,
+        runtimeStructuralModel: buildRuntimeModel('opencv-runtime'),
+        runtimePages: [runtimePage],
+        transformationModel,
+        predictedId: 'pred_audit_weak_with_consensus',
+        nowIso: '2026-04-27T00:00:00Z'
+      });
+
+      const predicted = result.fields[0];
+      const weakWarnings = (predicted.warnings ?? []).filter((w) =>
+        w.startsWith('weak object match')
+      );
+      // Consensus agrees with the chosen anchor (same affine), so neither a
+      // disagreement warning nor a weak-match warning should fire.
+      expect(weakWarnings).toHaveLength(0);
+    });
+
+    it('surfaces a top-level warning when config and runtime cvExecutionMode disagree', async () => {
+      const runner = createLocalizationRunner();
+      const result = await runner.run({
+        wizardId: 'Invoice Wizard',
+        configGeometry,
+        configStructuralModel: baseConfigModel, // opencv-runtime
+        runtimeStructuralModel: buildRuntimeModel('heuristic-fallback'),
+        runtimePages: [runtimePage],
+        predictedId: 'pred_audit_cv_mismatch',
+        nowIso: '2026-04-27T00:00:00Z'
+      });
+
+      expect(result.warnings).toBeDefined();
+      expect(result.warnings?.some((w) => w.includes('cvExecutionMode mismatch'))).toBe(true);
+      // Per-field warning is also surfaced so consumers can attribute the
+      // mismatch to the specific page that produced this prediction.
+      expect(result.fields[0].warnings?.some((w) => w.includes('cvExecutionMode mismatch'))).toBe(
+        true
+      );
+    });
+
+    it('does not emit cv-mismatch warnings when modes agree', async () => {
+      const runner = createLocalizationRunner();
+      const result = await runner.run({
+        wizardId: 'Invoice Wizard',
+        configGeometry,
+        configStructuralModel: baseConfigModel,
+        runtimeStructuralModel: buildRuntimeModel('opencv-runtime'),
+        runtimePages: [runtimePage],
+        predictedId: 'pred_audit_cv_match',
+        nowIso: '2026-04-27T00:00:00Z'
+      });
+
+      expect((result.warnings ?? []).some((w) => w.includes('cvExecutionMode mismatch'))).toBe(false);
+      expect(
+        (result.fields[0].warnings ?? []).some((w) => w.includes('cvExecutionMode mismatch'))
+      ).toBe(false);
+    });
+
+    it('exposes a unit-level evaluateAnchorAgreement helper', () => {
+      const chosen = {
+        tier: 'field-object-a' as const,
+        transform: {
+          pageIndex: 0,
+          basis: 'field-object-a' as const,
+          sourceConfigRectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 },
+          sourceRuntimeRectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 },
+          scaleX: 1,
+          scaleY: 1,
+          translateX: 0,
+          translateY: 0
+        },
+        predictedBox: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.1, hNorm: 0.1 }
+      };
+
+      const noAlternatives = __testing.evaluateAnchorAgreement({
+        chosen,
+        chosenLabel: 'matched-object(cfg_a)',
+        alternatives: [],
+        primaryCandidate: undefined,
+        hasConsensusAlternative: false
+      });
+      expect(noAlternatives).toEqual([]);
+
+      const agreeing = __testing.evaluateAnchorAgreement({
+        chosen,
+        chosenLabel: 'matched-object(cfg_a)',
+        alternatives: [
+          {
+            label: 'parent-object(cfg_b)',
+            predictedBox: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.1, hNorm: 0.1 }
+          }
+        ],
+        primaryCandidate: undefined,
+        hasConsensusAlternative: false
+      });
+      expect(agreeing).toEqual([]);
+
+      const disagreeing = __testing.evaluateAnchorAgreement({
+        chosen,
+        chosenLabel: 'matched-object(cfg_a)',
+        alternatives: [
+          {
+            label: 'parent-object(cfg_b)',
+            predictedBox: { xNorm: 0.8, yNorm: 0.8, wNorm: 0.1, hNorm: 0.1 }
+          }
+        ],
+        primaryCandidate: undefined,
+        hasConsensusAlternative: false
+      });
+      expect(disagreeing).toHaveLength(1);
+      expect(disagreeing[0]).toMatch(/anchor disagreement/);
+    });
+
+    it('exposes a unit-level collectCvModeMismatchWarnings helper', () => {
+      const config = baseConfigModel; // opencv-runtime on page 0
+      const runtimeMatch = buildRuntimeModel('opencv-runtime');
+      const runtimeMismatch = buildRuntimeModel('heuristic-fallback');
+
+      const matchResult = __testing.collectCvModeMismatchWarnings(config, runtimeMatch);
+      expect(matchResult.global).toEqual([]);
+      expect(matchResult.perPage.size).toBe(0);
+
+      const mismatchResult = __testing.collectCvModeMismatchWarnings(config, runtimeMismatch);
+      expect(mismatchResult.global).toHaveLength(1);
+      expect(mismatchResult.perPage.get(0)).toMatch(/cvExecutionMode mismatch/);
+    });
+  });
 });

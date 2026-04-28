@@ -30,6 +30,7 @@ import type {
   TransformationPage
 } from '../contracts/transformation-model';
 import { getPageSurface } from '../page-surface/page-surface';
+import { iouOfRects } from './transformation/transform-math';
 
 export type {
   PredictedFieldGeometry,
@@ -675,6 +676,142 @@ const findFieldCandidates = (
   return [...alignment.candidates].sort((a, b) => a.fallbackOrder - b.fallbackOrder);
 };
 
+/**
+ * IoU below which two projections are considered to *disagree* about where
+ * the field lives. Set conservatively — anchors derived from different
+ * structural objects or from a page-level consensus will rarely produce
+ * pixel-identical projections, so a moderately loose floor avoids spurious
+ * warnings while still flagging projections that genuinely point at
+ * different regions.
+ */
+const ANCHOR_AGREEMENT_IOU_MIN = 0.5;
+
+/**
+ * Below this `TransformationFieldCandidate.confidence` an object-anchor
+ * candidate is considered weak. A weak primary that can't be cross-checked
+ * (no agreeing alternative, no confident consensus) gets a warning so
+ * downstream consumers can inspect why the prediction is fragile.
+ */
+const WEAK_OBJECT_MATCH_CONFIDENCE = 0.5;
+
+interface AlternativeProjection {
+  label: string;
+  predictedBox: NormalizedBoundingBox;
+}
+
+const projectCandidateBox = (
+  source: FieldGeometry,
+  candidate: TransformationFieldCandidate,
+  configPage: StructuralPage,
+  runtimePage: StructuralPage
+): NormalizedBoundingBox | null => {
+  const projected = resolveFromTransformationCandidate(source, candidate, configPage, runtimePage);
+  return projected ? projected.predictedBox : null;
+};
+
+const projectConsensusBox = (
+  source: FieldGeometry,
+  consensus: TransformationConsensus
+): NormalizedBoundingBox | null => {
+  if (!consensus.transform || consensus.contributingMatchCount < 1) {
+    return null;
+  }
+  if (!Number.isFinite(consensus.confidence)) {
+    return null;
+  }
+  return applyTransformToBox(source.bbox, {
+    pageIndex: source.pageIndex,
+    basis: 'page-consensus',
+    scaleX: consensus.transform.scaleX,
+    scaleY: consensus.transform.scaleY,
+    translateX: consensus.transform.translateX,
+    translateY: consensus.transform.translateY
+  });
+};
+
+const labelForCandidate = (candidate: TransformationFieldCandidate): string => {
+  switch (candidate.source) {
+    case 'matched-object':
+      return `matched-object(${candidate.configObjectId ?? '?'})`;
+    case 'parent-object':
+      return `parent-object(${candidate.configObjectId ?? '?'})`;
+    case 'refined-border':
+      return 'refined-border';
+    case 'border':
+      return 'border';
+  }
+};
+
+/**
+ * IoU-based pairwise agreement check between the chosen anchor's projection
+ * and every other resolved projection (object anchors not used as primary,
+ * refined-border / border candidates, page consensus). Returns warnings —
+ * never mutates the chosen anchor — so refined-border and border fallback
+ * behavior is preserved.
+ */
+const evaluateAnchorAgreement = (input: {
+  chosen: AnchorResolution;
+  chosenLabel: string;
+  alternatives: readonly AlternativeProjection[];
+  primaryCandidate?: TransformationFieldCandidate;
+  hasConsensusAlternative: boolean;
+}): string[] => {
+  const { chosen, chosenLabel, alternatives, primaryCandidate, hasConsensusAlternative } = input;
+  const warnings: string[] = [];
+
+  if (alternatives.length === 0) {
+    if (
+      primaryCandidate &&
+      isObjectAnchorCandidate(primaryCandidate) &&
+      Number.isFinite(primaryCandidate.confidence) &&
+      primaryCandidate.confidence < WEAK_OBJECT_MATCH_CONFIDENCE &&
+      !hasConsensusAlternative
+    ) {
+      warnings.push(
+        `weak object match: ${chosenLabel} confidence ${primaryCandidate.confidence.toFixed(2)} ` +
+          `with no agreeing alternative anchor or page consensus to cross-check`
+      );
+    }
+    return warnings;
+  }
+
+  let bestIou = 0;
+  let bestLabel: string | null = null;
+  for (const alt of alternatives) {
+    const iou = iouOfRects(chosen.predictedBox, alt.predictedBox);
+    if (iou > bestIou) {
+      bestIou = iou;
+      bestLabel = alt.label;
+    }
+  }
+
+  if (bestIou >= ANCHOR_AGREEMENT_IOU_MIN) {
+    return warnings;
+  }
+
+  const altLabels = alternatives.map((alt) => alt.label).join(', ');
+  warnings.push(
+    `anchor disagreement: ${chosenLabel} disagrees with ${alternatives.length} alternative ` +
+      `projection(s) [${altLabels}]; max IoU ${bestIou.toFixed(2)} < ${ANCHOR_AGREEMENT_IOU_MIN.toFixed(2)} ` +
+      `(closest: ${bestLabel ?? 'n/a'})`
+  );
+
+  if (
+    primaryCandidate &&
+    isObjectAnchorCandidate(primaryCandidate) &&
+    Number.isFinite(primaryCandidate.confidence) &&
+    primaryCandidate.confidence < WEAK_OBJECT_MATCH_CONFIDENCE
+  ) {
+    warnings.push(
+      `weak object match: ${chosenLabel} confidence ${primaryCandidate.confidence.toFixed(2)} ` +
+        `with disagreeing alternatives`
+    );
+  }
+
+  return warnings;
+};
+
+
 const resolveFieldAnchor = (
   source: FieldGeometry,
   configPage: StructuralPage,
@@ -782,11 +919,12 @@ const resolveFieldAnchor = (
 const buildPredictedField = (
   source: FieldGeometry,
   runtimePage: NormalizedPage,
-  resolution: AnchorResolution
+  resolution: AnchorResolution,
+  warnings: readonly string[] = []
 ): PredictedFieldGeometry => {
   const runtimeSurface = getPageSurface(runtimePage);
 
-  return {
+  const result: PredictedFieldGeometry = {
     fieldId: source.fieldId,
     pageIndex: source.pageIndex,
     bbox: resolution.predictedBox,
@@ -801,11 +939,55 @@ const buildPredictedField = (
     anchorTierUsed: resolution.tier,
     transform: resolution.transform
   };
+
+  if (warnings.length > 0) {
+    result.warnings = [...warnings];
+  }
+  return result;
+};
+
+/**
+ * Build the per-page list of cv-mode mismatch warnings, keyed by pageIndex.
+ * Config and runtime pages are matched by pageIndex; pages absent from one
+ * side are not reported (callers will simply not localize them).
+ */
+const collectCvModeMismatchWarnings = (
+  configModel: StructuralModel,
+  runtimeModel: StructuralModel
+): {
+  perPage: Map<number, string>;
+  global: string[];
+} => {
+  const perPage = new Map<number, string>();
+  const global: string[] = [];
+
+  const runtimeByIndex = new Map(runtimeModel.pages.map((page) => [page.pageIndex, page]));
+  for (const configPage of configModel.pages) {
+    const runtimePage = runtimeByIndex.get(configPage.pageIndex);
+    if (!runtimePage) {
+      continue;
+    }
+    if (configPage.cvExecutionMode !== runtimePage.cvExecutionMode) {
+      const message =
+        `cvExecutionMode mismatch on page ${configPage.pageIndex}: ` +
+        `config=${configPage.cvExecutionMode} runtime=${runtimePage.cvExecutionMode} ` +
+        `(object detection thresholds may differ between Config and Runtime)`;
+      perPage.set(configPage.pageIndex, message);
+      global.push(message);
+    }
+  }
+
+  return { perPage, global };
 };
 
 export const createLocalizationRunner = (): LocalizationRunner => ({
   run: async (input) => {
     const runtimePagesByIndex = new Map(input.runtimePages.map((page) => [page.pageIndex, page]));
+
+    const cvMismatchWarnings = collectCvModeMismatchWarnings(
+      input.configStructuralModel,
+      input.runtimeStructuralModel
+    );
 
     const fields = input.configGeometry.fields
       .filter((field) => runtimePagesByIndex.has(field.pageIndex))
@@ -819,6 +1001,16 @@ export const createLocalizationRunner = (): LocalizationRunner => ({
         const runtimeStructuralPage = getStructuralPage(input.runtimeStructuralModel, field.pageIndex);
 
         let resolution: AnchorResolution | null = null;
+        let primaryCandidate: TransformationFieldCandidate | undefined;
+        let chosenLabel = 'legacy-stable-anchor';
+
+        // Multi-anchor validation: collect every alternative projection that
+        // would have been viable if the chosen primary had been unavailable.
+        // Used after resolution to compare via IoU and surface warnings when
+        // anchors disagree — closes the audit gap where the runner blindly
+        // trusted the first resolved anchor.
+        const alternatives: AlternativeProjection[] = [];
+        let hasConsensusAlternative = false;
 
         if (input.transformationModel) {
           const candidates = findFieldCandidates(
@@ -842,6 +1034,8 @@ export const createLocalizationRunner = (): LocalizationRunner => ({
             );
             if (candidateResolution) {
               resolution = candidateResolution;
+              primaryCandidate = candidate;
+              chosenLabel = labelForCandidate(candidate);
               break;
             }
 
@@ -873,6 +1067,8 @@ export const createLocalizationRunner = (): LocalizationRunner => ({
                 );
                 if (rescued) {
                   resolution = rescued;
+                  primaryCandidate = candidate;
+                  chosenLabel = `relational-rescue(${candidate.configObjectId})`;
                   break;
                 }
               }
@@ -895,6 +1091,9 @@ export const createLocalizationRunner = (): LocalizationRunner => ({
                 transformationPage.consensus,
                 CONSENSUS_RESCUE_MIN_CONFIDENCE
               );
+              if (resolution) {
+                chosenLabel = 'page-consensus';
+              }
             }
           }
 
@@ -914,7 +1113,50 @@ export const createLocalizationRunner = (): LocalizationRunner => ({
               );
               if (candidateResolution) {
                 resolution = candidateResolution;
+                primaryCandidate = candidate;
+                chosenLabel = labelForCandidate(candidate);
                 break;
+              }
+            }
+          }
+
+          // Build the alternative-projection set used to cross-check the
+          // chosen anchor. We deliberately project EVERY viable candidate
+          // (object, refined-border, border) and the consensus, except the
+          // one that produced `resolution`. This lets the agreement check
+          // detect cases where the matcher's first-place pick contradicts
+          // the rest of the evidence.
+          for (const candidate of candidates) {
+            if (primaryCandidate && candidate === primaryCandidate) {
+              continue;
+            }
+            const projected = projectCandidateBox(
+              field,
+              candidate,
+              configStructuralPage,
+              runtimeStructuralPage
+            );
+            if (projected) {
+              alternatives.push({
+                label: labelForCandidate(candidate),
+                predictedBox: projected
+              });
+            }
+          }
+
+          const transformationPage = findTransformationPage(
+            input.transformationModel,
+            field.pageIndex
+          );
+          if (transformationPage) {
+            const consensusBox = projectConsensusBox(field, transformationPage.consensus);
+            if (consensusBox) {
+              hasConsensusAlternative = true;
+              if (chosenLabel !== 'page-consensus') {
+                alternatives.push({
+                  label: 'page-consensus',
+                  predictedBox: consensusBox
+                });
               }
             }
           }
@@ -922,12 +1164,28 @@ export const createLocalizationRunner = (): LocalizationRunner => ({
 
         if (!resolution) {
           resolution = resolveFieldAnchor(field, configStructuralPage, runtimeStructuralPage);
+          if (chosenLabel === 'legacy-stable-anchor') {
+            chosenLabel = `legacy-${resolution.tier}`;
+          }
         }
 
-        return buildPredictedField(field, runtimePage, resolution);
+        const fieldWarnings = evaluateAnchorAgreement({
+          chosen: resolution,
+          chosenLabel,
+          alternatives,
+          primaryCandidate,
+          hasConsensusAlternative
+        });
+
+        const cvWarning = cvMismatchWarnings.perPage.get(field.pageIndex);
+        if (cvWarning) {
+          fieldWarnings.push(cvWarning);
+        }
+
+        return buildPredictedField(field, runtimePage, resolution, fieldWarnings);
       });
 
-    return {
+    const result: PredictedGeometryFile = {
       schema: 'wrokit/predicted-geometry-file',
       version: '1.0',
       geometryFileVersion: 'wrokit/geometry/v1',
@@ -938,8 +1196,11 @@ export const createLocalizationRunner = (): LocalizationRunner => ({
       sourceStructuralModelId: input.configStructuralModel.id,
       runtimeDocumentFingerprint: input.runtimeStructuralModel.documentFingerprint,
       predictedAtIso: input.nowIso ?? new Date().toISOString(),
-      fields
+      fields,
+      warnings: cvMismatchWarnings.global
     };
+
+    return result;
   }
 });
 
@@ -953,5 +1214,9 @@ export const __testing = {
   resolveFromConsensusRescue,
   resolveFromRelationalRescue,
   findFieldCandidates,
-  CONSENSUS_RESCUE_MIN_CONFIDENCE
+  evaluateAnchorAgreement,
+  collectCvModeMismatchWarnings,
+  CONSENSUS_RESCUE_MIN_CONFIDENCE,
+  ANCHOR_AGREEMENT_IOU_MIN,
+  WEAK_OBJECT_MATCH_CONFIDENCE
 };

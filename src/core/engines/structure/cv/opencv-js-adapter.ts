@@ -112,6 +112,51 @@ const MIN_OBJECT_AREA_PX = 36;
 const MIN_LINE_LENGTH_PX = 24;
 const MAX_LINE_THICKNESS_PX = 6;
 
+/**
+ * Page-size-relative floors used to keep object detection comparable across
+ * different raster sizes. The audit flagged that purely absolute pixel
+ * thresholds (`MIN_OBJECT_AREA_PX` etc.) under-detect on large rasters and
+ * over-detect on tiny ones.
+ *
+ * The runtime threshold is `Math.max(absoluteFloor, relativeFloor(page))`,
+ * so:
+ *   - on small synthetic surfaces (e.g. unit-test rasters), the absolute
+ *     floor wins and behavior is unchanged;
+ *   - on a 600×800 normalized page, relative ≈ absolute (calibrated below);
+ *   - on high-resolution pages the relative floor scales up.
+ *
+ * Calibrated so that at a ~600×800 reference surface the relative values
+ * land near the existing absolute constants.
+ */
+const MIN_OBJECT_AREA_FRAC_OF_PAGE = 0.0001; // 0.01% of pageArea
+const MIN_LINE_LENGTH_FRAC_OF_MIN_SIDE = 0.04; // 4% of min(W, H)
+const MAX_LINE_THICKNESS_FRAC_OF_MIN_SIDE = 0.01; // 1% of min(W, H)
+
+interface SizeRelativeThresholds {
+  minObjectAreaPx: number;
+  minLineLengthPx: number;
+  maxLineThicknessPx: number;
+}
+
+const computeSizeRelativeThresholds = (
+  surfaceWidth: number,
+  surfaceHeight: number
+): SizeRelativeThresholds => {
+  const pageArea = Math.max(1, surfaceWidth * surfaceHeight);
+  const minSide = Math.max(1, Math.min(surfaceWidth, surfaceHeight));
+  return {
+    minObjectAreaPx: Math.max(MIN_OBJECT_AREA_PX, Math.round(pageArea * MIN_OBJECT_AREA_FRAC_OF_PAGE)),
+    minLineLengthPx: Math.max(
+      MIN_LINE_LENGTH_PX,
+      Math.round(minSide * MIN_LINE_LENGTH_FRAC_OF_MIN_SIDE)
+    ),
+    maxLineThicknessPx: Math.max(
+      MAX_LINE_THICKNESS_PX,
+      Math.round(minSide * MAX_LINE_THICKNESS_FRAC_OF_MIN_SIDE)
+    )
+  };
+};
+
 interface PixelBounds {
   left: number;
   top: number;
@@ -198,7 +243,8 @@ const computeContentBoundsFromPixels = (
 
 const detectConnectedBounds = (
   pixels: ImageData,
-  backgroundThreshold: number
+  backgroundThreshold: number,
+  minObjectAreaPx: number
 ): PixelBounds[] => {
   const { width, height, data } = pixels;
   const visited = new Uint8Array(width * height);
@@ -268,7 +314,7 @@ const detectConnectedBounds = (
         }
       }
 
-      if (area >= MIN_OBJECT_AREA_PX) {
+      if (area >= minObjectAreaPx) {
         components.push({ left, top, right: right + 1, bottom: bottom + 1 });
       }
     }
@@ -279,7 +325,8 @@ const detectConnectedBounds = (
 
 const buildHeuristicLineObjects = (
   pixels: ImageData,
-  backgroundThreshold: number
+  backgroundThreshold: number,
+  thresholds: SizeRelativeThresholds
 ): CvSurfaceObject[] => {
   const { width, height, data } = pixels;
   const densityCutoff = 0.95;
@@ -318,7 +365,7 @@ const buildHeuristicLineObjects = (
   for (let y = 0; y <= height; y += 1) {
     const isHigh =
       y < height &&
-      rowForeground[y] >= MIN_LINE_LENGTH_PX &&
+      rowForeground[y] >= thresholds.minLineLengthPx &&
       rowForeground[y] / width >= densityCutoff;
     if (isHigh) {
       if (runStart < 0) {
@@ -329,7 +376,7 @@ const buildHeuristicLineObjects = (
       }
     } else if (runStart >= 0) {
       const thickness = y - runStart;
-      if (thickness <= MAX_LINE_THICKNESS_PX) {
+      if (thickness <= thresholds.maxLineThicknessPx) {
         horizontals.push({
           objectId: `obj_hline_${hLineId++}`,
           type: 'line-horizontal',
@@ -348,7 +395,7 @@ const buildHeuristicLineObjects = (
   for (let x = 0; x <= width; x += 1) {
     const isHigh =
       x < width &&
-      colForeground[x] >= MIN_LINE_LENGTH_PX &&
+      colForeground[x] >= thresholds.minLineLengthPx &&
       colForeground[x] / height >= densityCutoff;
     if (isHigh) {
       if (runStart < 0) {
@@ -359,7 +406,7 @@ const buildHeuristicLineObjects = (
       }
     } else if (runStart >= 0) {
       const thickness = x - runStart;
-      if (thickness <= MAX_LINE_THICKNESS_PX) {
+      if (thickness <= thresholds.maxLineThicknessPx) {
         verticals.push({
           objectId: `obj_vline_${vLineId++}`,
           type: 'line-vertical',
@@ -377,11 +424,12 @@ const buildHeuristicLineObjects = (
 
 const detectHeuristicSurfaceObjects = (
   pixels: ImageData,
-  backgroundThreshold: number
+  backgroundThreshold: number,
+  thresholds: SizeRelativeThresholds
 ): CvSurfaceObject[] => {
   const objects: CvSurfaceObject[] = [];
   const { width, height } = pixels;
-  const components = detectConnectedBounds(pixels, backgroundThreshold);
+  const components = detectConnectedBounds(pixels, backgroundThreshold, thresholds.minObjectAreaPx);
   let id = 0;
 
   for (const component of components) {
@@ -395,26 +443,29 @@ const detectHeuristicSurfaceObjects = (
     const pageArea = Math.max(1, width * height);
     objects.push({
       objectId: `obj_${id++}`,
-      type: classifyObjectType(rect, width, height),
+      type: classifyObjectType(rect, width, height, thresholds),
       bboxSurface: rect,
       confidence: Math.min(0.99, 0.62 + Math.min(1, area / pageArea) * 0.38)
     });
   }
 
-  objects.push(...buildHeuristicLineObjects(pixels, backgroundThreshold));
+  objects.push(...buildHeuristicLineObjects(pixels, backgroundThreshold, thresholds));
   return objects;
 };
 
 const classifyObjectType = (
   rect: { width: number; height: number },
   surfaceWidth: number,
-  surfaceHeight: number
+  surfaceHeight: number,
+  thresholds: SizeRelativeThresholds
 ): CvSurfaceObject['type'] => {
   const area = rect.width * rect.height;
   const pageArea = Math.max(1, surfaceWidth * surfaceHeight);
   const isContainer = area / pageArea >= 0.12;
-  const isHorizontalLine = rect.height <= MAX_LINE_THICKNESS_PX && rect.width >= MIN_LINE_LENGTH_PX;
-  const isVerticalLine = rect.width <= MAX_LINE_THICKNESS_PX && rect.height >= MIN_LINE_LENGTH_PX;
+  const isHorizontalLine =
+    rect.height <= thresholds.maxLineThicknessPx && rect.width >= thresholds.minLineLengthPx;
+  const isVerticalLine =
+    rect.width <= thresholds.maxLineThicknessPx && rect.height >= thresholds.minLineLengthPx;
   const isTableLike = rect.width >= surfaceWidth * 0.35 && rect.height >= surfaceHeight * 0.15;
 
   if (isHorizontalLine) {
@@ -435,7 +486,8 @@ const classifyObjectType = (
 const detectWithHeuristicFallback = (
   input: CvSurfaceRaster,
   backgroundThreshold: number,
-  minSidePx: number
+  minSidePx: number,
+  thresholds: SizeRelativeThresholds
 ): CvContentRectResult => {
   const bounds = computeContentBoundsFromPixels(input.pixels, backgroundThreshold);
   const { surface } = input;
@@ -477,7 +529,7 @@ const detectWithHeuristicFallback = (
       width,
       height
     },
-    objectsSurface: detectHeuristicSurfaceObjects(input.pixels, backgroundThreshold)
+    objectsSurface: detectHeuristicSurfaceObjects(input.pixels, backgroundThreshold, thresholds)
   };
 };
 
@@ -486,7 +538,8 @@ const buildObjectsFromContourRects = (
   surfaceWidth: number,
   surfaceHeight: number,
   idPrefix: string,
-  confidenceBase: number
+  confidenceBase: number,
+  thresholds: SizeRelativeThresholds
 ): CvSurfaceObject[] => {
   const pageArea = Math.max(1, surfaceWidth * surfaceHeight);
 
@@ -494,13 +547,13 @@ const buildObjectsFromContourRects = (
     .map((bounds, index) => {
       const rect = boundsToRect(clampRectToSurface(surfaceWidth, surfaceHeight, bounds));
       const area = rect.width * rect.height;
-      if (rect.width <= 0 || rect.height <= 0 || area < MIN_OBJECT_AREA_PX) {
+      if (rect.width <= 0 || rect.height <= 0 || area < thresholds.minObjectAreaPx) {
         return null;
       }
 
       return {
         objectId: `${idPrefix}_${index}`,
-        type: classifyObjectType(rect, surfaceWidth, surfaceHeight),
+        type: classifyObjectType(rect, surfaceWidth, surfaceHeight, thresholds),
         bboxSurface: rect,
         confidence: Math.min(0.99, confidenceBase + Math.min(1, area / pageArea) * (1 - confidenceBase))
       } satisfies CvSurfaceObject;
@@ -512,12 +565,13 @@ const lineRectFromSegment = (
   x1: number,
   y1: number,
   x2: number,
-  y2: number
+  y2: number,
+  minLineLengthPx: number
 ): PixelBounds | null => {
   const dx = Math.abs(x2 - x1);
   const dy = Math.abs(y2 - y1);
 
-  if (Math.max(dx, dy) < MIN_LINE_LENGTH_PX) {
+  if (Math.max(dx, dy) < minLineLengthPx) {
     return null;
   }
 
@@ -540,10 +594,14 @@ const lineRectFromSegment = (
   };
 };
 
-const detectLineRectsWithHough = (cv: OpenCvLikeRuntime, edgeMask: OpenCvMat): PixelBounds[] => {
+const detectLineRectsWithHough = (
+  cv: OpenCvLikeRuntime,
+  edgeMask: OpenCvMat,
+  minLineLengthPx: number
+): PixelBounds[] => {
   const lines = new cv.Mat();
   try {
-    cv.HoughLinesP(edgeMask, lines, 1, Math.PI / 180, 36, MIN_LINE_LENGTH_PX, 8);
+    cv.HoughLinesP(edgeMask, lines, 1, Math.PI / 180, 36, minLineLengthPx, 8);
     const data = lines.data32S;
     if (!data || data.length < 4) {
       return [];
@@ -551,7 +609,13 @@ const detectLineRectsWithHough = (cv: OpenCvLikeRuntime, edgeMask: OpenCvMat): P
 
     const lineRects: PixelBounds[] = [];
     for (let i = 0; i + 3 < data.length; i += 4) {
-      const candidate = lineRectFromSegment(data[i], data[i + 1], data[i + 2], data[i + 3]);
+      const candidate = lineRectFromSegment(
+        data[i],
+        data[i + 1],
+        data[i + 2],
+        data[i + 3],
+        minLineLengthPx
+      );
       if (candidate) {
         lineRects.push(candidate);
       }
@@ -592,7 +656,8 @@ const detectWithOpenCvRuntime = (
   cv: OpenCvLikeRuntime,
   input: CvSurfaceRaster,
   backgroundThreshold: number,
-  minSidePx: number
+  minSidePx: number,
+  thresholds: SizeRelativeThresholds
 ): CvContentRectResult => {
   const { pixels, surface } = input;
   const src = cv.matFromImageData(pixels);
@@ -651,7 +716,7 @@ const detectWithOpenCvRuntime = (
 
     let lineRects: PixelBounds[] = [];
     try {
-      lineRects = detectLineRectsWithHough(cv, edges);
+      lineRects = detectLineRectsWithHough(cv, edges, thresholds.minLineLengthPx);
     } catch {
       lineRects = [];
     }
@@ -661,14 +726,16 @@ const detectWithOpenCvRuntime = (
       surface.surfaceWidth,
       surface.surfaceHeight,
       'obj_cv',
-      0.62
+      0.62,
+      thresholds
     );
     const objectsFromLines = buildObjectsFromContourRects(
       lineRects,
       surface.surfaceWidth,
       surface.surfaceHeight,
       'obj_cv_line',
-      0.72
+      0.72,
+      thresholds
     );
 
     const contentBounds =
@@ -740,15 +807,26 @@ export const createOpenCvJsAdapter = (options: OpenCvJsAdapterOptions = {}): CvA
     detectContentRect: async (input: CvSurfaceRaster): Promise<CvContentRectResult> => {
       assertRasterMatchesSurface(input);
 
+      const thresholds = computeSizeRelativeThresholds(
+        input.surface.surfaceWidth,
+        input.surface.surfaceHeight
+      );
+
       const runtime = resolveOpenCvRuntime(runtimeOverride);
       if (!runtime) {
-        return detectWithHeuristicFallback(input, backgroundThreshold, minSidePx);
+        return detectWithHeuristicFallback(input, backgroundThreshold, minSidePx, thresholds);
       }
 
       try {
-        return detectWithOpenCvRuntime(runtime, input, backgroundThreshold, minSidePx);
+        return detectWithOpenCvRuntime(
+          runtime,
+          input,
+          backgroundThreshold,
+          minSidePx,
+          thresholds
+        );
       } catch {
-        return detectWithHeuristicFallback(input, backgroundThreshold, minSidePx);
+        return detectWithHeuristicFallback(input, backgroundThreshold, minSidePx, thresholds);
       }
     }
   };

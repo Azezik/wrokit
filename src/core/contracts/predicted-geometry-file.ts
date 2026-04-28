@@ -67,6 +67,14 @@ export interface PredictedFieldGeometry {
   sourceGeometryConfirmedBy: string;
   anchorTierUsed: RuntimeAnchorTier;
   transform: RuntimeStructuralTransform;
+  /**
+   * Inspectable signals raised while resolving this field. Anchor agreement
+   * checks, weak object matches, and per-field cv-mode mismatches surface
+   * here so downstream consumers can show or filter low-trust predictions
+   * without re-running the matcher. Optional for backwards compatibility;
+   * absent and `[]` mean the same thing.
+   */
+  warnings?: string[];
 }
 
 export interface PredictedGeometryFile {
@@ -81,6 +89,12 @@ export interface PredictedGeometryFile {
   runtimeDocumentFingerprint: string;
   predictedAtIso: string;
   fields: PredictedFieldGeometry[];
+  /**
+   * Document-level signals not bound to any single field — e.g. config and
+   * runtime structural pages that disagree on `cvExecutionMode`. Optional
+   * for backwards compatibility; absent and `[]` mean the same thing.
+   */
+  warnings?: string[];
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -196,6 +210,12 @@ const isRuntimeStructuralTransform = (value: unknown): value is RuntimeStructura
   return true;
 };
 
+const isStringArray = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+
+const isOptionalStringArray = (value: unknown): boolean =>
+  value === undefined || isStringArray(value);
+
 const isPredictedFieldGeometry = (value: unknown): value is PredictedFieldGeometry => {
   if (!isRecord(value)) {
     return false;
@@ -210,7 +230,8 @@ const isPredictedFieldGeometry = (value: unknown): value is PredictedFieldGeomet
     typeof value.sourceGeometryConfirmedBy === 'string' &&
     typeof value.anchorTierUsed === 'string' &&
     RUNTIME_ANCHOR_TIERS.has(value.anchorTierUsed as RuntimeAnchorTier) &&
-    isRuntimeStructuralTransform(value.transform)
+    isRuntimeStructuralTransform(value.transform) &&
+    isOptionalStringArray(value.warnings)
   );
 };
 
@@ -229,7 +250,8 @@ export const isPredictedGeometryFile = (value: unknown): value is PredictedGeome
     typeof value.sourceStructuralModelId !== 'string' ||
     typeof value.runtimeDocumentFingerprint !== 'string' ||
     typeof value.predictedAtIso !== 'string' ||
-    !Array.isArray(value.fields)
+    !Array.isArray(value.fields) ||
+    !isOptionalStringArray(value.warnings)
   ) {
     return false;
   }
