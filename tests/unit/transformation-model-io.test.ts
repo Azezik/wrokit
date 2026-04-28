@@ -19,8 +19,8 @@ const buildStructuralModel = (overrides: {
   documentFingerprint: string;
 }): StructuralModel => ({
   schema: 'wrokit/structural-model',
-  version: '3.0',
-  structureVersion: 'wrokit/structure/v2',
+  version: '4.0',
+  structureVersion: 'wrokit/structure/v3',
   id: overrides.id,
   documentFingerprint: overrides.documentFingerprint,
   cvAdapter: { name: 'opencv-js', version: '1.0' },
@@ -40,12 +40,12 @@ const buildStructuralModel = (overrides: {
         objects: [
           {
             objectId: 'obj_1',
-            type: 'container',
             objectRectNorm: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.8, hNorm: 0.8 },
             bbox: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.8, hNorm: 0.8 },
             parentObjectId: null,
             childObjectIds: [],
-            confidence: 0.9
+            confidence: 0.9,
+            depth: 0
           }
         ]
       },

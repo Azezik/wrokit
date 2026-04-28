@@ -6,6 +6,10 @@
  * pure filter/derivation helpers in this module guarantees the two features
  * stay behaviorally aligned. UI controls live in
  * `StructuralOverlayControls.tsx` and consume only this contract.
+ *
+ * The overlay treats every structural detection as just an "object" with a
+ * depth in the hierarchy. Nesting, opacity, and stroke weight convey
+ * parent/child relationships — there is no semantic-class styling.
  */
 
 import type { StructuralObjectNode } from '../../contracts/structural-model';
@@ -15,16 +19,15 @@ export type StructuralOverlayMode = 'simple' | 'advanced';
 export interface StructuralOverlayOptions {
   mode: StructuralOverlayMode;
   showStructuralObjects: boolean;
-  showLineObjects: boolean;
   showLabels: boolean;
   showContainmentChains: boolean;
   showAllObjects: boolean;
   showFieldAnchors: boolean;
   showTransformationMatches: boolean;
   /**
-   * Minimum object confidence to render. Always-visible structural object
-   * types (container, table-like, group/nested-region, header, footer) bypass
-   * this filter so the page skeleton stays readable.
+   * Minimum object confidence to render. Top-level (depth 0) parent objects
+   * always pass so the page skeleton stays readable; deeper objects respect
+   * this threshold unless `showAllObjects` is on.
    */
   minObjectConfidence: number;
 }
@@ -32,7 +35,6 @@ export interface StructuralOverlayOptions {
 export const SIMPLE_OVERLAY_OPTIONS: StructuralOverlayOptions = {
   mode: 'simple',
   showStructuralObjects: true,
-  showLineObjects: false,
   showLabels: false,
   showContainmentChains: false,
   showAllObjects: false,
@@ -44,7 +46,6 @@ export const SIMPLE_OVERLAY_OPTIONS: StructuralOverlayOptions = {
 export const ADVANCED_OVERLAY_OPTIONS: StructuralOverlayOptions = {
   mode: 'advanced',
   showStructuralObjects: true,
-  showLineObjects: true,
   showLabels: true,
   showContainmentChains: true,
   showAllObjects: true,
@@ -62,28 +63,16 @@ export const DEFAULT_STRUCTURAL_OVERLAY_OPTIONS = SIMPLE_OVERLAY_OPTIONS;
 export const overlayPresetForMode = (mode: StructuralOverlayMode): StructuralOverlayOptions =>
   mode === 'simple' ? SIMPLE_OVERLAY_OPTIONS : ADVANCED_OVERLAY_OPTIONS;
 
-const isLineType = (type: StructuralObjectNode['type']): boolean =>
-  type === 'line-horizontal' || type === 'line-vertical';
-
-const isAlwaysVisibleType = (type: StructuralObjectNode['type']): boolean =>
-  type === 'container' ||
-  type === 'table-like' ||
-  type === 'group-region' ||
-  type === 'nested-region' ||
-  type === 'header' ||
-  type === 'footer';
-
 export const objectPassesOverlayFilter = (
   object: StructuralObjectNode,
   options: StructuralOverlayOptions
 ): boolean => {
-  if (!options.showLineObjects && isLineType(object.type)) {
-    return false;
-  }
   if (options.showAllObjects) {
     return true;
   }
-  if (isAlwaysVisibleType(object.type)) {
+  // Top-level (depth 0) objects are the page skeleton; keep them visible
+  // even at low confidence so the hierarchy is intelligible.
+  if (object.depth === 0) {
     return true;
   }
   return object.confidence >= options.minObjectConfidence;
@@ -106,7 +95,6 @@ export const optionsMatchPreset = (
   const preset = overlayPresetForMode(mode);
   return (
     options.showStructuralObjects === preset.showStructuralObjects &&
-    options.showLineObjects === preset.showLineObjects &&
     options.showLabels === preset.showLabels &&
     options.showContainmentChains === preset.showContainmentChains &&
     options.showAllObjects === preset.showAllObjects &&

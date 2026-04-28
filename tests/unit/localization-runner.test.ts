@@ -49,8 +49,8 @@ const configGeometry: GeometryFile = {
 
 const createModel = (id: string, xNorm: number, yNorm: number, wNorm: number, hNorm: number): StructuralModel => ({
   schema: 'wrokit/structural-model',
-  version: '3.0',
-  structureVersion: 'wrokit/structure/v2',
+  version: '4.0',
+  structureVersion: 'wrokit/structure/v3',
   id,
   documentFingerprint: `${id}-fingerprint`,
   cvAdapter: { name: 'opencv-js', version: '1.0' },
@@ -411,91 +411,95 @@ describe('localization-runner', () => {
       [
         {
           objectId: 'obj_container',
-          type: 'container',
           objectRectNorm: { xNorm: 0.2, yNorm: 0.2, wNorm: 0.5, hNorm: 0.4 },
           bbox: { xNorm: 0.2, yNorm: 0.2, wNorm: 0.5, hNorm: 0.4 },
           parentObjectId: null,
           childObjectIds: ['obj_child'],
-          confidence: 0.9
+          confidence: 0.9,
+          depth: 0
         },
         {
           objectId: 'obj_child',
-          type: 'rectangle',
           objectRectNorm: { xNorm: 0.25, yNorm: 0.25, wNorm: 0.1, hNorm: 0.1 },
           bbox: { xNorm: 0.25, yNorm: 0.25, wNorm: 0.1, hNorm: 0.1 },
           parentObjectId: 'obj_container',
           childObjectIds: [],
-          confidence: 0.8
+          confidence: 0.8,
+          depth: 0
         },
         {
           objectId: 'obj_sibling',
-          type: 'container',
           objectRectNorm: { xNorm: 0.72, yNorm: 0.2, wNorm: 0.2, hNorm: 0.2 },
           bbox: { xNorm: 0.72, yNorm: 0.2, wNorm: 0.2, hNorm: 0.2 },
           parentObjectId: null,
           childObjectIds: [],
-          confidence: 0.8
+          confidence: 0.8,
+          depth: 0
         },
         {
           objectId: 'obj_adjacent',
-          type: 'container',
           objectRectNorm: { xNorm: 0.2, yNorm: 0.62, wNorm: 0.2, hNorm: 0.2 },
           bbox: { xNorm: 0.2, yNorm: 0.62, wNorm: 0.2, hNorm: 0.2 },
           parentObjectId: null,
           childObjectIds: [],
-          confidence: 0.8
+          confidence: 0.8,
+          depth: 0
         }
       ],
       'obj_container'
     );
 
+    // Same-document scenario: object ids match between config and runtime.
+    // The test asserts the containment-chain anchor (C = obj_container) is
+    // tried before the nearest sibling/adjacent anchors (A/B), so the field
+    // resolves through C even though A and B exist in runtime.
     const runtimePageStructural = buildPage(
       [
         {
-          objectId: 'obj_runtime_container',
-          type: 'container',
+          objectId: 'obj_container',
           objectRectNorm: { xNorm: 0.3, yNorm: 0.25, wNorm: 0.45, hNorm: 0.4 },
           bbox: { xNorm: 0.3, yNorm: 0.25, wNorm: 0.45, hNorm: 0.4 },
           parentObjectId: null,
-          childObjectIds: ['obj_runtime_child'],
-          confidence: 0.9
+          childObjectIds: ['obj_child'],
+          confidence: 0.9,
+          depth: 0
         },
         {
-          objectId: 'obj_runtime_child',
-          type: 'rectangle',
+          objectId: 'obj_child',
           objectRectNorm: { xNorm: 0.35, yNorm: 0.3, wNorm: 0.08, hNorm: 0.08 },
           bbox: { xNorm: 0.35, yNorm: 0.3, wNorm: 0.08, hNorm: 0.08 },
-          parentObjectId: 'obj_runtime_container',
+          parentObjectId: 'obj_container',
           childObjectIds: [],
-          confidence: 0.7
+          confidence: 0.7,
+          depth: 0
         },
         {
           objectId: 'obj_sibling',
-          type: 'container',
           objectRectNorm: { xNorm: 0.7, yNorm: 0.18, wNorm: 0.2, hNorm: 0.2 },
           bbox: { xNorm: 0.7, yNorm: 0.18, wNorm: 0.2, hNorm: 0.2 },
           parentObjectId: null,
           childObjectIds: [],
-          confidence: 0.8
+          confidence: 0.8,
+          depth: 0
         },
         {
           objectId: 'obj_adjacent',
-          type: 'container',
           objectRectNorm: { xNorm: 0.22, yNorm: 0.64, wNorm: 0.2, hNorm: 0.2 },
           bbox: { xNorm: 0.22, yNorm: 0.64, wNorm: 0.2, hNorm: 0.2 },
           parentObjectId: null,
           childObjectIds: [],
-          confidence: 0.8
+          confidence: 0.8,
+          depth: 0
         }
       ],
-      'obj_runtime_container'
+      'obj_container'
     );
 
     const resolution = __testing.resolveFieldAnchor(field, configPage, runtimePageStructural);
     expect(resolution.tier).toBe('field-object-c');
     expect(resolution.transform.configObjectId).toBe('obj_container');
-    expect(resolution.transform.runtimeObjectId).toBe('obj_runtime_container');
-    expect(resolution.transform.objectMatchStrategy).toBe('type-hierarchy-geometry');
+    expect(resolution.transform.runtimeObjectId).toBe('obj_container');
+    expect(resolution.transform.objectMatchStrategy).toBe('id');
   });
 
   it('uses deterministic fallback order A -> B -> C -> Refined -> Border', () => {
@@ -560,30 +564,30 @@ describe('localization-runner', () => {
       [
         {
           objectId: 'obj_a',
-          type: 'header',
           objectRectNorm: { xNorm: 0.2, yNorm: 0.2, wNorm: 0.3, hNorm: 0.3 },
           bbox: { xNorm: 0.2, yNorm: 0.2, wNorm: 0.3, hNorm: 0.3 },
           parentObjectId: null,
           childObjectIds: [],
-          confidence: 0.9
+          confidence: 0.9,
+          depth: 0
         },
         {
           objectId: 'obj_b',
-          type: 'container',
           objectRectNorm: { xNorm: 0.55, yNorm: 0.2, wNorm: 0.2, hNorm: 0.3 },
           bbox: { xNorm: 0.55, yNorm: 0.2, wNorm: 0.2, hNorm: 0.3 },
           parentObjectId: null,
           childObjectIds: [],
-          confidence: 0.85
+          confidence: 0.85,
+          depth: 0
         },
         {
           objectId: 'obj_c',
-          type: 'rectangle',
           objectRectNorm: { xNorm: 0.2, yNorm: 0.55, wNorm: 0.25, hNorm: 0.2 },
           bbox: { xNorm: 0.2, yNorm: 0.55, wNorm: 0.25, hNorm: 0.2 },
           parentObjectId: null,
           childObjectIds: [],
-          confidence: 0.8
+          confidence: 0.8,
+          depth: 0
         }
       ],
       ['obj_a', 'obj_b', 'obj_c']
@@ -593,30 +597,30 @@ describe('localization-runner', () => {
       [
         {
           objectId: 'obj_a',
-          type: 'header',
           objectRectNorm: { xNorm: 0.21, yNorm: 0.22, wNorm: 0.3, hNorm: 0.3 },
           bbox: { xNorm: 0.21, yNorm: 0.22, wNorm: 0.3, hNorm: 0.3 },
           parentObjectId: null,
           childObjectIds: [],
-          confidence: 0.9
+          confidence: 0.9,
+          depth: 0
         },
         {
           objectId: 'obj_b',
-          type: 'container',
           objectRectNorm: { xNorm: 0.56, yNorm: 0.22, wNorm: 0.2, hNorm: 0.3 },
           bbox: { xNorm: 0.56, yNorm: 0.22, wNorm: 0.2, hNorm: 0.3 },
           parentObjectId: null,
           childObjectIds: [],
-          confidence: 0.85
+          confidence: 0.85,
+          depth: 0
         },
         {
           objectId: 'obj_c',
-          type: 'rectangle',
           objectRectNorm: { xNorm: 0.22, yNorm: 0.56, wNorm: 0.25, hNorm: 0.2 },
           bbox: { xNorm: 0.22, yNorm: 0.56, wNorm: 0.25, hNorm: 0.2 },
           parentObjectId: null,
           childObjectIds: [],
-          confidence: 0.8
+          confidence: 0.8,
+          depth: 0
         }
       ],
       ['obj_a', 'obj_b', 'obj_c']
@@ -673,30 +677,30 @@ describe('localization-runner', () => {
       const objects: StructuralObjectNode[] = [
         {
           objectId: 'obj_counter',
-          type: 'container',
           objectRectNorm: counter,
           bbox: counter,
           parentObjectId: null,
           childObjectIds: ['obj_drawer'],
-          confidence: 0.9
+          confidence: 0.9,
+          depth: 0
         },
         {
           objectId: 'obj_drawer',
-          type: 'container',
           objectRectNorm: drawer,
           bbox: drawer,
           parentObjectId: 'obj_counter',
           childObjectIds: ['obj_tray'],
-          confidence: 0.88
+          confidence: 0.88,
+          depth: 0
         },
         {
           objectId: 'obj_tray',
-          type: 'container',
           objectRectNorm: tray,
           bbox: tray,
           parentObjectId: 'obj_drawer',
           childObjectIds: [],
-          confidence: 0.86
+          confidence: 0.86,
+          depth: 0
         }
       ];
 
@@ -726,8 +730,8 @@ describe('localization-runner', () => {
 
       return {
         schema: 'wrokit/structural-model',
-        version: '3.0',
-        structureVersion: 'wrokit/structure/v2',
+        version: '4.0',
+        structureVersion: 'wrokit/structure/v3',
         id,
         documentFingerprint: `${id}-fingerprint`,
         cvAdapter: { name: 'mock-cv', version: '1.0' },
@@ -896,30 +900,30 @@ describe('localization-runner', () => {
     const configPage = buildPage([
       {
         objectId: 'cfg_counter',
-        type: 'container',
         objectRectNorm: { xNorm: 0.2, yNorm: 0.2, wNorm: 0.6, hNorm: 0.5 },
         bbox: { xNorm: 0.2, yNorm: 0.2, wNorm: 0.6, hNorm: 0.5 },
         parentObjectId: null,
         childObjectIds: ['cfg_drawer'],
-        confidence: 0.9
+        confidence: 0.9,
+          depth: 0
       },
       {
         objectId: 'cfg_drawer',
-        type: 'container',
         objectRectNorm: { xNorm: 0.3, yNorm: 0.4, wNorm: 0.2, hNorm: 0.15 },
         bbox: { xNorm: 0.3, yNorm: 0.4, wNorm: 0.2, hNorm: 0.15 },
         parentObjectId: 'cfg_counter',
         childObjectIds: ['cfg_tray'],
-        confidence: 0.88
+        confidence: 0.88,
+          depth: 0
       },
       {
         objectId: 'cfg_tray',
-        type: 'container',
         objectRectNorm: { xNorm: 0.31, yNorm: 0.41, wNorm: 0.08, hNorm: 0.03 },
         bbox: { xNorm: 0.31, yNorm: 0.41, wNorm: 0.08, hNorm: 0.03 },
         parentObjectId: 'cfg_drawer',
         childObjectIds: [],
-        confidence: 0.86
+        confidence: 0.86,
+          depth: 0
       }
     ]);
 
@@ -929,39 +933,39 @@ describe('localization-runner', () => {
     const runtimePageStructural = buildPage([
       {
         objectId: 'runtime_decoy_tray',
-        type: 'container',
         objectRectNorm: { xNorm: 0.33, yNorm: 0.41, wNorm: 0.08, hNorm: 0.03 },
         bbox: { xNorm: 0.33, yNorm: 0.41, wNorm: 0.08, hNorm: 0.03 },
         parentObjectId: null,
         childObjectIds: [],
-        confidence: 0.86
+        confidence: 0.86,
+          depth: 0
       },
       {
         objectId: 'runtime_counter',
-        type: 'container',
         objectRectNorm: { xNorm: 0.4, yNorm: 0.2, wNorm: 0.55, hNorm: 0.5 },
         bbox: { xNorm: 0.4, yNorm: 0.2, wNorm: 0.55, hNorm: 0.5 },
         parentObjectId: null,
         childObjectIds: ['runtime_drawer'],
-        confidence: 0.9
+        confidence: 0.9,
+          depth: 0
       },
       {
         objectId: 'runtime_drawer',
-        type: 'container',
         objectRectNorm: { xNorm: 0.5, yNorm: 0.4, wNorm: 0.2, hNorm: 0.15 },
         bbox: { xNorm: 0.5, yNorm: 0.4, wNorm: 0.2, hNorm: 0.15 },
         parentObjectId: 'runtime_counter',
         childObjectIds: ['runtime_real_tray'],
-        confidence: 0.88
+        confidence: 0.88,
+          depth: 0
       },
       {
         objectId: 'runtime_real_tray',
-        type: 'container',
         objectRectNorm: { xNorm: 0.51, yNorm: 0.41, wNorm: 0.08, hNorm: 0.03 },
         bbox: { xNorm: 0.51, yNorm: 0.41, wNorm: 0.08, hNorm: 0.03 },
         parentObjectId: 'runtime_drawer',
         childObjectIds: [],
-        confidence: 0.86
+        confidence: 0.86,
+          depth: 0
       }
     ]);
 
@@ -975,8 +979,8 @@ describe('localization-runner', () => {
   describe('TransformationModel-driven localization', () => {
     const baseConfigModel: StructuralModel = {
       schema: 'wrokit/structural-model',
-      version: '3.0',
-      structureVersion: 'wrokit/structure/v2',
+      version: '4.0',
+      structureVersion: 'wrokit/structure/v3',
       id: 'config_tm',
       documentFingerprint: 'config_tm-fingerprint',
       cvAdapter: { name: 'mock-cv', version: '1.0' },
@@ -996,12 +1000,12 @@ describe('localization-runner', () => {
             objects: [
               {
                 objectId: 'cfg_box',
-                type: 'rectangle',
                 objectRectNorm: { xNorm: 0.2, yNorm: 0.2, wNorm: 0.4, hNorm: 0.4 },
                 bbox: { xNorm: 0.2, yNorm: 0.2, wNorm: 0.4, hNorm: 0.4 },
                 parentObjectId: null,
                 childObjectIds: [],
-                confidence: 0.9
+                confidence: 0.9,
+          depth: 0
               }
             ]
           },
@@ -1029,12 +1033,12 @@ describe('localization-runner', () => {
             objects: [
               {
                 objectId: 'rt_box',
-                type: 'rectangle',
                 objectRectNorm: { xNorm: 0.4, yNorm: 0.5, wNorm: 0.4, hNorm: 0.4 },
                 bbox: { xNorm: 0.4, yNorm: 0.5, wNorm: 0.4, hNorm: 0.4 },
                 parentObjectId: null,
                 childObjectIds: [],
-                confidence: 0.9
+                confidence: 0.9,
+          depth: 0
               }
             ]
           }
@@ -1235,21 +1239,21 @@ describe('localization-runner', () => {
               objects: [
                 {
                   objectId: 'cfg_parent',
-                  type: 'container',
                   objectRectNorm: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.5, hNorm: 0.5 },
                   bbox: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.5, hNorm: 0.5 },
                   parentObjectId: null,
                   childObjectIds: ['cfg_child'],
-                  confidence: 0.9
+                  confidence: 0.9,
+          depth: 0
                 },
                 {
                   objectId: 'cfg_child',
-                  type: 'rectangle',
                   objectRectNorm: { xNorm: 0.25, yNorm: 0.2, wNorm: 0.2, hNorm: 0.1 },
                   bbox: { xNorm: 0.25, yNorm: 0.2, wNorm: 0.2, hNorm: 0.1 },
                   parentObjectId: 'cfg_parent',
                   childObjectIds: [],
-                  confidence: 0.85
+                  confidence: 0.85,
+          depth: 0
                 }
               ]
             }
@@ -1268,12 +1272,12 @@ describe('localization-runner', () => {
               objects: [
                 {
                   objectId: 'rt_parent',
-                  type: 'container',
                   objectRectNorm: { xNorm: 0.3, yNorm: 0.2, wNorm: 0.5, hNorm: 0.5 },
                   bbox: { xNorm: 0.3, yNorm: 0.2, wNorm: 0.5, hNorm: 0.5 },
                   parentObjectId: null,
                   childObjectIds: [],
-                  confidence: 0.9
+                  confidence: 0.9,
+          depth: 0
                 }
               ]
             }
@@ -1753,21 +1757,21 @@ describe('localization-runner', () => {
             objects: [
               {
                 objectId: 'cfg_parent',
-                type: 'container',
                 objectRectNorm: { xNorm: 0.10, yNorm: 0.10, wNorm: 0.50, hNorm: 0.50 },
                 bbox: { xNorm: 0.10, yNorm: 0.10, wNorm: 0.50, hNorm: 0.50 },
                 parentObjectId: null,
                 childObjectIds: ['cfg_child'],
-                confidence: 0.9
+                confidence: 0.9,
+          depth: 0
               },
               {
                 objectId: 'cfg_child',
-                type: 'rectangle',
                 objectRectNorm: { xNorm: 0.25, yNorm: 0.20, wNorm: 0.20, hNorm: 0.10 },
                 bbox: { xNorm: 0.25, yNorm: 0.20, wNorm: 0.20, hNorm: 0.10 },
                 parentObjectId: 'cfg_parent',
                 childObjectIds: [],
-                confidence: 0.85
+                confidence: 0.85,
+          depth: 0
               }
             ]
           },
@@ -1841,12 +1845,12 @@ describe('localization-runner', () => {
               objects: [
                 {
                   objectId: 'cfg_parent',
-                  type: 'container',
                   objectRectNorm: { xNorm: 0.30, yNorm: 0.20, wNorm: 0.50, hNorm: 0.50 },
                   bbox: { xNorm: 0.30, yNorm: 0.20, wNorm: 0.50, hNorm: 0.50 },
                   parentObjectId: null,
                   childObjectIds: [],
-                  confidence: 0.9
+                  confidence: 0.9,
+          depth: 0
                 }
               ]
             }
@@ -1969,12 +1973,12 @@ describe('localization-runner', () => {
               objects: [
                 {
                   objectId: 'cfg_parent',
-                  type: 'container',
                   objectRectNorm: { xNorm: 0.30, yNorm: 0.20, wNorm: 0.50, hNorm: 0.50 },
                   bbox: { xNorm: 0.30, yNorm: 0.20, wNorm: 0.50, hNorm: 0.50 },
                   parentObjectId: null,
                   childObjectIds: [],
-                  confidence: 0.9
+                  confidence: 0.9,
+          depth: 0
                 }
               ]
             }
@@ -2083,21 +2087,21 @@ describe('localization-runner', () => {
               objects: [
                 {
                   objectId: 'rt_alt_a',
-                  type: 'container',
                   objectRectNorm: { xNorm: 0.30, yNorm: 0.20, wNorm: 0.50, hNorm: 0.50 },
                   bbox: { xNorm: 0.30, yNorm: 0.20, wNorm: 0.50, hNorm: 0.50 },
                   parentObjectId: null,
                   childObjectIds: [],
-                  confidence: 0.9
+                  confidence: 0.9,
+          depth: 0
                 },
                 {
                   objectId: 'rt_alt_b',
-                  type: 'container',
                   objectRectNorm: { xNorm: 0.05, yNorm: 0.55, wNorm: 0.40, hNorm: 0.40 },
                   bbox: { xNorm: 0.05, yNorm: 0.55, wNorm: 0.40, hNorm: 0.40 },
                   parentObjectId: null,
                   childObjectIds: [],
-                  confidence: 0.85
+                  confidence: 0.85,
+          depth: 0
                 }
               ]
             }
@@ -2216,21 +2220,21 @@ describe('localization-runner', () => {
         objects: [
           {
             objectId: 'obj_outer',
-            type: 'container',
             objectRectNorm: { xNorm: 0.10, yNorm: 0.10, wNorm: 0.50, hNorm: 0.50 },
             bbox: { xNorm: 0.10, yNorm: 0.10, wNorm: 0.50, hNorm: 0.50 },
             parentObjectId: null,
             childObjectIds: ['obj_inner'],
-            confidence: 0.9
+            confidence: 0.9,
+          depth: 0
           },
           {
             objectId: 'obj_inner',
-            type: 'rectangle',
             objectRectNorm: { xNorm: 0.25, yNorm: 0.25, wNorm: 0.20, hNorm: 0.20 },
             bbox: { xNorm: 0.25, yNorm: 0.25, wNorm: 0.20, hNorm: 0.20 },
             parentObjectId: 'obj_outer',
             childObjectIds: [],
-            confidence: 0.85
+            confidence: 0.85,
+          depth: 0
           }
         ]
       },
@@ -2294,12 +2298,12 @@ describe('localization-runner', () => {
           objects: [
             {
               objectId: 'obj_outer',
-              type: 'container',
               objectRectNorm: { xNorm: 0.30, yNorm: 0.20, wNorm: 0.40, hNorm: 0.40 },
               bbox: { xNorm: 0.30, yNorm: 0.20, wNorm: 0.40, hNorm: 0.40 },
               parentObjectId: null,
               childObjectIds: [],
-              confidence: 0.9
+              confidence: 0.9,
+          depth: 0
             }
           ]
         },
@@ -2354,21 +2358,21 @@ describe('localization-runner', () => {
           objects: [
             {
               objectId: 'rt_container_left',
-              type: 'container',
               objectRectNorm: { xNorm: 0.30, yNorm: 0.20, wNorm: 0.40, hNorm: 0.40 },
               bbox: { xNorm: 0.30, yNorm: 0.20, wNorm: 0.40, hNorm: 0.40 },
               parentObjectId: null,
               childObjectIds: [],
-              confidence: 0.9
+              confidence: 0.9,
+          depth: 0
             },
             {
               objectId: 'rt_container_right',
-              type: 'container',
               objectRectNorm: { xNorm: 0.55, yNorm: 0.20, wNorm: 0.40, hNorm: 0.40 },
               bbox: { xNorm: 0.55, yNorm: 0.20, wNorm: 0.40, hNorm: 0.40 },
               parentObjectId: null,
               childObjectIds: [],
-              confidence: 0.9
+              confidence: 0.9,
+          depth: 0
             }
           ]
         },
@@ -2396,12 +2400,12 @@ describe('localization-runner', () => {
           objects: [
             {
               objectId: 'obj_outer',
-              type: 'container',
               objectRectNorm: { xNorm: 0.30, yNorm: 0.20, wNorm: 0.40, hNorm: 0.40 },
               bbox: { xNorm: 0.30, yNorm: 0.20, wNorm: 0.40, hNorm: 0.40 },
               parentObjectId: null,
               childObjectIds: [],
-              confidence: 0.9
+              confidence: 0.9,
+          depth: 0
             }
           ]
         },
@@ -2438,12 +2442,12 @@ describe('localization-runner', () => {
           objects: [
             {
               objectId: 'obj_outer',
-              type: 'container',
               objectRectNorm: { xNorm: 0.30, yNorm: 0.20, wNorm: 0.40, hNorm: 0.40 },
               bbox: { xNorm: 0.30, yNorm: 0.20, wNorm: 0.40, hNorm: 0.40 },
               parentObjectId: null,
               childObjectIds: [],
-              confidence: 0.9
+              confidence: 0.9,
+          depth: 0
             }
           ]
         },
@@ -2463,12 +2467,12 @@ describe('localization-runner', () => {
           objects: [
             {
               objectId: 'obj_outer',
-              type: 'container',
               objectRectNorm: { xNorm: 0.30, yNorm: 0.20, wNorm: 0.40, hNorm: 0.40 },
               bbox: { xNorm: 0.30, yNorm: 0.20, wNorm: 0.40, hNorm: 0.40 },
               parentObjectId: null,
               childObjectIds: [],
-              confidence: 0.9
+              confidence: 0.9,
+          depth: 0
             }
           ]
         },
@@ -2505,8 +2509,8 @@ describe('localization-runner', () => {
   describe('multi-anchor validation and robustness checks', () => {
     const baseConfigModel: StructuralModel = {
       schema: 'wrokit/structural-model',
-      version: '3.0',
-      structureVersion: 'wrokit/structure/v2',
+      version: '4.0',
+      structureVersion: 'wrokit/structure/v3',
       id: 'config_audit',
       documentFingerprint: 'config_audit-fingerprint',
       cvAdapter: { name: 'mock-cv', version: '1.0' },
@@ -2526,21 +2530,21 @@ describe('localization-runner', () => {
             objects: [
               {
                 objectId: 'cfg_a',
-                type: 'rectangle',
                 objectRectNorm: { xNorm: 0.2, yNorm: 0.2, wNorm: 0.4, hNorm: 0.4 },
                 bbox: { xNorm: 0.2, yNorm: 0.2, wNorm: 0.4, hNorm: 0.4 },
                 parentObjectId: null,
                 childObjectIds: [],
-                confidence: 0.9
+                confidence: 0.9,
+          depth: 0
               },
               {
                 objectId: 'cfg_b',
-                type: 'container',
                 objectRectNorm: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.5, hNorm: 0.5 },
                 bbox: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.5, hNorm: 0.5 },
                 parentObjectId: null,
                 childObjectIds: [],
-                confidence: 0.85
+                confidence: 0.85,
+          depth: 0
               }
             ]
           },
@@ -2571,21 +2575,21 @@ describe('localization-runner', () => {
             objects: [
               {
                 objectId: 'rt_a',
-                type: 'rectangle',
                 objectRectNorm: { xNorm: 0.2, yNorm: 0.2, wNorm: 0.4, hNorm: 0.4 },
                 bbox: { xNorm: 0.2, yNorm: 0.2, wNorm: 0.4, hNorm: 0.4 },
                 parentObjectId: null,
                 childObjectIds: [],
-                confidence: 0.9
+                confidence: 0.9,
+          depth: 0
               },
               {
                 objectId: 'rt_b',
-                type: 'container',
                 objectRectNorm: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.5, hNorm: 0.5 },
                 bbox: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.5, hNorm: 0.5 },
                 parentObjectId: null,
                 childObjectIds: [],
-                confidence: 0.85
+                confidence: 0.85,
+          depth: 0
               }
             ]
           }
@@ -3047,12 +3051,12 @@ describe('localization-runner', () => {
           objects: [
             {
               objectId: 'obj_0',
-              type: 'container',
               objectRectNorm: objectRect,
               bbox: objectRect,
               parentObjectId: null,
               childObjectIds: [],
-              confidence: 0.9
+              confidence: 0.9,
+          depth: 0
             }
           ]
         },
@@ -3097,12 +3101,12 @@ describe('localization-runner', () => {
           objects: [
             {
               objectId: 'header_main',
-              type: 'header',
               objectRectNorm: rect,
               bbox: rect,
               parentObjectId: null,
               childObjectIds: [],
-              confidence: 0.9
+              confidence: 0.9,
+          depth: 0
             }
           ]
         }

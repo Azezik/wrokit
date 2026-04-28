@@ -128,14 +128,6 @@ export function StructuralOverlayControls({
         <label className="structural-overlay-controls__toggle">
           <input
             type="checkbox"
-            checked={options.showLineObjects}
-            onChange={(event) => setOption('showLineObjects', event.target.checked)}
-          />
-          Lines
-        </label>
-        <label className="structural-overlay-controls__toggle">
-          <input
-            type="checkbox"
             checked={options.showAllObjects}
             onChange={(event) => setOption('showAllObjects', event.target.checked)}
           />
@@ -200,10 +192,8 @@ export function StructuralOverlayControls({
       <div className="structural-overlay-controls__legend" aria-label="Overlay legend">
         <span className="structural-overlay-controls__legend-item" data-swatch="border">Border</span>
         <span className="structural-overlay-controls__legend-item" data-swatch="refined">Refined Border</span>
-        <span className="structural-overlay-controls__legend-item" data-swatch="container">Container</span>
-        <span className="structural-overlay-controls__legend-item" data-swatch="rectangle">Rectangle</span>
-        <span className="structural-overlay-controls__legend-item" data-swatch="table">Table-like</span>
-        <span className="structural-overlay-controls__legend-item" data-swatch="line">Line</span>
+        <span className="structural-overlay-controls__legend-item" data-swatch="object-top">Object (top)</span>
+        <span className="structural-overlay-controls__legend-item" data-swatch="object-child">Child Object</span>
         <span className="structural-overlay-controls__legend-item" data-swatch="saved">Saved BBOX</span>
         <span className="structural-overlay-controls__legend-item" data-swatch="predicted">Predicted BBOX</span>
         <span className="structural-overlay-controls__legend-item" data-swatch="anchor">Anchor</span>

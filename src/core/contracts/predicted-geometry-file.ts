@@ -81,7 +81,7 @@ export interface PredictedGeometryFile {
   schema: 'wrokit/predicted-geometry-file';
   version: '1.0';
   geometryFileVersion: 'wrokit/geometry/v1';
-  structureVersion: 'wrokit/structure/v2';
+  structureVersion: 'wrokit/structure/v3';
   id: string;
   wizardId: string;
   sourceGeometryFileId: string;
@@ -243,7 +243,7 @@ export const isPredictedGeometryFile = (value: unknown): value is PredictedGeome
     value.schema !== 'wrokit/predicted-geometry-file' ||
     value.version !== '1.0' ||
     value.geometryFileVersion !== 'wrokit/geometry/v1' ||
-    value.structureVersion !== 'wrokit/structure/v2' ||
+    value.structureVersion !== 'wrokit/structure/v3' ||
     typeof value.id !== 'string' ||
     typeof value.wizardId !== 'string' ||
     typeof value.sourceGeometryFileId !== 'string' ||

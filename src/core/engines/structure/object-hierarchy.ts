@@ -6,7 +6,6 @@ import type {
   StructuralObjectHierarchy,
   StructuralObjectNode,
   StructuralObjectToObjectAnchorRelation,
-  StructuralObjectType,
   StructuralPageAnchorRelations,
   StructuralRelativeAnchorRect,
   StructuralStableFieldAnchorLabel
@@ -14,7 +13,6 @@ import type {
 
 interface RawObjectInput {
   objectId: string;
-  type: StructuralObjectType;
   bbox: StructuralNormalizedRect;
   confidence: number;
 }
@@ -344,80 +342,23 @@ const buildObjectRelationGraph = (
 };
 
 /**
- * Are the given direct children arranged in a 2D grid?
+ * Build the object hierarchy from raw, unclassified rects.
  *
- * Heuristic: cluster child rectangles by row (y-center) and by column
- * (x-center) within a tolerance proportional to the parent's smaller side.
- * A cluster set with at least 2 rows AND 2 columns AND a reasonable fill
- * rate is treated as a grid (i.e. a table-like region). This is what lets
- * the engine label structurally instead of by raw size.
+ * Every input is just an object. The hierarchy is determined purely by
+ * geometric containment: the smallest enclosing rect becomes the parent.
+ * No object is treated as semantically special — a ruled grid is simply a
+ * parent object with many child objects, a form section is just an object
+ * with child objects, a standalone box is an object with no children.
  */
-const childrenFormGrid = (
-  parent: StructuralObjectNode,
-  children: StructuralObjectNode[]
-): boolean => {
-  const rectangleChildren = children.filter(
-    (child) =>
-      child.type !== 'line-horizontal' &&
-      child.type !== 'line-vertical' &&
-      child.objectRectNorm.wNorm > 0 &&
-      child.objectRectNorm.hNorm > 0
-  );
-
-  if (rectangleChildren.length < 4) {
-    return false;
-  }
-
-  const parentMinSide = Math.max(EPS, Math.min(parent.objectRectNorm.wNorm, parent.objectRectNorm.hNorm));
-  const tolerance = Math.max(EPS, parentMinSide * 0.05);
-
-  const clusterCenters = (values: number[]): number[] => {
-    if (values.length === 0) {
-      return [];
-    }
-    const sorted = [...values].sort((a, b) => a - b);
-    const clusters: number[] = [sorted[0]];
-    for (let i = 1; i < sorted.length; i += 1) {
-      if (sorted[i] - clusters[clusters.length - 1] > tolerance) {
-        clusters.push(sorted[i]);
-      }
-    }
-    return clusters;
-  };
-
-  const xCenters = rectangleChildren.map(
-    (child) => child.objectRectNorm.xNorm + child.objectRectNorm.wNorm / 2
-  );
-  const yCenters = rectangleChildren.map(
-    (child) => child.objectRectNorm.yNorm + child.objectRectNorm.hNorm / 2
-  );
-
-  const xClusters = clusterCenters(xCenters);
-  const yClusters = clusterCenters(yCenters);
-
-  if (xClusters.length < 2 || yClusters.length < 2) {
-    return false;
-  }
-
-  const expectedSlots = xClusters.length * yClusters.length;
-  const fillRate = rectangleChildren.length / expectedSlots;
-
-  // Real grids have most slots filled. We accept >= 0.5 to tolerate sparse
-  // tables (e.g. an invoice line-items area where only one column per row is
-  // bounded by extra inner lines).
-  return fillRate >= 0.5;
-};
-
 export const buildObjectHierarchy = (rawObjects: RawObjectInput[]): StructuralObjectHierarchy => {
   const nodes: StructuralObjectNode[] = rawObjects.map((obj) => ({
     objectId: obj.objectId,
-    type: obj.type,
     objectRectNorm: obj.bbox,
-    // Compatibility mirror of machine object rect.
     bbox: obj.bbox,
     parentObjectId: null,
     childObjectIds: [],
-    confidence: obj.confidence
+    confidence: obj.confidence,
+    depth: 0
   }));
 
   for (const node of nodes) {
@@ -430,40 +371,23 @@ export const buildObjectHierarchy = (rawObjects: RawObjectInput[]): StructuralOb
     if (parent) {
       node.parentObjectId = parent.objectId;
       parent.childObjectIds.push(node.objectId);
-      if (node.type === 'container') {
-        node.type = 'nested-region';
-      }
     }
   }
 
-  // Structure-aware label promotion. Order matters:
-  //   1. Lines stay as lines.
-  //   2. Rectangles whose direct children form a 2D grid → 'table-like'.
-  //   3. Rectangles with non-grid children → 'group-region'.
-  //   4. Rectangles inside a parent (no children of their own) stay 'rectangle'.
-  // This replaces the old purely-size-driven classification, which
-  // labelled visually similar objects differently depending on absolute
-  // dimensions.
+  // Compute depth by walking up to a parentless ancestor. Done after parent
+  // links are established so cycles (which shouldn't happen, but guard anyway)
+  // do not infinite-loop the walk.
   const nodeById = new Map(nodes.map((node) => [node.objectId, node]));
   for (const node of nodes) {
-    if (node.type === 'line-horizontal' || node.type === 'line-vertical') {
-      continue;
+    let depth = 0;
+    let cursor = node.parentObjectId ? nodeById.get(node.parentObjectId) ?? null : null;
+    const seen = new Set<string>([node.objectId]);
+    while (cursor && !seen.has(cursor.objectId)) {
+      seen.add(cursor.objectId);
+      depth += 1;
+      cursor = cursor.parentObjectId ? nodeById.get(cursor.parentObjectId) ?? null : null;
     }
-    if (node.childObjectIds.length === 0) {
-      continue;
-    }
-    const directChildren = node.childObjectIds
-      .map((id) => nodeById.get(id))
-      .filter((child): child is StructuralObjectNode => Boolean(child));
-
-    if (childrenFormGrid(node, directChildren)) {
-      node.type = 'table-like';
-      continue;
-    }
-
-    if (node.type === 'rectangle') {
-      node.type = 'group-region';
-    }
+    node.depth = depth;
   }
 
   return { objects: nodes };
@@ -586,6 +510,5 @@ export const buildFieldRelationships = (input: {
 
 export const __testing = {
   buildContainmentChain,
-  selectFallbackAnchorObjects,
-  childrenFormGrid
+  selectFallbackAnchorObjects
 };

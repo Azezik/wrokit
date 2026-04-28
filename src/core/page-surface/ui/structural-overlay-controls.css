@@ -160,22 +160,13 @@
   border-style: dashed;
 }
 
-.structural-overlay-controls__legend-item[data-swatch='container']::before {
+.structural-overlay-controls__legend-item[data-swatch='object-top']::before {
   border-color: rgb(14 116 144 / 0.85);
+  border-width: 2px;
 }
 
-.structural-overlay-controls__legend-item[data-swatch='rectangle']::before {
-  border-color: rgb(56 189 248 / 0.85);
-}
-
-.structural-overlay-controls__legend-item[data-swatch='table']::before {
-  border-color: rgb(217 70 239 / 0.85);
-  background: rgb(217 70 239 / 0.1);
-}
-
-.structural-overlay-controls__legend-item[data-swatch='line']::before {
-  border-color: rgb(8 145 178 / 0.6);
-  background: rgb(8 145 178 / 0.1);
+.structural-overlay-controls__legend-item[data-swatch='object-child']::before {
+  border-color: rgb(14 116 144 / 0.5);
 }
 
 .structural-overlay-controls__legend-item[data-swatch='saved']::before {

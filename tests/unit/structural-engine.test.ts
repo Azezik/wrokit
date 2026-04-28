@@ -56,7 +56,7 @@ describe('createStructuralEngine', () => {
     });
 
     expect(isStructuralModel(model)).toBe(true);
-    expect(model.structureVersion).toBe('wrokit/structure/v2');
+    expect(model.structureVersion).toBe('wrokit/structure/v3');
     expect(model.cvAdapter).toEqual({ name: 'mock-cv', version: '0.0' });
     expect(model.pages).toHaveLength(1);
     const page = model.pages[0];
@@ -241,13 +241,11 @@ describe('createStructuralEngine', () => {
           objectsSurface: [
             {
               objectId: 'obj_container',
-              type: 'container',
               bboxSurface: { x: 150, y: 300, width: 500, height: 900 },
               confidence: 0.88
             },
             {
               objectId: 'obj_line_h',
-              type: 'line-horizontal',
               bboxSurface: { x: 150, y: 450, width: 500, height: 2 },
               confidence: 0.8
             }
@@ -306,19 +304,16 @@ describe('createStructuralEngine', () => {
           objectsSurface: [
             {
               objectId: 'obj_a',
-              type: 'container',
               bboxSurface: { x: 350, y: 760, width: 220, height: 260 },
               confidence: 0.94
             },
             {
               objectId: 'obj_b',
-              type: 'container',
               bboxSurface: { x: 580, y: 760, width: 180, height: 260 },
               confidence: 0.91
             },
             {
               objectId: 'obj_c',
-              type: 'rectangle',
               bboxSurface: { x: 350, y: 1040, width: 220, height: 220 },
               confidence: 0.89
             }
@@ -389,25 +384,21 @@ describe('createStructuralEngine', () => {
           objectsSurface: [
             {
               objectId: 'obj_counter',
-              type: 'container',
               bboxSurface: { x: 200, y: 400, width: 600, height: 1000 },
               confidence: 0.9
             },
             {
               objectId: 'obj_drawer',
-              type: 'container',
               bboxSurface: { x: 300, y: 800, width: 200, height: 300 },
               confidence: 0.88
             },
             {
               objectId: 'obj_tray',
-              type: 'container',
               bboxSurface: { x: 310, y: 820, width: 80, height: 60 },
               confidence: 0.86
             },
             {
               objectId: 'obj_distractor',
-              type: 'rectangle',
               bboxSurface: { x: 340, y: 836, width: 8, height: 4 },
               confidence: 0.7
             }
@@ -479,19 +470,16 @@ describe('createStructuralEngine', () => {
           objectsSurface: [
             {
               objectId: 'obj_only_container',
-              type: 'container',
               bboxSurface: { x: 400, y: 980, width: 200, height: 200 },
               confidence: 0.9
             },
             {
               objectId: 'obj_nearby_sibling',
-              type: 'rectangle',
               bboxSurface: { x: 650, y: 980, width: 150, height: 150 },
               confidence: 0.85
             },
             {
               objectId: 'obj_far_block',
-              type: 'rectangle',
               bboxSurface: { x: 100, y: 200, width: 80, height: 80 },
               confidence: 0.8
             }

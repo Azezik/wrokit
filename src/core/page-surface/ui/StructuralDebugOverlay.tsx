@@ -177,7 +177,8 @@ export function StructuralDebugOverlay({
               <div
                 key={object.objectId}
                 className="structural-debug-overlay__object"
-                data-object-type={object.type}
+                data-depth={Math.min(object.depth, 4)}
+                data-has-children={object.childObjectIds.length > 0 ? 'true' : 'false'}
                 data-hovered={isHovered ? 'true' : 'false'}
                 data-anchor={isAnchorObject ? 'true' : 'false'}
                 data-matched={isMatched ? 'true' : 'false'}
@@ -194,7 +195,7 @@ export function StructuralDebugOverlay({
               >
                 {options.showLabels || isHovered ? (
                   <span className="structural-debug-overlay__object-label">
-                    {object.type} · {object.objectId} · conf {object.confidence.toFixed(2)}
+                    object · depth {object.depth} · {object.objectId} · conf {object.confidence.toFixed(2)}
                   </span>
                 ) : null}
                 {(options.showLabels || isHovered) && options.showContainmentChains ? (

@@ -1,5 +1,4 @@
 import type { PageSurface, PixelRect } from '../../../page-surface/page-surface';
-import type { StructuralObjectType } from '../../../contracts/structural-model';
 
 /**
  * Surface raster handle accepted by every CV adapter. The Structural Engine hands
@@ -36,7 +35,6 @@ export type CvExecutionMode = 'opencv-runtime' | 'heuristic-fallback';
 
 export interface CvSurfaceObject {
   objectId: string;
-  type: StructuralObjectType;
   bboxSurface: PixelRect;
   confidence: number;
 }

@@ -4,7 +4,6 @@ import type {
   StructuralModel,
   StructuralNormalizedRect,
   StructuralObjectNode,
-  StructuralObjectType,
   StructuralPage,
   StructuralRefinedBorder
 } from '../../src/core/contracts/structural-model';
@@ -34,19 +33,19 @@ const rect = (
 
 const node = (
   objectId: string,
-  type: StructuralObjectType,
   r: StructuralNormalizedRect,
   parentObjectId: string | null = null,
   childObjectIds: string[] = [],
-  confidence = 0.9
+  confidence = 0.9,
+  depth = 0
 ): StructuralObjectNode => ({
   objectId,
-  type,
   objectRectNorm: r,
   bbox: r,
   parentObjectId,
   childObjectIds,
-  confidence
+  confidence,
+  depth
 });
 
 const refinedFullPage: StructuralRefinedBorder = {
@@ -84,8 +83,8 @@ const buildPage = (
 
 const buildModel = (id: string, fingerprint: string, page: StructuralPage): StructuralModel => ({
   schema: 'wrokit/structural-model',
-  version: '3.0',
-  structureVersion: 'wrokit/structure/v2',
+  version: '4.0',
+  structureVersion: 'wrokit/structure/v3',
   id,
   documentFingerprint: fingerprint,
   cvAdapter: { name: 'opencv-js', version: '1.0' },
@@ -143,12 +142,12 @@ describe('border + refined-border level summaries', () => {
 describe('object + parent-chain level summaries', () => {
   it('produces a non-null transform when matches exist', () => {
     const config = buildPage([
-      node('c1', 'container', rect(0.1, 0.1, 0.3, 0.3)),
-      node('c2', 'rectangle', rect(0.5, 0.5, 0.2, 0.2))
+      node('c1', rect(0.1, 0.1, 0.3, 0.3)),
+      node('c2', rect(0.5, 0.5, 0.2, 0.2))
     ]);
     const runtime = buildPage([
-      node('r1', 'container', rect(0.12, 0.07, 0.3, 0.3)),
-      node('r2', 'rectangle', rect(0.52, 0.47, 0.2, 0.2))
+      node('r1', rect(0.12, 0.07, 0.3, 0.3)),
+      node('r2', rect(0.52, 0.47, 0.2, 0.2))
     ]);
     const matchResult = matchPage(config, runtime);
     const summary = computeObjectLevelSummary(matchResult.matches, config, runtime);
@@ -159,8 +158,8 @@ describe('object + parent-chain level summaries', () => {
   });
 
   it('parent-chain summary is empty when no matches use parent-chain basis', () => {
-    const config = buildPage([node('c1', 'container', rect(0.1, 0.1, 0.3, 0.3))]);
-    const runtime = buildPage([node('r1', 'container', rect(0.1, 0.1, 0.3, 0.3))]);
+    const config = buildPage([node('c1', rect(0.1, 0.1, 0.3, 0.3))]);
+    const runtime = buildPage([node('r1', rect(0.1, 0.1, 0.3, 0.3))]);
     const matchResult = matchPage(config, runtime);
     const summary = computeParentChainLevelSummary(matchResult.matches, config, runtime);
     expect(summary.transform).not.toBeNull();
@@ -169,14 +168,14 @@ describe('object + parent-chain level summaries', () => {
 
   it('parent-chain summary aggregates only matches anchored under matched parents', () => {
     const config = buildPage([
-      node('cP', 'container', rect(0.0, 0.0, 0.5, 1.0), null, ['cChild']),
-      node('cChild', 'rectangle', rect(0.1, 0.1, 0.1, 0.1), 'cP'),
-      node('cLoose', 'rectangle', rect(0.7, 0.7, 0.1, 0.1))
+      node('cP', rect(0.0, 0.0, 0.5, 1.0), null, ['cChild']),
+      node('cChild', rect(0.1, 0.1, 0.1, 0.1), 'cP'),
+      node('cLoose', rect(0.7, 0.7, 0.1, 0.1))
     ]);
     const runtime = buildPage([
-      node('rP', 'container', rect(0.0, 0.0, 0.5, 1.0), null, ['rChild']),
-      node('rChild', 'rectangle', rect(0.12, 0.1, 0.1, 0.1), 'rP'),
-      node('rLoose', 'rectangle', rect(0.7, 0.7, 0.1, 0.1))
+      node('rP', rect(0.0, 0.0, 0.5, 1.0), null, ['rChild']),
+      node('rChild', rect(0.12, 0.1, 0.1, 0.1), 'rP'),
+      node('rLoose', rect(0.7, 0.7, 0.1, 0.1))
     ]);
     const matchResult = matchPage(config, runtime);
     const parentChain = computeParentChainLevelSummary(matchResult.matches, config, runtime);
@@ -199,15 +198,15 @@ describe('computeConsensus', () => {
 
   it('returns the shared transform when all matches agree', () => {
     const config = buildPage([
-      node('c1', 'container', rect(0.0, 0.0, 0.3, 0.3)),
-      node('c2', 'rectangle', rect(0.5, 0.0, 0.3, 0.3)),
-      node('c3', 'rectangle', rect(0.0, 0.5, 0.3, 0.3))
+      node('c1', rect(0.0, 0.0, 0.3, 0.3)),
+      node('c2', rect(0.5, 0.0, 0.3, 0.3)),
+      node('c3', rect(0.0, 0.5, 0.3, 0.3))
     ]);
     const runtime = buildPage([
       // All shifted by (+0.05, -0.02), no scale change.
-      node('r1', 'container', rect(0.05, -0.02, 0.3, 0.3)),
-      node('r2', 'rectangle', rect(0.55, -0.02, 0.3, 0.3)),
-      node('r3', 'rectangle', rect(0.05, 0.48, 0.3, 0.3))
+      node('r1', rect(0.05, -0.02, 0.3, 0.3)),
+      node('r2', rect(0.55, -0.02, 0.3, 0.3)),
+      node('r3', rect(0.05, 0.48, 0.3, 0.3))
     ]);
     const matchResult = matchPage(config, runtime);
     const consensus = computeConsensus(matchResult.matches, config, runtime);
@@ -221,18 +220,18 @@ describe('computeConsensus', () => {
 
   it('flags an outlier match and excludes it from consensus', () => {
     const config = buildPage([
-      node('c1', 'container', rect(0.0, 0.0, 0.3, 0.3), null, [], 0.95),
-      node('c2', 'rectangle', rect(0.5, 0.0, 0.3, 0.3), null, [], 0.95),
-      node('c3', 'rectangle', rect(0.0, 0.5, 0.3, 0.3), null, [], 0.95),
+      node('c1', rect(0.0, 0.0, 0.3, 0.3), null, [], 0.95),
+      node('c2', rect(0.5, 0.0, 0.3, 0.3), null, [], 0.95),
+      node('c3', rect(0.0, 0.5, 0.3, 0.3), null, [], 0.95),
       // tiny rogue object in the bottom-right with a divergent runtime offset
-      node('cBad', 'rectangle', rect(0.85, 0.85, 0.05, 0.05), null, [], 0.6)
+      node('cBad', rect(0.85, 0.85, 0.05, 0.05), null, [], 0.6)
     ]);
     const runtime = buildPage([
-      node('r1', 'container', rect(0.05, -0.02, 0.3, 0.3)),
-      node('r2', 'rectangle', rect(0.55, -0.02, 0.3, 0.3)),
-      node('r3', 'rectangle', rect(0.05, 0.48, 0.3, 0.3)),
+      node('r1', rect(0.05, -0.02, 0.3, 0.3)),
+      node('r2', rect(0.55, -0.02, 0.3, 0.3)),
+      node('r3', rect(0.05, 0.48, 0.3, 0.3)),
       // wildly different translation
-      node('rBad', 'rectangle', rect(0.55, 0.55, 0.05, 0.05))
+      node('rBad', rect(0.55, 0.55, 0.05, 0.05))
     ]);
     const matchResult = matchPage(config, runtime, { minHierarchicalConfidence: 0.0 });
     expect(matchResult.matches.length).toBeGreaterThanOrEqual(4);
@@ -247,8 +246,8 @@ describe('computeConsensus', () => {
   });
 
   it('warns when consensus is formed from a single match', () => {
-    const config = buildPage([node('c1', 'container', rect(0.1, 0.1, 0.4, 0.4))]);
-    const runtime = buildPage([node('r1', 'container', rect(0.15, 0.05, 0.4, 0.4))]);
+    const config = buildPage([node('c1', rect(0.1, 0.1, 0.4, 0.4))]);
+    const runtime = buildPage([node('r1', rect(0.15, 0.05, 0.4, 0.4))]);
     const matchResult = matchPage(config, runtime);
     const consensus = computeConsensus(matchResult.matches, config, runtime);
     expect(consensus.contributingMatchCount).toBe(1);
@@ -257,17 +256,17 @@ describe('computeConsensus', () => {
 
   it('virtual-projection cross-check raises confidence when projections agree', () => {
     const config = buildPage([
-      node('c1', 'container', rect(0.0, 0.0, 0.3, 0.3)),
-      node('c2', 'rectangle', rect(0.5, 0.0, 0.3, 0.3))
+      node('c1', rect(0.0, 0.0, 0.3, 0.3)),
+      node('c2', rect(0.5, 0.0, 0.3, 0.3))
     ]);
     const sameTransformRuntime = buildPage([
-      node('r1', 'container', rect(0.1, 0.1, 0.3, 0.3)),
-      node('r2', 'rectangle', rect(0.6, 0.1, 0.3, 0.3))
+      node('r1', rect(0.1, 0.1, 0.3, 0.3)),
+      node('r2', rect(0.6, 0.1, 0.3, 0.3))
     ]);
     const divergentRuntime = buildPage([
-      node('r1', 'container', rect(0.1, 0.1, 0.3, 0.3)),
+      node('r1', rect(0.1, 0.1, 0.3, 0.3)),
       // incoherent extra match: +0.4 translate vs +0.1 expected
-      node('r2', 'rectangle', rect(0.9, 0.0, 0.3, 0.3))
+      node('r2', rect(0.9, 0.0, 0.3, 0.3))
     ]);
     const agreeMatches = matchPage(config, sameTransformRuntime).matches;
     const disagreeMatches = matchPage(config, divergentRuntime, {
@@ -288,8 +287,8 @@ describe('computeConsensus', () => {
 describe('runner with consensus + summaries', () => {
   it('emits four level summaries and a consensus block per page', () => {
     const objects = [
-      node('o1', 'container', rect(0.1, 0.1, 0.3, 0.3)),
-      node('o2', 'rectangle', rect(0.5, 0.5, 0.2, 0.2))
+      node('o1', rect(0.1, 0.1, 0.3, 0.3)),
+      node('o2', rect(0.5, 0.5, 0.2, 0.2))
     ];
     const config = buildModel('cfg', 'cfg', buildPage(objects));
     const runtime = buildModel('rt', 'rt', buildPage(objects));

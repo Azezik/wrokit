@@ -5,7 +5,6 @@ import type {
   StructuralFieldRelationship,
   StructuralModel,
   StructuralNormalizedRect,
-  StructuralObjectType,
   StructuralPage,
   StructuralRefinedBorder,
   StructuralRefinedBorderSource
@@ -22,8 +21,8 @@ import { loadPageSurfaceRaster, type PageRasterLoaderEnv } from './page-raster-l
 import { buildFieldRelationships, buildObjectHierarchy, buildPageAnchorRelations } from './object-hierarchy';
 import type { StructuralEngine, StructuralEngineInput } from './types';
 
-const STRUCTURE_VERSION = 'wrokit/structure/v2' as const;
-const SCHEMA_VERSION = '3.0' as const;
+const STRUCTURE_VERSION = 'wrokit/structure/v3' as const;
+const SCHEMA_VERSION = '4.0' as const;
 
 const generateId = (): string => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -132,8 +131,6 @@ const collectGeometryFieldsForPage = (
     .map((field) => ({ fieldId: field.fieldId, bbox: field.bbox }));
 };
 
-const toCanonicalObjectType = (type: StructuralObjectType): StructuralObjectType => type;
-
 interface BuildRefinedBorderInput {
   surface: PageSurface;
   cvContentSurfaceRect: PixelRect;
@@ -229,7 +226,6 @@ export const createStructuralEngine = (
     const hierarchy = buildObjectHierarchy(
       cvResult.objectsSurface.map((object) => ({
         objectId: object.objectId,
-        type: toCanonicalObjectType(object.type),
         bbox: surfaceRectToStructuralNorm(surface, object.bboxSurface),
         confidence: object.confidence
       }))

@@ -145,8 +145,8 @@ describe('isStructuralModel', () => {
     expect(
       isStructuralModel({
         schema: 'wrokit/structural-model',
-        version: '3.0',
-        structureVersion: 'wrokit/structure/v2',
+        version: '4.0',
+        structureVersion: 'wrokit/structure/v3',
         id: 's1',
         documentFingerprint: 'sha256:abc',
         cvAdapter: { name: 'opencv-js', version: '1.0' },
@@ -166,12 +166,12 @@ describe('isStructuralModel', () => {
               objects: [
                 {
                   objectId: 'obj_1',
-                  type: 'container',
                   objectRectNorm: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.8, hNorm: 0.8 },
                   bbox: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.8, hNorm: 0.8 },
                   parentObjectId: null,
                   childObjectIds: [],
-                  confidence: 0.9
+                  confidence: 0.9,
+                  depth: 0
                 }
               ]
             },
@@ -240,7 +240,7 @@ describe('isStructuralModel', () => {
     expect(
       isStructuralModel({
         schema: 'wrokit/structural-model',
-        version: '3.0',
+        version: '4.0',
         id: 's1',
         documentFingerprint: 'sha256:abc',
         cvAdapter: { name: 'opencv-js', version: '1.0' },
@@ -251,8 +251,8 @@ describe('isStructuralModel', () => {
     expect(
       isStructuralModel({
         schema: 'wrokit/structural-model',
-        version: '3.0',
-        structureVersion: 'wrokit/structure/v2',
+        version: '4.0',
+        structureVersion: 'wrokit/structure/v3',
         id: 's1',
         documentFingerprint: 'sha256:abc',
         cvAdapter: { name: 'opencv-js', version: '1.0' },
@@ -287,8 +287,8 @@ describe('isStructuralModel', () => {
   it('rejects structural field anchors when stable labels are not canonical A->B->C order', () => {
     const invalidLabels = {
       schema: 'wrokit/structural-model',
-      version: '3.0',
-      structureVersion: 'wrokit/structure/v2',
+      version: '4.0',
+      structureVersion: 'wrokit/structure/v3',
       id: 's2',
       documentFingerprint: 'sha256:abc',
       cvAdapter: { name: 'opencv-js', version: '1.0' },
@@ -308,12 +308,12 @@ describe('isStructuralModel', () => {
             objects: [
               {
                 objectId: 'obj_a',
-                type: 'container',
                 objectRectNorm: { xNorm: 0.2, yNorm: 0.2, wNorm: 0.4, hNorm: 0.4 },
                 bbox: { xNorm: 0.2, yNorm: 0.2, wNorm: 0.4, hNorm: 0.4 },
                 parentObjectId: null,
                 childObjectIds: [],
-                confidence: 0.9
+                confidence: 0.9,
+                depth: 0
               }
             ]
           },
@@ -376,8 +376,8 @@ describe('isStructuralModel', () => {
   it('rejects structural field anchors when object anchor rank order is not primary->secondary->tertiary', () => {
     const invalidRanks = {
       schema: 'wrokit/structural-model',
-      version: '3.0',
-      structureVersion: 'wrokit/structure/v2',
+      version: '4.0',
+      structureVersion: 'wrokit/structure/v3',
       id: 's3',
       documentFingerprint: 'sha256:abc',
       cvAdapter: { name: 'opencv-js', version: '1.0' },
@@ -451,7 +451,7 @@ describe('isPredictedGeometryFile', () => {
     schema: 'wrokit/predicted-geometry-file',
     version: '1.0',
     geometryFileVersion: 'wrokit/geometry/v1',
-    structureVersion: 'wrokit/structure/v2',
+    structureVersion: 'wrokit/structure/v3',
     id: 'pred_1',
     wizardId: 'Invoice Wizard',
     sourceGeometryFileId: 'geo_1',

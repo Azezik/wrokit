@@ -10,7 +10,7 @@ const stubStructuralModel = (
 ): StructuralModel => ({
   schema: 'wrokit/structural-model',
   version: '3.0',
-  structureVersion: 'wrokit/structure/v2',
+  structureVersion: 'wrokit/structure/v3',
   id: 'sm-test',
   documentFingerprint: 'surface:test.pdf#0:1000x1000',
   cvAdapter: { name: 'opencv-js', version: '1.0' },

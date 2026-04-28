@@ -10,8 +10,8 @@ import {
 
 const validModel: StructuralModel = {
   schema: 'wrokit/structural-model',
-  version: '3.0',
-  structureVersion: 'wrokit/structure/v2',
+  version: '4.0',
+  structureVersion: 'wrokit/structure/v3',
   id: 'str_abc',
   documentFingerprint: 'surface:doc.pdf#0:1000x2000',
   cvAdapter: { name: 'opencv-js', version: '1.0' },
@@ -31,12 +31,12 @@ const validModel: StructuralModel = {
         objects: [
           {
             objectId: 'obj_1',
-            type: 'container',
             objectRectNorm: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.8, hNorm: 0.8 },
             bbox: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.8, hNorm: 0.8 },
             parentObjectId: null,
             childObjectIds: [],
-            confidence: 0.92
+            confidence: 0.92,
+            depth: 0
           }
         ]
       },
