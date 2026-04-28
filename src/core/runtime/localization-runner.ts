@@ -21,6 +21,11 @@ import type {
   StructuralRelativeAnchorRect,
   StructuralStableFieldAnchorLabel
 } from '../contracts/structural-model';
+import type {
+  TransformationFieldCandidate,
+  TransformationModel,
+  TransformationPage
+} from '../contracts/transformation-model';
 import { getPageSurface } from '../page-surface/page-surface';
 
 export type {
@@ -37,6 +42,15 @@ export interface LocalizationRunnerInput {
   configStructuralModel: StructuralModel;
   runtimeStructuralModel: StructuralModel;
   runtimePages: NormalizedPage[];
+  /**
+   * Optional precomputed alignment report between the Config and Runtime
+   * StructuralModels. When provided, localization consumes the per-field
+   * candidate chains it carries (matched-object → parent-object →
+   * refined-border → border) instead of re-deriving anchors locally. When
+   * omitted, or when a field has no candidates in the model, localization
+   * falls back to the legacy stable-anchor resolution path.
+   */
+  transformationModel?: TransformationModel;
   predictedId?: string;
   nowIso?: string;
 }
@@ -369,6 +383,95 @@ interface AnchorResolution {
   predictedBox: NormalizedBoundingBox;
 }
 
+const candidateSourceToAnchorTier = (
+  source: TransformationFieldCandidate['source']
+): RuntimeAnchorTier => {
+  switch (source) {
+    case 'matched-object':
+      return 'field-object-a';
+    case 'parent-object':
+      return 'field-object-b';
+    case 'refined-border':
+      return 'refined-border';
+    case 'border':
+      return 'border';
+  }
+};
+
+const resolveFromTransformationCandidate = (
+  source: FieldGeometry,
+  candidate: TransformationFieldCandidate,
+  configPage: StructuralPage,
+  runtimePage: StructuralPage
+): AnchorResolution | null => {
+  const tier = candidateSourceToAnchorTier(candidate.source);
+
+  let sourceConfigRectNorm: StructuralNormalizedRect | undefined;
+  let sourceRuntimeRectNorm: StructuralNormalizedRect | undefined;
+
+  if (candidate.source === 'matched-object' || candidate.source === 'parent-object') {
+    if (!candidate.configObjectId || !candidate.runtimeObjectId) {
+      return null;
+    }
+    const configObject = getObjectById(configPage, candidate.configObjectId);
+    const runtimeObject = getObjectById(runtimePage, candidate.runtimeObjectId);
+    if (!configObject || !runtimeObject) {
+      return null;
+    }
+    sourceConfigRectNorm = configObject.objectRectNorm;
+    sourceRuntimeRectNorm = runtimeObject.objectRectNorm;
+  } else if (candidate.source === 'refined-border') {
+    sourceConfigRectNorm = configPage.refinedBorder.rectNorm;
+    sourceRuntimeRectNorm = runtimePage.refinedBorder.rectNorm;
+  } else {
+    sourceConfigRectNorm = configPage.border.rectNorm;
+    sourceRuntimeRectNorm = runtimePage.border.rectNorm;
+  }
+
+  const transform: RuntimeStructuralTransform = {
+    pageIndex: source.pageIndex,
+    basis: tier,
+    sourceConfigRectNorm: { ...sourceConfigRectNorm },
+    sourceRuntimeRectNorm: { ...sourceRuntimeRectNorm },
+    scaleX: candidate.transform.scaleX,
+    scaleY: candidate.transform.scaleY,
+    translateX: candidate.transform.translateX,
+    translateY: candidate.transform.translateY,
+    ...(candidate.configObjectId ? { configObjectId: candidate.configObjectId } : {}),
+    ...(candidate.runtimeObjectId ? { runtimeObjectId: candidate.runtimeObjectId } : {}),
+    // The TransformationModel is computed by the matcher / consensus chain,
+    // which works across hierarchy and geometry rather than by raw object id.
+    ...(candidate.source === 'matched-object' || candidate.source === 'parent-object'
+      ? { objectMatchStrategy: 'type-hierarchy-geometry' as RuntimeObjectMatchStrategy }
+      : {})
+  };
+
+  return {
+    tier,
+    transform,
+    predictedBox: applyTransformToBox(source.bbox, transform)
+  };
+};
+
+const findFieldCandidates = (
+  transformationModel: TransformationModel,
+  pageIndex: number,
+  fieldId: string
+): readonly TransformationFieldCandidate[] => {
+  const page: TransformationPage | undefined = transformationModel.pages.find(
+    (entry) => entry.pageIndex === pageIndex
+  );
+  if (!page) {
+    return [];
+  }
+  const alignment = page.fieldAlignments.find((entry) => entry.fieldId === fieldId);
+  if (!alignment) {
+    return [];
+  }
+  // Strongest preferred candidate first.
+  return [...alignment.candidates].sort((a, b) => a.fallbackOrder - b.fallbackOrder);
+};
+
 const resolveFieldAnchor = (
   source: FieldGeometry,
   configPage: StructuralPage,
@@ -499,7 +602,32 @@ export const createLocalizationRunner = (): LocalizationRunner => ({
 
         const configStructuralPage = getStructuralPage(input.configStructuralModel, field.pageIndex);
         const runtimeStructuralPage = getStructuralPage(input.runtimeStructuralModel, field.pageIndex);
-        const resolution = resolveFieldAnchor(field, configStructuralPage, runtimeStructuralPage);
+
+        let resolution: AnchorResolution | null = null;
+
+        if (input.transformationModel) {
+          const candidates = findFieldCandidates(
+            input.transformationModel,
+            field.pageIndex,
+            field.fieldId
+          );
+          for (const candidate of candidates) {
+            const candidateResolution = resolveFromTransformationCandidate(
+              field,
+              candidate,
+              configStructuralPage,
+              runtimeStructuralPage
+            );
+            if (candidateResolution) {
+              resolution = candidateResolution;
+              break;
+            }
+          }
+        }
+
+        if (!resolution) {
+          resolution = resolveFieldAnchor(field, configStructuralPage, runtimeStructuralPage);
+        }
 
         return buildPredictedField(field, runtimePage, resolution);
       });
@@ -525,5 +653,7 @@ export const __testing = {
   applyTransformToBox,
   projectRelativeRect,
   resolveRuntimeObject,
-  resolveFieldAnchor
+  resolveFieldAnchor,
+  resolveFromTransformationCandidate,
+  findFieldCandidates
 };
