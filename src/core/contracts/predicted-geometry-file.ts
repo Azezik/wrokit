@@ -20,6 +20,7 @@ export type RuntimeAnchorTier =
   | 'field-object-a'
   | 'field-object-b'
   | 'field-object-c'
+  | 'page-consensus'
   | 'refined-border'
   | 'border';
 
@@ -79,6 +80,7 @@ const RUNTIME_ANCHOR_TIERS: ReadonlySet<RuntimeAnchorTier> = new Set<RuntimeAnch
   'field-object-a',
   'field-object-b',
   'field-object-c',
+  'page-consensus',
   'refined-border',
   'border'
 ]);

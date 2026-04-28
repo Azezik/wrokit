@@ -1262,6 +1262,264 @@ describe('localization-runner', () => {
       expect(predicted.bbox.hNorm).toBeCloseTo(0.1, 6);
     });
 
+    const buildTransformationModelWithConsensus = (
+      candidates: TransformationModel['pages'][number]['fieldAlignments'][number]['candidates'],
+      consensus: TransformationModel['pages'][number]['consensus']
+    ): TransformationModel => ({
+      schema: 'wrokit/transformation-model',
+      version: '1.0',
+      transformVersion: 'wrokit/transformation/v1',
+      id: 'xform_consensus',
+      config: { id: baseConfigModel.id, documentFingerprint: baseConfigModel.documentFingerprint },
+      runtime: { id: baseRuntimeModel.id, documentFingerprint: baseRuntimeModel.documentFingerprint },
+      pages: [
+        {
+          pageIndex: 0,
+          levelSummaries: [],
+          objectMatches: [],
+          unmatchedConfigObjectIds: [],
+          unmatchedRuntimeObjectIds: [],
+          consensus,
+          fieldAlignments: [
+            {
+              fieldId: 'invoice_number',
+              candidates,
+              warnings: []
+            }
+          ],
+          notes: [],
+          warnings: []
+        }
+      ],
+      overallConfidence: consensus.confidence,
+      notes: [],
+      warnings: [],
+      createdAtIso: '2026-04-27T00:00:00Z'
+    });
+
+    it('rescues localization with the page consensus transform when object anchors fail', async () => {
+      const runner = createLocalizationRunner();
+      // Page-level consistent global shift: scaleX=scaleY=1, translate=(0.1, 0.05).
+      // The object-anchor candidate points at a runtime object that no longer
+      // exists, so it must fail. Refined-border candidate is also offered as a
+      // weaker fallback; the consensus rescue must be chosen instead because
+      // its confidence is high.
+      const transformationModel = buildTransformationModelWithConsensus(
+        [
+          {
+            source: 'matched-object',
+            fallbackOrder: 0,
+            configObjectId: 'cfg_box',
+            runtimeObjectId: 'rt_missing', // forces object anchor failure
+            transform: { scaleX: 1, scaleY: 1, translateX: 9, translateY: 9 },
+            relativeFieldRect: { xRatio: 0, yRatio: 0, wRatio: 0.1, hRatio: 0.1 },
+            confidence: 0.9,
+            notes: []
+          },
+          {
+            source: 'refined-border',
+            fallbackOrder: 1,
+            configObjectId: null,
+            runtimeObjectId: null,
+            transform: { scaleX: 1, scaleY: 1, translateX: 0, translateY: 0 },
+            relativeFieldRect: { xRatio: 0, yRatio: 0, wRatio: 0.1, hRatio: 0.1 },
+            confidence: 0.5,
+            notes: []
+          }
+        ],
+        {
+          transform: { scaleX: 1, scaleY: 1, translateX: 0.1, translateY: 0.05 },
+          confidence: 0.85,
+          contributingMatchCount: 3,
+          outliers: [],
+          notes: ['3 of 3 match(es) contributed to consensus'],
+          warnings: []
+        }
+      );
+
+      const result = await runner.run({
+        wizardId: 'Invoice Wizard',
+        configGeometry,
+        configStructuralModel: baseConfigModel,
+        runtimeStructuralModel: baseRuntimeModel,
+        runtimePages: [runtimePage],
+        transformationModel,
+        predictedId: 'pred_tm_consensus',
+        nowIso: '2026-04-27T00:00:00Z'
+      });
+
+      const predicted = result.fields[0];
+      expect(predicted.anchorTierUsed).toBe('page-consensus');
+      expect(predicted.transform.basis).toBe('page-consensus');
+      // Field bbox (0.25,0.20,0.20,0.10) under affine (1,1,0.1,0.05) ->
+      // (0.35,0.25,0.20,0.10).
+      expect(predicted.bbox.xNorm).toBeCloseTo(0.35, 6);
+      expect(predicted.bbox.yNorm).toBeCloseTo(0.25, 6);
+      expect(predicted.bbox.wNorm).toBeCloseTo(0.2, 6);
+      expect(predicted.bbox.hNorm).toBeCloseTo(0.1, 6);
+      // Page-level consensus is not bound to any single object.
+      expect(predicted.transform.configObjectId).toBeUndefined();
+      expect(predicted.transform.runtimeObjectId).toBeUndefined();
+      expect(predicted.transform.objectMatchStrategy).toBeUndefined();
+      // Source rect pair is the page refined-border (page-level reference).
+      expect(predicted.transform.sourceConfigRectNorm).toEqual(
+        baseConfigModel.pages[0].refinedBorder.rectNorm
+      );
+      expect(predicted.transform.sourceRuntimeRectNorm).toEqual(
+        baseRuntimeModel.pages[0].refinedBorder.rectNorm
+      );
+    });
+
+    it('skips consensus rescue when its confidence is below the threshold', async () => {
+      const runner = createLocalizationRunner();
+      const transformationModel = buildTransformationModelWithConsensus(
+        [
+          {
+            source: 'matched-object',
+            fallbackOrder: 0,
+            configObjectId: 'cfg_box',
+            runtimeObjectId: 'rt_missing',
+            transform: { scaleX: 1, scaleY: 1, translateX: 0.4, translateY: 0.4 },
+            relativeFieldRect: { xRatio: 0, yRatio: 0, wRatio: 0.1, hRatio: 0.1 },
+            confidence: 0.9,
+            notes: []
+          },
+          {
+            source: 'refined-border',
+            fallbackOrder: 1,
+            configObjectId: null,
+            runtimeObjectId: null,
+            transform: { scaleX: 1, scaleY: 1, translateX: 0, translateY: 0 },
+            relativeFieldRect: { xRatio: 0, yRatio: 0, wRatio: 0.1, hRatio: 0.1 },
+            confidence: 0.5,
+            notes: []
+          }
+        ],
+        {
+          // Consensus exists but its confidence is too low to rescue.
+          transform: { scaleX: 1, scaleY: 1, translateX: 0.1, translateY: 0.05 },
+          confidence: 0.3,
+          contributingMatchCount: 1,
+          outliers: [],
+          notes: [],
+          warnings: ['consensus formed from a single match — no cross-validation possible']
+        }
+      );
+
+      const result = await runner.run({
+        wizardId: 'Invoice Wizard',
+        configGeometry,
+        configStructuralModel: baseConfigModel,
+        runtimeStructuralModel: baseRuntimeModel,
+        runtimePages: [runtimePage],
+        transformationModel,
+        predictedId: 'pred_tm_consensus_weak',
+        nowIso: '2026-04-27T00:00:00Z'
+      });
+
+      expect(result.fields[0].anchorTierUsed).toBe('refined-border');
+    });
+
+    it('does not consult the consensus rescue when an object anchor already resolved', async () => {
+      const runner = createLocalizationRunner();
+      const transformationModel = buildTransformationModelWithConsensus(
+        [
+          {
+            source: 'matched-object',
+            fallbackOrder: 0,
+            configObjectId: 'cfg_box',
+            runtimeObjectId: 'rt_box',
+            transform: { scaleX: 1, scaleY: 1, translateX: 0.2, translateY: 0.3 },
+            relativeFieldRect: { xRatio: 0.125, yRatio: 0, wRatio: 0.5, hRatio: 0.25 },
+            confidence: 0.95,
+            notes: []
+          }
+        ],
+        {
+          // High-confidence consensus pointing somewhere else; must be ignored
+          // because the object anchor already resolved.
+          transform: { scaleX: 1, scaleY: 1, translateX: 0.5, translateY: 0.5 },
+          confidence: 0.95,
+          contributingMatchCount: 5,
+          outliers: [],
+          notes: [],
+          warnings: []
+        }
+      );
+
+      const result = await runner.run({
+        wizardId: 'Invoice Wizard',
+        configGeometry,
+        configStructuralModel: baseConfigModel,
+        runtimeStructuralModel: baseRuntimeModel,
+        runtimePages: [runtimePage],
+        transformationModel,
+        predictedId: 'pred_tm_consensus_unused',
+        nowIso: '2026-04-27T00:00:00Z'
+      });
+
+      const predicted = result.fields[0];
+      expect(predicted.anchorTierUsed).toBe('field-object-a');
+      // Used the matched-object affine, not the consensus affine.
+      expect(predicted.bbox.xNorm).toBeCloseTo(0.45, 6);
+      expect(predicted.bbox.yNorm).toBeCloseTo(0.5, 6);
+    });
+
+    it('exposes a unit-level consensus-rescue helper that respects the confidence threshold', () => {
+      const sourceField = configGeometry.fields[0];
+      const configPage = baseConfigModel.pages[0];
+      const runtimePage = baseRuntimeModel.pages[0];
+
+      const aboveThreshold = __testing.resolveFromConsensusRescue(
+        sourceField,
+        {
+          transform: { scaleX: 1, scaleY: 1, translateX: 0.1, translateY: 0.05 },
+          confidence: __testing.CONSENSUS_RESCUE_MIN_CONFIDENCE,
+          contributingMatchCount: 2,
+          outliers: [],
+          notes: [],
+          warnings: []
+        },
+        configPage,
+        runtimePage,
+        __testing.CONSENSUS_RESCUE_MIN_CONFIDENCE
+      );
+      expect(aboveThreshold).not.toBeNull();
+      expect(aboveThreshold?.tier).toBe('page-consensus');
+
+      const belowThreshold = __testing.resolveFromConsensusRescue(
+        sourceField,
+        {
+          transform: { scaleX: 1, scaleY: 1, translateX: 0.1, translateY: 0.05 },
+          confidence: __testing.CONSENSUS_RESCUE_MIN_CONFIDENCE - 0.01,
+          contributingMatchCount: 2,
+          outliers: [],
+          notes: [],
+          warnings: []
+        },
+        configPage,
+        runtimePage,
+        __testing.CONSENSUS_RESCUE_MIN_CONFIDENCE
+      );
+      expect(belowThreshold).toBeNull();
+
+      const nullTransform = __testing.resolveFromConsensusRescue(
+        sourceField,
+        {
+          transform: null,
+          confidence: 1,
+          contributingMatchCount: 0,
+          outliers: [],
+          notes: [],
+          warnings: []
+        },
+        configPage,
+        runtimePage,
+        __testing.CONSENSUS_RESCUE_MIN_CONFIDENCE
+      );
+      expect(nullTransform).toBeNull();
+    });
+
     it('falls back to the legacy stable-anchor path when no field candidates are emitted', async () => {
       const runner = createLocalizationRunner();
       // Empty candidate list for this field — runner must use legacy resolution.
