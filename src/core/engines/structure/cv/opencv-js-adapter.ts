@@ -5,6 +5,13 @@ import {
   type CvContentRectResult,
   type CvSurfaceRaster
 } from './cv-adapter';
+import {
+  buildLineBoundedRects,
+  detectLineSegments,
+  lineBoundedRectsToObjects,
+  lineSegmentsToObjects,
+  type PixelBounds as SharedPixelBounds
+} from './line-grid-detector';
 
 /**
  * OpenCV.js CV adapter — first CV implementation used by the Structural Engine.
@@ -103,6 +110,8 @@ interface OpenCvLikeRuntime {
   MORPH_OPEN: number;
   MORPH_CLOSE: number;
   RETR_EXTERNAL: number;
+  RETR_TREE?: number;
+  RETR_LIST?: number;
   CHAIN_APPROX_SIMPLE: number;
 }
 
@@ -111,6 +120,13 @@ const DEFAULT_MIN_SIDE_PX = 4;
 const MIN_OBJECT_AREA_PX = 36;
 const MIN_LINE_LENGTH_PX = 24;
 const MAX_LINE_THICKNESS_PX = 6;
+/**
+ * Word-noise floor: drop blobs whose minimum side is below this fraction of
+ * the page's minimum side. A typical word stroke is ~1% of the page side; we
+ * keep blobs at >= 2% so glyph-shaped components don't pollute the structural
+ * model. Lines are exempt — they go through the line-segment pipeline.
+ */
+const MIN_BLOB_MIN_SIDE_FRAC = 0.02;
 
 /**
  * Page-size-relative floors used to keep object detection comparable across
@@ -128,7 +144,7 @@ const MAX_LINE_THICKNESS_PX = 6;
  * Calibrated so that at a ~600×800 reference surface the relative values
  * land near the existing absolute constants.
  */
-const MIN_OBJECT_AREA_FRAC_OF_PAGE = 0.0001; // 0.01% of pageArea
+const MIN_OBJECT_AREA_FRAC_OF_PAGE = 0.0008; // 0.08% of pageArea (filters glyph-noise)
 const MIN_LINE_LENGTH_FRAC_OF_MIN_SIDE = 0.04; // 4% of min(W, H)
 const MAX_LINE_THICKNESS_FRAC_OF_MIN_SIDE = 0.01; // 1% of min(W, H)
 
@@ -323,133 +339,56 @@ const detectConnectedBounds = (
   return components;
 };
 
-const buildHeuristicLineObjects = (
-  pixels: ImageData,
-  backgroundThreshold: number,
-  thresholds: SizeRelativeThresholds
-): CvSurfaceObject[] => {
-  const { width, height, data } = pixels;
-  const densityCutoff = 0.95;
-
-  const isBgAt = (i: number): boolean =>
-    data[i + 3] < 8 ||
-    (data[i] >= backgroundThreshold &&
-      data[i + 1] >= backgroundThreshold &&
-      data[i + 2] >= backgroundThreshold);
-
-  const rowForeground = new Uint32Array(height);
-  for (let y = 0; y < height; y += 1) {
-    let count = 0;
-    const rowBase = y * width * 4;
-    for (let x = 0; x < width; x += 1) {
-      if (!isBgAt(rowBase + x * 4)) count += 1;
-    }
-    rowForeground[y] = count;
-  }
-
-  const colForeground = new Uint32Array(width);
-  for (let x = 0; x < width; x += 1) {
-    let count = 0;
-    for (let y = 0; y < height; y += 1) {
-      if (!isBgAt((y * width + x) * 4)) count += 1;
-    }
-    colForeground[x] = count;
-  }
-
-  const horizontals: CvSurfaceObject[] = [];
-  const verticals: CvSurfaceObject[] = [];
-
-  let runStart = -1;
-  let runMaxCount = 0;
-  let hLineId = 0;
-  for (let y = 0; y <= height; y += 1) {
-    const isHigh =
-      y < height &&
-      rowForeground[y] >= thresholds.minLineLengthPx &&
-      rowForeground[y] / width >= densityCutoff;
-    if (isHigh) {
-      if (runStart < 0) {
-        runStart = y;
-        runMaxCount = rowForeground[y];
-      } else if (rowForeground[y] > runMaxCount) {
-        runMaxCount = rowForeground[y];
-      }
-    } else if (runStart >= 0) {
-      const thickness = y - runStart;
-      if (thickness <= thresholds.maxLineThicknessPx) {
-        horizontals.push({
-          objectId: `obj_hline_${hLineId++}`,
-          type: 'line-horizontal',
-          bboxSurface: { x: 0, y: runStart, width, height: thickness },
-          confidence: Math.min(1, 0.75 + (runMaxCount / width) * 0.25)
-        });
-      }
-      runStart = -1;
-      runMaxCount = 0;
-    }
-  }
-
-  runStart = -1;
-  runMaxCount = 0;
-  let vLineId = 0;
-  for (let x = 0; x <= width; x += 1) {
-    const isHigh =
-      x < width &&
-      colForeground[x] >= thresholds.minLineLengthPx &&
-      colForeground[x] / height >= densityCutoff;
-    if (isHigh) {
-      if (runStart < 0) {
-        runStart = x;
-        runMaxCount = colForeground[x];
-      } else if (colForeground[x] > runMaxCount) {
-        runMaxCount = colForeground[x];
-      }
-    } else if (runStart >= 0) {
-      const thickness = x - runStart;
-      if (thickness <= thresholds.maxLineThicknessPx) {
-        verticals.push({
-          objectId: `obj_vline_${vLineId++}`,
-          type: 'line-vertical',
-          bboxSurface: { x: runStart, y: 0, width: thickness, height },
-          confidence: Math.min(1, 0.75 + (runMaxCount / height) * 0.25)
-        });
-      }
-      runStart = -1;
-      runMaxCount = 0;
-    }
-  }
-
-  return [...horizontals, ...verticals];
-};
 
 const detectHeuristicSurfaceObjects = (
   pixels: ImageData,
   backgroundThreshold: number,
   thresholds: SizeRelativeThresholds
 ): CvSurfaceObject[] => {
-  const objects: CvSurfaceObject[] = [];
   const { width, height } = pixels;
+  const objects: CvSurfaceObject[] = [];
+  const minBlobSide = Math.max(8, Math.round(Math.min(width, height) * MIN_BLOB_MIN_SIDE_FRAC));
+
+  // 1. Connected components — kept for non-line-bounded shapes (logos, signatures).
+  //    Word-noise is dropped via min-side and area floors.
   const components = detectConnectedBounds(pixels, backgroundThreshold, thresholds.minObjectAreaPx);
   let id = 0;
-
   for (const component of components) {
     const bounds = clampRectToSurface(width, height, component);
     const rect = boundsToRect(bounds);
     if (rect.width <= 0 || rect.height <= 0) {
       continue;
     }
-
+    if (Math.min(rect.width, rect.height) < minBlobSide) {
+      continue; // glyph-shaped noise
+    }
     const area = rect.width * rect.height;
     const pageArea = Math.max(1, width * height);
     objects.push({
-      objectId: `obj_${id++}`,
+      objectId: `obj_blob_${id++}`,
       type: classifyObjectType(rect, width, height, thresholds),
       bboxSurface: rect,
       confidence: Math.min(0.99, 0.62 + Math.min(1, area / pageArea) * 0.38)
     });
   }
 
-  objects.push(...buildHeuristicLineObjects(pixels, backgroundThreshold, thresholds));
+  // 2. Shared line-grid pipeline: line objects + line-bounded rects (cells).
+  //    This is the primitive for ruled forms; both heuristic and OpenCV paths
+  //    use it so identical documents produce comparable structure.
+  const segments = detectLineSegments(pixels, backgroundThreshold, thresholds);
+  objects.push(...lineSegmentsToObjects(segments, 'obj'));
+  const cellRects = buildLineBoundedRects(segments, {
+    surfaceWidth: width,
+    surfaceHeight: height
+  });
+  objects.push(
+    ...lineBoundedRectsToObjects(cellRects, {
+      idPrefix: 'obj',
+      surfaceWidth: width,
+      surfaceHeight: height
+    })
+  );
+
   return objects;
 };
 
@@ -696,7 +635,13 @@ const detectWithOpenCvRuntime = (
     cv.Canny(cleaned, edges, 50, 150);
     cv.bitwise_or(cleaned, edges, contourMask);
 
-    cv.findContours(contourMask, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+    // RETR_TREE / RETR_LIST surface NESTED contours, which is required so that
+    // boxes-inside-boxes (e.g. table cells inside a table) become structural
+    // objects instead of being silently discarded the way RETR_EXTERNAL did.
+    // We fall back through TREE -> LIST -> EXTERNAL because the runtime might
+    // expose a subset of the constants depending on its build.
+    const retrieveMode = cv.RETR_TREE ?? cv.RETR_LIST ?? cv.RETR_EXTERNAL;
+    cv.findContours(contourMask, contours, hierarchy, retrieveMode, cv.CHAIN_APPROX_SIMPLE);
 
     const contourRects: PixelBounds[] = [];
     for (let i = 0; i < contours.size(); i += 1) {
@@ -738,6 +683,25 @@ const detectWithOpenCvRuntime = (
       thresholds
     );
 
+    // Shared line-grid cell pipeline. The OpenCV path benefits from the same
+    // primitive: HoughLinesP gives us crisp segments, but the cell
+    // reconstruction step (intersect horizontals × verticals → line-bounded
+    // rectangles) is identical to the heuristic fallback. This is what makes
+    // config-time and run-time produce comparable structure.
+    const sharedSegments = detectLineSegments(pixels, backgroundThreshold, thresholds);
+    const cellRects = buildLineBoundedRects(sharedSegments, {
+      surfaceWidth: surface.surfaceWidth,
+      surfaceHeight: surface.surfaceHeight
+    });
+    const objectsFromCells: CvSurfaceObject[] = lineBoundedRectsToObjects(
+      cellRects as SharedPixelBounds[],
+      {
+        idPrefix: 'obj_cv_cell',
+        surfaceWidth: surface.surfaceWidth,
+        surfaceHeight: surface.surfaceHeight
+      }
+    );
+
     const contentBounds =
       unionBounds([...contourRects, ...lineRects]) ??
       computeContentBoundsFromPixels(pixels, backgroundThreshold);
@@ -751,7 +715,7 @@ const detectWithOpenCvRuntime = (
           width: surface.surfaceWidth,
           height: surface.surfaceHeight
         },
-        objectsSurface: [...objectsFromContours, ...objectsFromLines]
+        objectsSurface: [...objectsFromContours, ...objectsFromLines, ...objectsFromCells]
       };
     }
 
@@ -767,14 +731,14 @@ const detectWithOpenCvRuntime = (
           width: surface.surfaceWidth,
           height: surface.surfaceHeight
         },
-        objectsSurface: [...objectsFromContours, ...objectsFromLines]
+        objectsSurface: [...objectsFromContours, ...objectsFromLines, ...objectsFromCells]
       };
     }
 
     return {
       executionMode: 'opencv-runtime',
       contentRectSurface,
-      objectsSurface: [...objectsFromContours, ...objectsFromLines]
+      objectsSurface: [...objectsFromContours, ...objectsFromLines, ...objectsFromCells]
     };
   } finally {
     if (openKernel) {
