@@ -219,43 +219,142 @@ const solveRectTransform = (
   };
 };
 
+/**
+ * Tolerance used when deciding whether a projected/transformed box truly
+ * extends off-page. Floating-point noise from affine math can put a perfectly
+ * in-bounds rect a few ulps outside [0,1]; treating those as off-page would
+ * spam clip warnings on completely well-behaved inputs.
+ */
+const CLIP_TOLERANCE = 1e-6;
+
+interface BoxClipResult {
+  box: NormalizedBoundingBox;
+  clipWarning?: string;
+}
+
+/**
+ * Clip a candidate box (described by left/top/width/height in normalized
+ * coordinates) into [0,1]x[0,1].
+ *
+ * The previous implementation clamped each side independently, which silently
+ * shrank both width AND height whenever the box landed partially off-page. To
+ * preserve box integrity, we instead:
+ *   - if the box fits inside [0,1] in a given dimension but is shifted off,
+ *     translate it back so width/height are preserved,
+ *   - if the box itself is larger than the page in a given dimension, clamp
+ *     that dimension to [0,1] (this is the only case where size genuinely
+ *     cannot be preserved),
+ * and always emit a warning describing what happened.
+ */
+const clipNormalizedBox = (
+  left: number,
+  top: number,
+  width: number,
+  height: number,
+  origin: 'transformed' | 'projected'
+): BoxClipResult => {
+  const right = left + width;
+  const bottom = top + height;
+
+  const exceedsLeft = left < -CLIP_TOLERANCE;
+  const exceedsTop = top < -CLIP_TOLERANCE;
+  const exceedsRight = right > 1 + CLIP_TOLERANCE;
+  const exceedsBottom = bottom > 1 + CLIP_TOLERANCE;
+  const offPage = exceedsLeft || exceedsTop || exceedsRight || exceedsBottom;
+
+  if (!offPage) {
+    return {
+      box: {
+        xNorm: clamp01(left),
+        yNorm: clamp01(top),
+        wNorm: clamp01(width),
+        hNorm: clamp01(height)
+      }
+    };
+  }
+
+  let adjustedLeft = left;
+  let adjustedTop = top;
+  let adjustedWidth = Math.max(width, 0);
+  let adjustedHeight = Math.max(height, 0);
+  let widthShrunk = false;
+  let heightShrunk = false;
+
+  if (adjustedWidth > 1) {
+    adjustedLeft = 0;
+    adjustedWidth = 1;
+    widthShrunk = true;
+  } else if (adjustedLeft < 0) {
+    adjustedLeft = 0;
+  } else if (adjustedLeft + adjustedWidth > 1) {
+    adjustedLeft = 1 - adjustedWidth;
+  }
+
+  if (adjustedHeight > 1) {
+    adjustedTop = 0;
+    adjustedHeight = 1;
+    heightShrunk = true;
+  } else if (adjustedTop < 0) {
+    adjustedTop = 0;
+  } else if (adjustedTop + adjustedHeight > 1) {
+    adjustedTop = 1 - adjustedHeight;
+  }
+
+  const offPageSides = [
+    exceedsLeft ? 'left' : null,
+    exceedsRight ? 'right' : null,
+    exceedsTop ? 'top' : null,
+    exceedsBottom ? 'bottom' : null
+  ]
+    .filter((side): side is string => side !== null)
+    .join(',');
+
+  const shrunkDims = [
+    widthShrunk ? 'width' : null,
+    heightShrunk ? 'height' : null
+  ]
+    .filter((dim): dim is string => dim !== null)
+    .join('/');
+
+  const integrityNote =
+    shrunkDims.length > 0
+      ? `${origin} box exceeds page in ${shrunkDims}; clamped (size reduced)`
+      : `${origin} box partially off-page; shifted back to fit (width/height preserved)`;
+
+  return {
+    box: {
+      xNorm: clamp01(adjustedLeft),
+      yNorm: clamp01(adjustedTop),
+      wNorm: clamp01(adjustedWidth),
+      hNorm: clamp01(adjustedHeight)
+    },
+    clipWarning:
+      `${integrityNote}; off-page sides=[${offPageSides}] ` +
+      `unclipped=[${left.toFixed(4)},${top.toFixed(4)},` +
+      `${(left + Math.max(width, 0)).toFixed(4)},${(top + Math.max(height, 0)).toFixed(4)}]`
+  };
+};
+
 const applyTransformToBox = (
   sourceBox: NormalizedBoundingBox,
   transform: RuntimeStructuralTransform
-): NormalizedBoundingBox => {
+): BoxClipResult => {
   const left = sourceBox.xNorm * transform.scaleX + transform.translateX;
   const top = sourceBox.yNorm * transform.scaleY + transform.translateY;
   const width = sourceBox.wNorm * transform.scaleX;
   const height = sourceBox.hNorm * transform.scaleY;
-
-  const clampedLeft = clamp01(left);
-  const clampedTop = clamp01(top);
-  const clampedRight = clamp01(left + width);
-  const clampedBottom = clamp01(top + height);
-
-  return {
-    xNorm: clampedLeft,
-    yNorm: clampedTop,
-    wNorm: clamp01(clampedRight - clampedLeft),
-    hNorm: clamp01(clampedBottom - clampedTop)
-  };
+  return clipNormalizedBox(left, top, width, height, 'transformed');
 };
 
 const projectRelativeRect = (
   relativeRect: StructuralRelativeAnchorRect,
   anchorRect: StructuralNormalizedRect
-): NormalizedBoundingBox => {
+): BoxClipResult => {
   const xNorm = anchorRect.xNorm + relativeRect.xRatio * anchorRect.wNorm;
   const yNorm = anchorRect.yNorm + relativeRect.yRatio * anchorRect.hNorm;
   const wNorm = relativeRect.wRatio * anchorRect.wNorm;
   const hNorm = relativeRect.hRatio * anchorRect.hNorm;
-
-  return {
-    xNorm: clamp01(xNorm),
-    yNorm: clamp01(yNorm),
-    wNorm: clamp01(wNorm),
-    hNorm: clamp01(hNorm)
-  };
+  return clipNormalizedBox(xNorm, yNorm, wNorm, hNorm, 'projected');
 };
 
 const geometryDistance = (a: StructuralNormalizedRect, b: StructuralNormalizedRect): number => {
@@ -385,6 +484,12 @@ interface AnchorResolution {
   tier: RuntimeAnchorTier;
   transform: RuntimeStructuralTransform;
   predictedBox: NormalizedBoundingBox;
+  /**
+   * Warnings raised while producing this resolution — currently used to
+   * surface clip notices from {@link clipNormalizedBox} so off-page projections
+   * are visible in the predicted field rather than silently distorted.
+   */
+  warnings?: string[];
 }
 
 const stableAnchorLabelToTier = (
@@ -492,18 +597,26 @@ const resolveFromRelationalRescue = (
       continue;
     }
 
-    const virtualMissingBox = projectRelativeRect(
+    const virtualMissingProjection = projectRelativeRect(
       relation.relativeRect,
       rescuerMatch.object.objectRectNorm
     );
     const virtualMissingRect: StructuralNormalizedRect = {
-      xNorm: virtualMissingBox.xNorm,
-      yNorm: virtualMissingBox.yNorm,
-      wNorm: virtualMissingBox.wNorm,
-      hNorm: virtualMissingBox.hNorm
+      xNorm: virtualMissingProjection.box.xNorm,
+      yNorm: virtualMissingProjection.box.yNorm,
+      wNorm: virtualMissingProjection.box.wNorm,
+      hNorm: virtualMissingProjection.box.hNorm
     };
 
-    const predictedBox = projectRelativeRect(missingAnchor.relativeFieldRect, virtualMissingRect);
+    const predictedProjection = projectRelativeRect(
+      missingAnchor.relativeFieldRect,
+      virtualMissingRect
+    );
+
+    const warnings = collectClipWarnings(
+      virtualMissingProjection.clipWarning,
+      predictedProjection.clipWarning
+    );
 
     const transform = solveRectTransform(
       source.pageIndex,
@@ -524,12 +637,17 @@ const resolveFromRelationalRescue = (
     return {
       tier,
       transform,
-      predictedBox
+      predictedBox: predictedProjection.box,
+      ...(warnings.length > 0 ? { warnings } : {})
     };
   }
 
   return null;
 };
+
+const collectClipWarnings = (
+  ...warnings: ReadonlyArray<string | undefined>
+): string[] => warnings.filter((w): w is string => typeof w === 'string');
 
 const candidateSourceToAnchorTier = (
   source: TransformationFieldCandidate['source']
@@ -594,10 +712,12 @@ const resolveFromTransformationCandidate = (
       : {})
   };
 
+  const projection = applyTransformToBox(source.bbox, transform);
   return {
     tier,
     transform,
-    predictedBox: applyTransformToBox(source.bbox, transform)
+    predictedBox: projection.box,
+    ...(projection.clipWarning ? { warnings: [projection.clipWarning] } : {})
   };
 };
 
@@ -650,10 +770,12 @@ const resolveFromConsensusRescue = (
     translateY: consensus.transform.translateY
   };
 
+  const projection = applyTransformToBox(source.bbox, transform);
   return {
     tier: 'page-consensus',
     transform,
-    predictedBox: applyTransformToBox(source.bbox, transform)
+    predictedBox: projection.box,
+    ...(projection.clipWarning ? { warnings: [projection.clipWarning] } : {})
   };
 };
 
@@ -709,6 +831,8 @@ const projectCandidateBox = (
   return projected ? projected.predictedBox : null;
 };
 
+
+
 const projectConsensusBox = (
   source: FieldGeometry,
   consensus: TransformationConsensus
@@ -726,7 +850,7 @@ const projectConsensusBox = (
     scaleY: consensus.transform.scaleY,
     translateX: consensus.transform.translateX,
     translateY: consensus.transform.translateY
-  });
+  }).box;
 };
 
 const labelForCandidate = (candidate: TransformationFieldCandidate): string => {
@@ -834,7 +958,7 @@ const resolveFieldAnchor = (
 
       const runtimeMatch = resolveRuntimeObject(configPage, runtimePage, stableAnchor.objectId);
       if (runtimeMatch) {
-        const predictedBox = projectRelativeRect(
+        const projection = projectRelativeRect(
           stableAnchor.relativeFieldRect,
           runtimeMatch.object.objectRectNorm
         );
@@ -851,7 +975,8 @@ const resolveFieldAnchor = (
               objectMatchStrategy: runtimeMatch.strategy
             }
           ),
-          predictedBox
+          predictedBox: projection.box,
+          ...(projection.clipWarning ? { warnings: [projection.clipWarning] } : {})
         };
       }
 
@@ -874,7 +999,10 @@ const resolveFieldAnchor = (
 
     const refinedBorderAnchor = relationship.fieldAnchors.refinedBorderAnchor;
     if (refinedBorderAnchor) {
-      const predictedBox = projectRelativeRect(refinedBorderAnchor.relativeFieldRect, runtimePage.refinedBorder.rectNorm);
+      const projection = projectRelativeRect(
+        refinedBorderAnchor.relativeFieldRect,
+        runtimePage.refinedBorder.rectNorm
+      );
       return {
         tier: 'refined-border',
         transform: solveRectTransform(
@@ -883,13 +1011,17 @@ const resolveFieldAnchor = (
           configPage.refinedBorder.rectNorm,
           runtimePage.refinedBorder.rectNorm
         ),
-        predictedBox
+        predictedBox: projection.box,
+        ...(projection.clipWarning ? { warnings: [projection.clipWarning] } : {})
       };
     }
 
     const borderAnchor = relationship.fieldAnchors.borderAnchor;
     if (borderAnchor) {
-      const predictedBox = projectRelativeRect(borderAnchor.relativeFieldRect, runtimePage.border.rectNorm);
+      const projection = projectRelativeRect(
+        borderAnchor.relativeFieldRect,
+        runtimePage.border.rectNorm
+      );
       return {
         tier: 'border',
         transform: solveRectTransform(
@@ -898,7 +1030,8 @@ const resolveFieldAnchor = (
           configPage.border.rectNorm,
           runtimePage.border.rectNorm
         ),
-        predictedBox
+        predictedBox: projection.box,
+        ...(projection.clipWarning ? { warnings: [projection.clipWarning] } : {})
       };
     }
   }
@@ -909,10 +1042,12 @@ const resolveFieldAnchor = (
     configPage.refinedBorder.rectNorm,
     runtimePage.refinedBorder.rectNorm
   );
+  const projection = applyTransformToBox(source.bbox, transform);
   return {
     tier: 'refined-border',
     transform,
-    predictedBox: applyTransformToBox(source.bbox, transform)
+    predictedBox: projection.box,
+    ...(projection.clipWarning ? { warnings: [projection.clipWarning] } : {})
   };
 };
 
@@ -980,8 +1115,47 @@ const collectCvModeMismatchWarnings = (
   return { perPage, global };
 };
 
+/**
+ * Validates that the artifacts handed to the localization-runner refer to
+ * each other consistently. The runner is artifact-driven, so silently
+ * combining a GeometryFile from one wizard with structural artifacts from
+ * another — or pairing a TransformationModel that was computed against
+ * different Config/Runtime StructuralModel ids — produces predictions that
+ * look plausible but aren't anchored to anything real. We surface these as
+ * hard errors so the mismatch is detected at run() entry rather than buried
+ * in a downstream consistency report.
+ */
+const validateArtifactCrossReferences = (input: LocalizationRunnerInput): void => {
+  if (input.configGeometry.wizardId !== input.wizardId) {
+    throw new Error(
+      `Artifact mismatch: configGeometry.wizardId=${JSON.stringify(input.configGeometry.wizardId)} ` +
+        `does not match expected wizardId=${JSON.stringify(input.wizardId)}.`
+    );
+  }
+
+  const tm = input.transformationModel;
+  if (tm) {
+    if (tm.config.id !== input.configStructuralModel.id) {
+      throw new Error(
+        `Artifact mismatch: transformationModel.config.id=${JSON.stringify(tm.config.id)} ` +
+          `does not match configStructuralModel.id=${JSON.stringify(input.configStructuralModel.id)} ` +
+          `(TransformationModel was computed against a different Config StructuralModel).`
+      );
+    }
+    if (tm.runtime.id !== input.runtimeStructuralModel.id) {
+      throw new Error(
+        `Artifact mismatch: transformationModel.runtime.id=${JSON.stringify(tm.runtime.id)} ` +
+          `does not match runtimeStructuralModel.id=${JSON.stringify(input.runtimeStructuralModel.id)} ` +
+          `(TransformationModel was computed against a different Runtime StructuralModel).`
+      );
+    }
+  }
+};
+
 export const createLocalizationRunner = (): LocalizationRunner => ({
   run: async (input) => {
+    validateArtifactCrossReferences(input);
+
     const runtimePagesByIndex = new Map(input.runtimePages.map((page) => [page.pageIndex, page]));
 
     const cvMismatchWarnings = collectCvModeMismatchWarnings(
@@ -1177,6 +1351,10 @@ export const createLocalizationRunner = (): LocalizationRunner => ({
           hasConsensusAlternative
         });
 
+        if (resolution.warnings) {
+          fieldWarnings.push(...resolution.warnings);
+        }
+
         const cvWarning = cvMismatchWarnings.perPage.get(field.pageIndex);
         if (cvWarning) {
           fieldWarnings.push(cvWarning);
@@ -1216,6 +1394,7 @@ export const __testing = {
   findFieldCandidates,
   evaluateAnchorAgreement,
   collectCvModeMismatchWarnings,
+  validateArtifactCrossReferences,
   CONSENSUS_RESCUE_MIN_CONFIDENCE,
   ANCHOR_AGREEMENT_IOU_MIN,
   WEAK_OBJECT_MATCH_CONFIDENCE
