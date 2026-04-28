@@ -161,13 +161,13 @@ export const NormalizedPageViewport = forwardRef<
     observer.observe(imageRef.current);
     measure();
     return () => observer.disconnect();
-  }, [measure, page?.imageDataUrl, page?.imageBlobUrl]);
+  }, [measure, page?.imageDataUrl]);
 
   // Reset measurement when the page identity changes so a stale rect from a
   // previous page can never feed an overlay transform on the new page.
   useEffect(() => {
     setDisplayRect(null);
-  }, [page?.imageDataUrl, page?.imageBlobUrl]);
+  }, [page?.imageDataUrl]);
 
   const frameClassName = ['normalized-page-viewport', className].filter(Boolean).join(' ');
   const overlayClassNameFinal = [
@@ -178,17 +178,15 @@ export const NormalizedPageViewport = forwardRef<
     .filter(Boolean)
     .join(' ');
 
-  if (!page || (!page.imageDataUrl && !page.imageBlobUrl)) {
+  if (!page) {
     return <>{emptyState}</>;
   }
-
-  const imageSrc = page.imageDataUrl ?? page.imageBlobUrl ?? '';
 
   return (
     <div className={frameClassName}>
       <img
         ref={imageRef}
-        src={imageSrc}
+        src={page.imageDataUrl}
         alt={imageAlt ?? `Normalized page ${page.pageIndex + 1}`}
         className="normalized-page-viewport__image"
         onLoad={measure}
