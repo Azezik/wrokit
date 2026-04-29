@@ -25,6 +25,21 @@ export interface StructuralOverlayOptions {
   showFieldAnchors: boolean;
   showTransformationMatches: boolean;
   /**
+   * Debug: project the Config StructuralModel onto the runtime page using the
+   * config rects directly (no transformation applied). Rendered in red — this
+   * is the "before correction" view, showing where the config thinks each
+   * structural element sits before the runtime alignment math runs.
+   */
+  showConfigProjectionRaw: boolean;
+  /**
+   * Debug: project the Config StructuralModel onto the runtime page after the
+   * TransformationModel is applied per-object (matched-object → matched
+   * ancestor → page consensus → refined-border level → border level). Rendered
+   * in green — this is the "after correction" view that mirrors the same
+   * transform ladder the localization runner uses.
+   */
+  showConfigProjectionTransformed: boolean;
+  /**
    * Minimum object confidence to render. Top-level (depth 0) parent objects
    * always pass so the page skeleton stays readable; deeper objects respect
    * this threshold unless `showAllObjects` is on.
@@ -40,6 +55,8 @@ export const SIMPLE_OVERLAY_OPTIONS: StructuralOverlayOptions = {
   showAllObjects: false,
   showFieldAnchors: false,
   showTransformationMatches: false,
+  showConfigProjectionRaw: false,
+  showConfigProjectionTransformed: false,
   minObjectConfidence: 0.75
 };
 
@@ -51,6 +68,8 @@ export const ADVANCED_OVERLAY_OPTIONS: StructuralOverlayOptions = {
   showAllObjects: true,
   showFieldAnchors: true,
   showTransformationMatches: true,
+  showConfigProjectionRaw: false,
+  showConfigProjectionTransformed: false,
   minObjectConfidence: 0
 };
 
@@ -100,6 +119,8 @@ export const optionsMatchPreset = (
     options.showAllObjects === preset.showAllObjects &&
     options.showFieldAnchors === preset.showFieldAnchors &&
     options.showTransformationMatches === preset.showTransformationMatches &&
+    options.showConfigProjectionRaw === preset.showConfigProjectionRaw &&
+    options.showConfigProjectionTransformed === preset.showConfigProjectionTransformed &&
     options.minObjectConfidence === preset.minObjectConfidence
   );
 };

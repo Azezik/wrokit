@@ -169,6 +169,32 @@ export function StructuralOverlayControls({
         ) : null}
       </fieldset>
 
+      {transformationAvailable ? (
+        <fieldset
+          className="structural-overlay-controls__row structural-overlay-controls__row--debug"
+          disabled={!visible}
+          aria-label="Config projection debug toggles"
+        >
+          <span className="structural-overlay-controls__row-label">Config projection:</span>
+          <label className="structural-overlay-controls__toggle structural-overlay-controls__toggle--config-raw">
+            <input
+              type="checkbox"
+              checked={options.showConfigProjectionRaw}
+              onChange={(event) => setOption('showConfigProjectionRaw', event.target.checked)}
+            />
+            Raw (before correction)
+          </label>
+          <label className="structural-overlay-controls__toggle structural-overlay-controls__toggle--config-transformed">
+            <input
+              type="checkbox"
+              checked={options.showConfigProjectionTransformed}
+              onChange={(event) => setOption('showConfigProjectionTransformed', event.target.checked)}
+            />
+            Transformed (after correction)
+          </label>
+        </fieldset>
+      ) : null}
+
       <fieldset className="structural-overlay-controls__row" disabled={!visible}>
         <label className="structural-overlay-controls__slider">
           Min object confidence
@@ -199,6 +225,16 @@ export function StructuralOverlayControls({
         <span className="structural-overlay-controls__legend-item" data-swatch="anchor">Anchor</span>
         {transformationAvailable ? (
           <span className="structural-overlay-controls__legend-item" data-swatch="match">Match</span>
+        ) : null}
+        {transformationAvailable ? (
+          <span className="structural-overlay-controls__legend-item" data-swatch="config-raw">
+            Config Raw
+          </span>
+        ) : null}
+        {transformationAvailable ? (
+          <span className="structural-overlay-controls__legend-item" data-swatch="config-transformed">
+            Config Transformed
+          </span>
         ) : null}
       </div>
     </div>
