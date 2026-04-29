@@ -1624,8 +1624,11 @@ describe('localization-runner', () => {
       expect(result.fields[0].anchorTierUsed).toBe('refined-border');
     });
 
-    it('does not consult the consensus rescue when an object anchor already resolved', async () => {
+    it('keeps the resolved object anchor when the page consensus agrees with it', async () => {
       const runner = createLocalizationRunner();
+      // Consensus AGREES with the primary anchor (same affine), so the
+      // single-anchor pick should be preserved. The override only fires when
+      // primary and consensus disagree about where the field lives.
       const transformationModel = buildTransformationModelWithConsensus(
         [
           {
@@ -1640,8 +1643,55 @@ describe('localization-runner', () => {
           }
         ],
         {
-          // High-confidence consensus pointing somewhere else; must be ignored
-          // because the object anchor already resolved.
+          transform: { scaleX: 1, scaleY: 1, translateX: 0.2, translateY: 0.3 },
+          confidence: 0.95,
+          contributingMatchCount: 5,
+          outliers: [],
+          notes: [],
+          warnings: []
+        }
+      );
+
+      const result = await runner.run({
+        wizardId: 'Invoice Wizard',
+        configGeometry,
+        configStructuralModel: baseConfigModel,
+        runtimeStructuralModel: baseRuntimeModel,
+        runtimePages: [runtimePage],
+        transformationModel,
+        predictedId: 'pred_tm_consensus_agrees',
+        nowIso: '2026-04-27T00:00:00Z'
+      });
+
+      const predicted = result.fields[0];
+      expect(predicted.anchorTierUsed).toBe('field-object-a');
+      // Used the matched-object affine, not the consensus affine.
+      expect(predicted.bbox.xNorm).toBeCloseTo(0.45, 6);
+      expect(predicted.bbox.yNorm).toBeCloseTo(0.5, 6);
+    });
+
+    it('overrides a resolved object anchor with the page consensus when they disagree', async () => {
+      const runner = createLocalizationRunner();
+      // Primary projects field to (0.45, 0.50). Consensus projects it to
+      // (0.75, 0.70). A field of size (0.20, 0.10) at those two positions has
+      // zero IoU, well below CONSENSUS_OVERRIDE_MAX_IOU. With the consensus
+      // backed by 5 matches at 0.95 confidence, the override fires and
+      // consensus wins — exactly the cross-document case where a single
+      // primary anchor disagrees with the page-level movement trend.
+      const transformationModel = buildTransformationModelWithConsensus(
+        [
+          {
+            source: 'matched-object',
+            fallbackOrder: 0,
+            configObjectId: 'cfg_box',
+            runtimeObjectId: 'rt_box',
+            transform: { scaleX: 1, scaleY: 1, translateX: 0.2, translateY: 0.3 },
+            relativeFieldRect: { xRatio: 0.125, yRatio: 0, wRatio: 0.5, hRatio: 0.25 },
+            confidence: 0.95,
+            notes: []
+          }
+        ],
+        {
           transform: { scaleX: 1, scaleY: 1, translateX: 0.5, translateY: 0.5 },
           confidence: 0.95,
           contributingMatchCount: 5,
@@ -1658,15 +1708,20 @@ describe('localization-runner', () => {
         runtimeStructuralModel: baseRuntimeModel,
         runtimePages: [runtimePage],
         transformationModel,
-        predictedId: 'pred_tm_consensus_unused',
+        predictedId: 'pred_tm_consensus_override',
         nowIso: '2026-04-27T00:00:00Z'
       });
 
       const predicted = result.fields[0];
-      expect(predicted.anchorTierUsed).toBe('field-object-a');
-      // Used the matched-object affine, not the consensus affine.
-      expect(predicted.bbox.xNorm).toBeCloseTo(0.45, 6);
-      expect(predicted.bbox.yNorm).toBeCloseTo(0.5, 6);
+      expect(predicted.anchorTierUsed).toBe('page-consensus');
+      expect(predicted.transform.basis).toBe('page-consensus');
+      // Field (0.25, 0.20, 0.20, 0.10) under consensus (1, 1, 0.5, 0.5) ->
+      // (0.75, 0.70, 0.20, 0.10).
+      expect(predicted.bbox.xNorm).toBeCloseTo(0.75, 6);
+      expect(predicted.bbox.yNorm).toBeCloseTo(0.7, 6);
+      expect(predicted.warnings ?? []).toEqual(
+        expect.arrayContaining([expect.stringContaining('consensus override')])
+      );
     });
 
     it('exposes a unit-level consensus-rescue helper that respects the confidence threshold', () => {

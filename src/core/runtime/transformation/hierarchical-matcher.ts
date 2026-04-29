@@ -22,6 +22,7 @@ import type {
 import type { TransformationObjectMatch } from '../../contracts/transformation-model';
 import {
   computeObjectSimilarity,
+  CROSS_DOCUMENT_SIMILARITY_WEIGHTS,
   DEFAULT_SIMILARITY_WEIGHTS,
   type SimilarityContext,
   type SimilarityWeights
@@ -39,12 +40,30 @@ export interface MatcherOptions {
    */
   minGlobalConfidence?: number;
   weights?: SimilarityWeights;
+  /**
+   * True when the config and runtime structural models came from distinct
+   * documents (different `documentFingerprint`). When true and `weights` is
+   * not explicitly provided, the matcher uses the cross-document weight
+   * profile, which de-emphasizes absolute position in favor of position
+   * relative to the refined border. This is the typical Run Mode case
+   * (relocating saved geometry onto a new but similar document).
+   */
+  crossDocument?: boolean;
 }
 
-export const DEFAULT_MATCHER_OPTIONS: Required<MatcherOptions> = {
+export const DEFAULT_MATCHER_OPTIONS: Required<Omit<MatcherOptions, 'crossDocument'>> = {
   minHierarchicalConfidence: 0.55,
   minGlobalConfidence: 0.7,
   weights: DEFAULT_SIMILARITY_WEIGHTS
+};
+
+const resolveWeights = (options: MatcherOptions): SimilarityWeights => {
+  if (options.weights) {
+    return options.weights;
+  }
+  return options.crossDocument
+    ? CROSS_DOCUMENT_SIMILARITY_WEIGHTS
+    : DEFAULT_SIMILARITY_WEIGHTS;
 };
 
 /**
@@ -214,12 +233,12 @@ export const matchPage = (
   runtimePage: StructuralPage,
   options: MatcherOptions = {}
 ): PageMatchResult => {
-  const opts: Required<MatcherOptions> = {
+  const opts: Required<Omit<MatcherOptions, 'crossDocument'>> = {
     minHierarchicalConfidence:
       options.minHierarchicalConfidence ?? DEFAULT_MATCHER_OPTIONS.minHierarchicalConfidence,
     minGlobalConfidence:
       options.minGlobalConfidence ?? DEFAULT_MATCHER_OPTIONS.minGlobalConfidence,
-    weights: options.weights ?? DEFAULT_MATCHER_OPTIONS.weights
+    weights: resolveWeights(options)
   };
 
   const configObjects = configPage.objectHierarchy.objects;

@@ -1,3 +1,63 @@
+## 2026-04-29 — Fix: Cross-document field accuracy (similarity weights + consensus override)
+
+### Why this step
+- Within-document Run Mode (re-loading the same NormalizedPage that was used in Config) already lands predicted boxes correctly: the structural overlay is virtually identical between Config and Run, every per-field anchor resolves to the same runtime object, and projections are exact.
+- Cross-document Run Mode (a new file of the same template — e.g. a different Reddit profile, an invoice with different line counts, a form filled in for a different customer) was placing some predicted boxes on structurally adjacent but wrong elements. A field calibrated on a "karma value" was landing on the "Reddit Age" cell on one runtime document and on the "Karma" label on another. The visual context (right-sidebar card, stat-tile grid) was clearly the same; the structural detection was clearly comparable; but the matcher's first-place anchor pick disagreed across documents in a way that was being silently trusted.
+- Two reinforcing causes:
+  1. **Similarity weights over-favored absolute position** (`position: 0.30`, `refinedBorderRelation: 0.15`). When content widths shift across two instances of the same template, line-grid cells move by a few percent. Absolute position then prefers the wrong neighbor; relative position inside the refined border is the more reliable cross-document signal.
+  2. **Consensus was only consulted as a last-resort rescue.** When the chosen primary anchor resolved but disagreed with the page-level consensus (which averages many object matches and is far more stable across small CV detection drift), the runner trusted the lone primary anyway. The audit-driven rescue path in `localization-runner` only fired after all object anchors had failed.
+
+### What changed
+- `src/core/runtime/transformation/similarity.ts`:
+  - New `CROSS_DOCUMENT_SIMILARITY_WEIGHTS` profile: `{ position: 0.15, size: 0.20, aspect: 0.10, parentChain: 0.25, refinedBorderRelation: 0.30 }`. Weights still sum to 1; the only change is shifting weight from absolute to refined-border-relative position. The within-document `DEFAULT_SIMILARITY_WEIGHTS` profile is unchanged.
+- `src/core/runtime/transformation/hierarchical-matcher.ts`:
+  - `MatcherOptions` now exposes `crossDocument?: boolean`. When `true` and `weights` is not explicitly provided, the matcher uses `CROSS_DOCUMENT_SIMILARITY_WEIGHTS`. Caller-supplied `weights` always wins.
+- `src/core/runtime/transformation-runner.ts`:
+  - Detects `config.documentFingerprint !== runtime.documentFingerprint` and forwards `crossDocument` to `matchPage`. An explicit `matcherOptions.crossDocument` from the caller wins. The matcher itself stays a pure pairwise comparator; the document-identity decision lives at the composition layer.
+- `src/core/runtime/localization-runner.ts`:
+  - New consensus-override rung. After resolving a primary `matched-object` / `parent-object` candidate, the runner:
+    1. checks whether a high-confidence multi-match consensus exists (`confidence ≥ 0.7`, `contributingMatchCount ≥ 2`);
+    2. computes IoU between the primary's projected box and the consensus's projected box;
+    3. if IoU < 0.4 (the override floor — looser than the existing `ANCHOR_AGREEMENT_IOU_MIN = 0.5` warning floor so override only fires on real disagreement), switches the chosen resolution to the consensus, demotes the displaced primary into `alternatives` so the existing IoU agreement check still surfaces it, and emits an explicit `consensus override: ...` warning on the predicted field.
+  - Refined-border / border / legacy resolutions are NOT overridden — they are deliberate page-level fallbacks already.
+  - The existing consensus-rescue rung (no anchor resolved → use consensus if confident) is unchanged. The override is a separate path that fires when the primary IS resolved but disagrees.
+  - New `__testing` exports: `CONSENSUS_OVERRIDE_MIN_CONFIDENCE`, `CONSENSUS_OVERRIDE_MIN_CONTRIBUTORS`, `CONSENSUS_OVERRIDE_MAX_IOU`.
+
+### Why these are the right fixes (and why not normalization)
+- The user's directive was explicit: do not address normalization. All file types must continue to produce the same canonical NormalizedPage surface, and the structural overlay confirms that two NormalizedPages of the same Reddit-profile template already render virtually identically. The accuracy gap is in the matcher's tolerance to the small detection drift that *is* present, not in the normalization pipeline.
+- Cross-document similarity weights and consensus override both operate over canonical normalized coordinates and existing artifacts. They do not change `StructuralModel`, `GeometryFile`, or any persisted contract; they refine how the localization runtime chooses between already-emitted candidates.
+
+### Tests
+- `tests/unit/transformation-matching.test.ts` — two new tests:
+  - `uses cross-document weights when fingerprints differ` — proves the runner detects mismatched fingerprints and that a runtime page with different refined-border bounds matches the same single config object with a *higher* match confidence under cross-document weights than under the within-document weights (because the strong refined-border-relation signal is weighted more heavily).
+  - `CROSS_DOCUMENT_SIMILARITY_WEIGHTS sum to 1 and de-emphasize absolute position` — locks the weight contract and the inverted relationship between the two profiles.
+- `tests/unit/localization-runner.test.ts` — updated one and added one:
+  - `keeps the resolved object anchor when the page consensus agrees with it` (renamed from the previous "does not consult the consensus rescue when an object anchor already resolved"). The original test's premise (consensus pointing somewhere completely different from the primary, primary still wins) is the exact scenario the new override is designed to switch on. Updated so the consensus *agrees* with the primary, preserving the original "primary used when available" intent.
+  - `overrides a resolved object anchor with the page consensus when they disagree` — new test: high-confidence multi-match consensus + primary projection at zero IoU with consensus → consensus wins, anchor tier becomes `page-consensus`, predicted bbox matches the consensus projection, and the predicted field carries a `consensus override: ...` warning.
+
+### Boundaries preserved
+- No change to `StructuralModel`, `GeometryFile`, `WizardFile`, `TransformationModel`, or `PredictedGeometryFile` shapes/versions. Existing artifacts re-ingest identically.
+- No mutation of `GeometryFile`, either `StructuralModel`, or any OpenCV output. The override projects through an existing computed consensus; no new affines are invented.
+- Deterministic anchor fallback `A → B → C → Refined Border → Border` is preserved when no TransformationModel is provided. The override only activates inside the TM-driven path.
+- All transforms remain in canonical normalized [0, 1] space over the NormalizedPage surface. No alternate coordinate system, no source-format branching.
+- OpenCV.js stays inside `cv/opencv-js-adapter.ts`. Normalization is unchanged.
+
+### Files modified
+- `src/core/runtime/transformation/similarity.ts` (new `CROSS_DOCUMENT_SIMILARITY_WEIGHTS` profile)
+- `src/core/runtime/transformation/hierarchical-matcher.ts` (`crossDocument` option, weight selector)
+- `src/core/runtime/transformation-runner.ts` (forward fingerprint mismatch into matcher options)
+- `src/core/runtime/localization-runner.ts` (consensus-override rung + `__testing` exports)
+- `tests/unit/transformation-matching.test.ts` (two new tests; cross-document weight import)
+- `tests/unit/localization-runner.test.ts` (one updated, one new)
+- `docs/dev-log.md` (this entry)
+
+### Checks run
+- `npm run check` — clean.
+- `npm test` — 213/213 passing across 21 files (211 prior + 2 new).
+- `npm run build` — clean.
+
+---
+
 ## 2026-04-28 — Refactor: Phase 1D (delete or wire dead surfaces)
 
 ### Why this step
