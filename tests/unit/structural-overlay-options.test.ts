@@ -52,6 +52,8 @@ describe('overlay presets', () => {
     expect(SIMPLE_OVERLAY_OPTIONS.showFieldAnchors).toBe(false);
     expect(SIMPLE_OVERLAY_OPTIONS.showTransformationMatches).toBe(false);
     expect(SIMPLE_OVERLAY_OPTIONS.showAllObjects).toBe(false);
+    expect(SIMPLE_OVERLAY_OPTIONS.showConfigProjectionRaw).toBe(false);
+    expect(SIMPLE_OVERLAY_OPTIONS.showConfigProjectionTransformed).toBe(false);
     expect(SIMPLE_OVERLAY_OPTIONS.minObjectConfidence).toBeGreaterThan(0);
   });
 
@@ -62,6 +64,19 @@ describe('overlay presets', () => {
     expect(ADVANCED_OVERLAY_OPTIONS.showFieldAnchors).toBe(true);
     expect(ADVANCED_OVERLAY_OPTIONS.showTransformationMatches).toBe(true);
     expect(ADVANCED_OVERLAY_OPTIONS.showAllObjects).toBe(true);
+  });
+
+  it('Config-projection debug toggles default off in both presets', () => {
+    expect(ADVANCED_OVERLAY_OPTIONS.showConfigProjectionRaw).toBe(false);
+    expect(ADVANCED_OVERLAY_OPTIONS.showConfigProjectionTransformed).toBe(false);
+  });
+
+  it('optionsMatchPreset returns false when a config-projection toggle differs', () => {
+    const tweaked: StructuralOverlayOptions = {
+      ...SIMPLE_OVERLAY_OPTIONS,
+      showConfigProjectionRaw: true
+    };
+    expect(optionsMatchPreset(tweaked, 'simple')).toBe(false);
   });
 
   it('overlayPresetForMode returns the matching preset', () => {

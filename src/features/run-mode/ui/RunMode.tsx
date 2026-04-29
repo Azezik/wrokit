@@ -123,6 +123,15 @@ export function RunMode() {
     );
   }, [runtimeStructuralModel, selectedPage]);
 
+  const configStructuralPage = useMemo(() => {
+    if (!configStructuralModel || !selectedPage) {
+      return null;
+    }
+    return (
+      configStructuralModel.pages.find((page) => page.pageIndex === selectedPage.pageIndex) ?? null
+    );
+  }, [configStructuralModel, selectedPage]);
+
   const transformationPage = useMemo(() => {
     if (!transformationModel || !selectedPage) {
       return null;
@@ -554,6 +563,7 @@ export function RunMode() {
               options={structuralOverlayOptions}
               fieldBoxes={predictedBoxesForPage}
               transformationPage={transformationPage}
+              configPage={configStructuralPage}
             />
           </NormalizedPageViewport>
 

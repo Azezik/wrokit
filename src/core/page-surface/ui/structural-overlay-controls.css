@@ -188,3 +188,34 @@
   border-color: rgb(37 99 235 / 0.85);
   background: rgb(37 99 235 / 0.25);
 }
+
+.structural-overlay-controls__legend-item[data-swatch='config-raw']::before {
+  border-color: #dc2626;
+  background: rgb(220 38 38 / 0.18);
+  border-style: dashed;
+}
+
+.structural-overlay-controls__legend-item[data-swatch='config-transformed']::before {
+  border-color: #16a34a;
+  background: rgb(22 163 74 / 0.18);
+}
+
+.structural-overlay-controls__row--debug {
+  padding-top: var(--space-2);
+  border-top: var(--border-default);
+}
+
+.structural-overlay-controls__row-label {
+  font-size: var(--font-size-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+}
+
+.structural-overlay-controls__toggle--config-raw {
+  color: #dc2626;
+}
+
+.structural-overlay-controls__toggle--config-transformed {
+  color: #16a34a;
+}

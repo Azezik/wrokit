@@ -156,3 +156,58 @@
   background: rgb(37 99 235 / 0.92);
   font-size: 0.6rem;
 }
+
+/* Config-projection debug overlays. The runtime structural overlay is the
+   authoritative reference layer; these projections sit slightly above it
+   (z-index 6/7) so the user can compare placement, but pointer-events stay
+   off so they never intercept hover from the real runtime objects. */
+.structural-debug-overlay__config-border,
+.structural-debug-overlay__config-refined,
+.structural-debug-overlay__config-object {
+  position: absolute;
+  pointer-events: none;
+  box-sizing: border-box;
+  background: transparent;
+}
+
+.structural-debug-overlay__config-border[data-variant='raw'],
+.structural-debug-overlay__config-refined[data-variant='raw'],
+.structural-debug-overlay__config-object[data-variant='raw'] {
+  border: 1.5px dashed #dc2626;
+  background: rgb(220 38 38 / 0.05);
+  z-index: 6;
+}
+
+.structural-debug-overlay__config-border[data-variant='raw'],
+.structural-debug-overlay__config-refined[data-variant='raw'] {
+  border-width: 2px;
+}
+
+.structural-debug-overlay__config-object[data-variant='raw'][data-depth='0'] {
+  border-width: 2px;
+}
+
+.structural-debug-overlay__config-border[data-variant='transformed'],
+.structural-debug-overlay__config-refined[data-variant='transformed'],
+.structural-debug-overlay__config-object[data-variant='transformed'] {
+  border: 1.5px solid #16a34a;
+  background: rgb(22 163 74 / 0.05);
+  z-index: 7;
+}
+
+.structural-debug-overlay__config-border[data-variant='transformed'],
+.structural-debug-overlay__config-refined[data-variant='transformed'] {
+  border-width: 2px;
+}
+
+.structural-debug-overlay__config-object[data-variant='transformed'][data-depth='0'] {
+  border-width: 2px;
+}
+
+/* Identity / fallback transforms in the transformed projection — surface that
+   the rect sits where the config rect originally sits, so the user can see
+   when the transformer fell through to a no-op. */
+.structural-debug-overlay__config-object[data-variant='transformed'][data-transform-source='identity'] {
+  border-style: dotted;
+  border-color: rgb(22 163 74 / 0.55);
+}

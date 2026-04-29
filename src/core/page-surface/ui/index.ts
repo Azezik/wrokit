@@ -26,6 +26,13 @@ export {
   type StructuralOverlayOptions
 } from './structural-overlay-options';
 export {
+  projectConfigPageRaw,
+  projectConfigPageTransformed,
+  type ConfigProjectionTransformSource,
+  type ProjectedConfigObject,
+  type ProjectedConfigPage
+} from './config-projection';
+export {
   buildStructuralStatusText,
   type StructuralStatusTextInput
 } from './structural-status-text';
