@@ -334,6 +334,74 @@ describe('createOpenCvJsAdapter', () => {
     }
   });
 
+  it('detects line-bounded objects on a dark-themed page (background-profile inversion)', async () => {
+    // Same 2x2 ruled grid as the heuristic-cells test, but painted as a
+    // GREY panel on a near-black page. With the old hard-coded
+    // `backgroundLuminanceThreshold = 245` heuristic, every pixel on a dark
+    // page counts as foreground and the detector flood-fills the whole
+    // raster as one giant blob — internal cells vanish. With the
+    // background-profile + inversion normalization, the same 4 leaf cells
+    // and the outer frame must be detected on a dark page just as on a
+    // light page.
+    const adapter = createOpenCvJsAdapter();
+    const w = 240;
+    const h = 240;
+    const data = new Uint8ClampedArray(w * h * 4);
+    // Dark page background (near-black)
+    for (let i = 0; i < data.length; i += 4) {
+      data[i] = 12;
+      data[i + 1] = 12;
+      data[i + 2] = 12;
+      data[i + 3] = 255;
+    }
+    // Light grid lines on the dark page
+    const paintLight = (rect: { left: number; top: number; right: number; bottom: number }) => {
+      for (let y = rect.top; y < rect.bottom; y += 1) {
+        for (let x = rect.left; x < rect.right; x += 1) {
+          const i = (y * w + x) * 4;
+          data[i] = 220;
+          data[i + 1] = 220;
+          data[i + 2] = 220;
+          data[i + 3] = 255;
+        }
+      }
+    };
+    for (const y of [20, 120, 220]) {
+      paintLight({ left: 20, top: y, right: 221, bottom: y + 2 });
+    }
+    for (const x of [20, 120, 220]) {
+      paintLight({ left: x, top: 20, right: x + 2, bottom: 221 });
+    }
+    const raster: CvSurfaceRaster = {
+      surface: { pageIndex: 0, surfaceWidth: w, surfaceHeight: h },
+      pixels: { width: w, height: h, data, colorSpace: 'srgb' } as unknown as ImageData
+    };
+
+    const result = await adapter.detectContentRect(raster);
+    expect(result.executionMode).toBe('heuristic-fallback');
+
+    const cells = result.objectsSurface;
+    const matches = (
+      bbox: { x: number; y: number; width: number; height: number },
+      expected: { x: number; y: number; width: number; height: number }
+    ) =>
+      Math.abs(bbox.x - expected.x) <= 2 &&
+      Math.abs(bbox.y - expected.y) <= 2 &&
+      Math.abs(bbox.width - expected.width) <= 2 &&
+      Math.abs(bbox.height - expected.height) <= 2;
+
+    const expectedCells = [
+      { x: 20, y: 20, width: 100, height: 100 },
+      { x: 120, y: 20, width: 100, height: 100 },
+      { x: 20, y: 120, width: 100, height: 100 },
+      { x: 120, y: 120, width: 100, height: 100 },
+      { x: 20, y: 20, width: 200, height: 200 }
+    ];
+    for (const expected of expectedCells) {
+      expect(cells.some((cell) => matches(cell.bboxSurface, expected))).toBe(true);
+    }
+  });
+
   it('extracts contour objects through the OpenCV runtime boundary, but does not emit line segments as objects', async () => {
     const adapter = createOpenCvJsAdapter({
       opencvRuntime: createMockOpenCvRuntime()
