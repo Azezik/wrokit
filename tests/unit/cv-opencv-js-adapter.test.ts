@@ -402,6 +402,53 @@ describe('createOpenCvJsAdapter', () => {
     }
   });
 
+  it('detects a low-contrast filled panel (Δ luminance ≈ 18) on a dark page', async () => {
+    // Reddit / dashboard regression: a card whose fill is only ~18 luminance
+    // units brighter than the page background. With the previous detector
+    // sensitivity, panels in this contrast range were dominated by Canny
+    // noise and either fragmented into several mini-rects or dropped under
+    // the small-blob floor on large rasters. After the sensitivity boost
+    // (CLAHE + edge-mask MORPH_CLOSE + relaxed min-blob fraction), a panel
+    // at Δ = 18 must surface as a single rect.
+    const adapter = createOpenCvJsAdapter();
+    const w = 240;
+    const h = 240;
+    const data = new Uint8ClampedArray(w * h * 4);
+    for (let i = 0; i < data.length; i += 4) {
+      data[i] = 12;
+      data[i + 1] = 12;
+      data[i + 2] = 12;
+      data[i + 3] = 255;
+    }
+    const panel = { left: 60, top: 60, right: 180, bottom: 180 };
+    for (let y = panel.top; y < panel.bottom; y += 1) {
+      for (let x = panel.left; x < panel.right; x += 1) {
+        const i = (y * w + x) * 4;
+        data[i] = 30;
+        data[i + 1] = 30;
+        data[i + 2] = 30;
+        data[i + 3] = 255;
+      }
+    }
+    const raster: CvSurfaceRaster = {
+      surface: { pageIndex: 0, surfaceWidth: w, surfaceHeight: h },
+      pixels: { width: w, height: h, data, colorSpace: 'srgb' } as unknown as ImageData
+    };
+
+    const result = await adapter.detectContentRect(raster);
+    expect(result.executionMode).toBe('heuristic-fallback');
+
+    const matches = (
+      bbox: { x: number; y: number; width: number; height: number }
+    ) =>
+      Math.abs(bbox.x - 60) <= 4 &&
+      Math.abs(bbox.y - 60) <= 4 &&
+      Math.abs(bbox.width - 120) <= 4 &&
+      Math.abs(bbox.height - 120) <= 4;
+
+    expect(result.objectsSurface.some((object) => matches(object.bboxSurface))).toBe(true);
+  });
+
   it('extracts contour objects through the OpenCV runtime boundary, but does not emit line segments as objects', async () => {
     const adapter = createOpenCvJsAdapter({
       opencvRuntime: createMockOpenCvRuntime()

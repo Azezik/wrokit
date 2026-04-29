@@ -66,6 +66,11 @@ interface OpenCvRect {
   height: number;
 }
 
+interface OpenCvClahe {
+  apply(src: OpenCvMat, dst: OpenCvMat): void;
+  delete?(): void;
+}
+
 interface OpenCvLikeRuntime {
   Mat: new () => OpenCvMat;
   MatVector: new () => OpenCvContourVector;
@@ -95,6 +100,22 @@ interface OpenCvLikeRuntime {
   ): void;
   /** Optional dilation primitive used to close fragmented edges. */
   dilate?(src: OpenCvMat, dst: OpenCvMat, kernel: OpenCvMat): void;
+  /**
+   * Optional CLAHE constructor. CLAHE (Contrast Limited Adaptive Histogram
+   * Equalization) is the single biggest sensitivity win on dark / low-contrast
+   * UIs where panel boundaries are only 5–15 luminance units apart.
+   */
+  CLAHE?: new (clipLimit?: number, tileGridSize?: unknown) => OpenCvClahe;
+  /**
+   * Optional polygon approximation. Used to detect contours that are
+   * shape-rectangular (4 vertices, convex, ~90° corners) so they can be
+   * scored higher and protected from NMS suppression by larger
+   * non-rectangular contours.
+   */
+  approxPolyDP?(curve: OpenCvMat, approx: OpenCvMat, epsilon: number, closed: boolean): void;
+  arcLength?(curve: OpenCvMat, closed: boolean): number;
+  contourArea?(contour: OpenCvMat): number;
+  isContourConvex?(contour: OpenCvMat): boolean;
   bitwise_or(src1: OpenCvMat, src2: OpenCvMat, dst: OpenCvMat): void;
   findContours(
     image: OpenCvMat,
@@ -134,10 +155,13 @@ const MAX_LINE_THICKNESS_PX = 6;
 /**
  * Word-noise floor: drop blobs whose minimum side is below this fraction of
  * the page's minimum side. A typical word stroke is ~1% of the page side; we
- * keep blobs at >= 2% so glyph-shaped components don't pollute the structural
- * model. Lines are exempt — they go through the line-segment pipeline.
+ * keep blobs at >= 1.2% so small UI elements (number tiles, icon buttons,
+ * single-row sidebar items) survive on large rasters. The previous 2% cutoff
+ * killed ~40 px elements on a 2000-wide screenshot, where every secondary
+ * Reddit/dashboard control lives. Lines are exempt — they go through the
+ * line-segment pipeline.
  */
-const MIN_BLOB_MIN_SIDE_FRAC = 0.02;
+const MIN_BLOB_MIN_SIDE_FRAC = 0.012;
 
 /**
  * Page-size-relative floors used to keep object detection comparable across
@@ -346,25 +370,54 @@ const intersectionOverUnion = (a: PixelBounds, b: PixelBounds): number => {
   return union <= 0 ? 0 : inter / union;
 };
 
+interface ScoredRect {
+  rect: PixelBounds;
+  /**
+   * Priority bucket: higher wins. Rects flagged as `confirmed` (passed the
+   * polygon-approximation rectangularity test) take precedence over
+   * non-confirmed rects of similar IoU, so a noisy non-rectangular contour
+   * cannot silently displace a clean panel rect during NMS.
+   */
+  confirmed: boolean;
+}
+
 /**
  * Suppress near-duplicate rects produced by anti-aliased edges that fragment
  * differently between captures. Without this step, a single panel border can
  * produce two sub-pixel-offset boxes that look identical visually but differ
  * in the structural model — the dominant source of cross-run inconsistency.
+ *
+ * When the input carries `confirmed` flags (from the polygon-approximation
+ * rectangularity test), confirmed rects sort ahead of non-confirmed ones in
+ * the suppression order so that "this is shape-evidence-confirmed a
+ * rectangle" wins ties against "this is just a contour bounding box".
  */
 const mergeNearDuplicateRects = (
-  rects: PixelBounds[],
+  rects: ScoredRect[] | PixelBounds[],
   iouThreshold = 0.85
 ): PixelBounds[] => {
   if (rects.length <= 1) {
-    return rects.slice();
+    return rects.map((entry) => ('rect' in entry ? entry.rect : entry));
   }
-  const sorted = rects
-    .map((rect) => ({
-      rect,
-      area: Math.max(0, rect.right - rect.left) * Math.max(0, rect.bottom - rect.top)
+  const scored: ScoredRect[] = (rects as Array<ScoredRect | PixelBounds>).map((entry) => {
+    if ('rect' in entry) {
+      return entry;
+    }
+    return { rect: entry, confirmed: false };
+  });
+  const sorted = scored
+    .map((entry) => ({
+      ...entry,
+      area:
+        Math.max(0, entry.rect.right - entry.rect.left) *
+        Math.max(0, entry.rect.bottom - entry.rect.top)
     }))
-    .sort((a, b) => b.area - a.area);
+    .sort((a, b) => {
+      if (a.confirmed !== b.confirmed) {
+        return a.confirmed ? -1 : 1;
+      }
+      return b.area - a.area;
+    });
   const kept: PixelBounds[] = [];
   for (const { rect } of sorted) {
     let suppressed = false;
@@ -379,6 +432,98 @@ const mergeNearDuplicateRects = (
     }
   }
   return kept;
+};
+
+/**
+ * Decide whether a contour is "shape-evidence rectangular": polygon
+ * approximation collapses to 4 vertices, the polygon is convex, all four
+ * interior angles are within 12° of 90°, and the polygon area fills at least
+ * 85% of the axis-aligned bounding rect (the canonical "rectangularity"
+ * ratio).
+ *
+ * Pure boundingRect detection misses this evidence — a low-contrast UI panel
+ * whose Canny edges are barely above the noise floor still has the geometry
+ * of a rectangle, and that geometry alone should let it survive NMS against a
+ * noisier nearby contour. When the runtime does not expose any of the
+ * required ops, the helper returns false (fall back to existing behavior).
+ */
+const isShapeRectangle = (
+  cv: OpenCvLikeRuntime,
+  contour: OpenCvMat,
+  rect: OpenCvRect
+): boolean => {
+  if (
+    typeof cv.approxPolyDP !== 'function' ||
+    typeof cv.arcLength !== 'function'
+  ) {
+    return false;
+  }
+
+  const approx = new cv.Mat();
+  try {
+    const perimeter = cv.arcLength(contour, true);
+    if (!Number.isFinite(perimeter) || perimeter <= 0) {
+      return false;
+    }
+    cv.approxPolyDP(contour, approx, 0.02 * perimeter, true);
+    const polyData = approx.data32S;
+    if (!polyData || polyData.length !== 8) {
+      return false;
+    }
+
+    if (typeof cv.isContourConvex === 'function') {
+      try {
+        if (!cv.isContourConvex(approx)) {
+          return false;
+        }
+      } catch {
+        // Treat a thrown convexity check as non-rectangular rather than
+        // crashing the pipeline — better to fall through to bounding-rect
+        // behavior than to lose the contour entirely.
+        return false;
+      }
+    }
+
+    // Corner-angle test: every interior angle of a rectangle is 90°. Allow
+    // ±12° to admit anti-aliased corners that round subtly under JPEG-style
+    // capture noise.
+    for (let v = 0; v < 4; v += 1) {
+      const ax = polyData[(v * 2 + 6) % 8];
+      const ay = polyData[(v * 2 + 7) % 8];
+      const bx = polyData[v * 2];
+      const by = polyData[v * 2 + 1];
+      const cx = polyData[(v * 2 + 2) % 8];
+      const cy = polyData[(v * 2 + 3) % 8];
+      const v1x = ax - bx;
+      const v1y = ay - by;
+      const v2x = cx - bx;
+      const v2y = cy - by;
+      const lenA = Math.hypot(v1x, v1y);
+      const lenB = Math.hypot(v2x, v2y);
+      if (lenA === 0 || lenB === 0) {
+        return false;
+      }
+      const cos = (v1x * v2x + v1y * v2y) / (lenA * lenB);
+      const angleDeg = Math.acos(Math.max(-1, Math.min(1, cos))) * (180 / Math.PI);
+      if (Math.abs(angleDeg - 90) > 12) {
+        return false;
+      }
+    }
+
+    if (typeof cv.contourArea === 'function') {
+      const polyArea = Math.abs(cv.contourArea(approx));
+      const boxArea = Math.max(1, rect.width * rect.height);
+      if (polyArea / boxArea < 0.85) {
+        return false;
+      }
+    }
+
+    return true;
+  } catch {
+    return false;
+  } finally {
+    approx.delete();
+  }
 };
 
 const isLikelyOpenCvRuntime = (value: unknown): value is OpenCvLikeRuntime => {
@@ -787,12 +932,14 @@ const detectWithOpenCvRuntime = (
   const { pixels, surface } = input;
   const src = cv.matFromImageData(pixels);
   const gray = new cv.Mat();
+  const equalized = new cv.Mat();
   const blurred = new cv.Mat();
   const binary = new cv.Mat();
   const opened = new cv.Mat();
   const cleaned = new cv.Mat();
   const edges = new cv.Mat();
   const dilatedEdges = new cv.Mat();
+  const closedEdges = new cv.Mat();
   const contourMask = new cv.Mat();
   const contours = new cv.MatVector();
   const hierarchy = new cv.Mat();
@@ -800,23 +947,44 @@ const detectWithOpenCvRuntime = (
   let openKernel: OpenCvMat | null = null;
   let closeKernel: OpenCvMat | null = null;
   let dilateKernel: OpenCvMat | null = null;
+  let edgeCloseKernel: OpenCvMat | null = null;
+  let clahe: OpenCvClahe | null = null;
 
   try {
     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
 
+    // CLAHE (Contrast Limited Adaptive Histogram Equalization) — local
+    // contrast equalization that lifts ~10-luminance-unit panel boundaries
+    // (typical of dark Reddit/dashboard cards on slightly-darker page
+    // backgrounds) into the dynamic range Canny can see. This is the
+    // single biggest sensitivity win for low-contrast UIs and runs before
+    // every downstream edge / threshold stage. When the runtime does not
+    // expose CLAHE (stripped builds, mocks), the equalization step is
+    // skipped and the rest of the pipeline is unchanged.
+    let preprocessed: OpenCvMat = gray;
+    if (typeof cv.CLAHE === 'function') {
+      try {
+        clahe = new cv.CLAHE(2.0, new cv.Size(8, 8));
+        clahe.apply(gray, equalized);
+        preprocessed = equalized;
+      } catch {
+        preprocessed = gray;
+      }
+    }
+
     // Pre-blur stabilizes Canny against capture-to-capture noise on
     // anti-aliased UI borders. When the runtime does not expose
-    // GaussianBlur (mock or stripped build), we feed the raw gray mat
+    // GaussianBlur (mock or stripped build), we feed the equalized mat
     // straight into Canny.
-    let cannyInput: OpenCvMat = gray;
+    let cannyInput: OpenCvMat = preprocessed;
     if (typeof cv.GaussianBlur === 'function') {
-      cv.GaussianBlur(gray, blurred, new cv.Size(3, 3), 0);
+      cv.GaussianBlur(preprocessed, blurred, new cv.Size(3, 3), 0);
       cannyInput = blurred;
     }
 
     const adaptiveBlockSize = Math.max(3, Math.floor(Math.min(pixels.width, pixels.height) / 24) * 2 + 1);
     cv.adaptiveThreshold(
-      gray,
+      preprocessed,
       binary,
       255,
       cv.ADAPTIVE_THRESH_GAUSSIAN_C,
@@ -837,22 +1005,33 @@ const detectWithOpenCvRuntime = (
     const cannyThresholds = computeAutoCannyThresholds(pixels);
     cv.Canny(cannyInput, edges, cannyThresholds.lo, cannyThresholds.hi);
 
-    // Edge dilation closes 1-pixel gaps in fragmented anti-aliased borders
-    // so adjacent contour pieces resolve into the same bounding box rather
-    // than into a different set of broken pieces each run. We try the
-    // dedicated `dilate` op first, then fall back to morphologyEx with
-    // MORPH_DILATE (when available), and finally to the raw edge mask.
-    let dilatedReady = false;
-    dilateKernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(2, 2));
-    if (typeof cv.dilate === 'function') {
+    // Morphologically close the Canny edge mask before contour detection.
+    // The previous 2×2 dilate sealed only one-pixel gaps, but UI corners
+    // routinely fragment into 4 separate edge pieces (a soft drop-shadow on
+    // one side, a 1-px border on another, anti-aliased seams in between).
+    // A proper 3×3 close (dilate→erode) seals those into closed contours
+    // that findContours can then recover as a single panel rect. We
+    // preserve the dedicated dilate path as a fallback for runtimes that
+    // expose `dilate` but not `morphologyEx` semantics for edge masks.
+    edgeCloseKernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+    let edgeMaskForContours: OpenCvMat = edges;
+    let edgeMaskReady = false;
+    try {
+      cv.morphologyEx(edges, closedEdges, cv.MORPH_CLOSE, edgeCloseKernel);
+      edgeMaskForContours = closedEdges;
+      edgeMaskReady = true;
+    } catch {
+      edgeMaskReady = false;
+    }
+    if (!edgeMaskReady && typeof cv.dilate === 'function') {
+      dilateKernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(2, 2));
       try {
         cv.dilate(edges, dilatedEdges, dilateKernel);
-        dilatedReady = true;
+        edgeMaskForContours = dilatedEdges;
       } catch {
-        dilatedReady = false;
+        edgeMaskForContours = edges;
       }
     }
-    const edgeMaskForContours: OpenCvMat = dilatedReady ? dilatedEdges : edges;
     cv.bitwise_or(cleaned, edgeMaskForContours, contourMask);
 
     // RETR_TREE / RETR_LIST surface NESTED contours, which is required so that
@@ -863,16 +1042,24 @@ const detectWithOpenCvRuntime = (
     const retrieveMode = cv.RETR_TREE ?? cv.RETR_LIST ?? cv.RETR_EXTERNAL;
     cv.findContours(contourMask, contours, hierarchy, retrieveMode, cv.CHAIN_APPROX_SIMPLE);
 
-    const contourRects: PixelBounds[] = [];
+    const contourRects: ScoredRect[] = [];
     for (let i = 0; i < contours.size(); i += 1) {
       const contour = contours.get(i);
       try {
         const rect = cv.boundingRect(contour);
+        // Polygon-evidence rectangularity: 4 vertices, convex, ~90° corners,
+        // ≥85% bounding-box fill. When this passes, the contour is treated
+        // as a high-confidence rectangle and protected from NMS suppression
+        // by larger non-rectangular contours that overlap it.
+        const confirmed = isShapeRectangle(cv, contour, rect);
         contourRects.push({
-          left: rect.x,
-          top: rect.y,
-          right: rect.x + rect.width,
-          bottom: rect.y + rect.height
+          rect: {
+            left: rect.x,
+            top: rect.y,
+            right: rect.x + rect.width,
+            bottom: rect.y + rect.height
+          },
+          confirmed
         });
       } finally {
         contour.delete();
@@ -888,7 +1075,9 @@ const detectWithOpenCvRuntime = (
 
     // NMS-merge near-duplicate rects so that anti-aliased borders fragmenting
     // into slightly different sub-pixel offsets produce the SAME bounding
-    // box on every run.
+    // box on every run. Polygon-confirmed rectangles take precedence over
+    // non-confirmed ones in the suppression order so a noisy non-rectangular
+    // contour cannot displace a clean panel rect.
     const mergedContourRects = mergeNearDuplicateRects(contourRects);
 
     // Contour rects: 2D shapes. Line-shaped rects are dropped because they
@@ -966,6 +1155,14 @@ const detectWithOpenCvRuntime = (
       objectsSurface: [...objectsFromContours, ...objectsFromLines, ...objectsFromCells]
     };
   } finally {
+    if (clahe && typeof clahe.delete === 'function') {
+      try {
+        clahe.delete();
+      } catch {
+        // CLAHE handles in some OpenCV.js builds throw on a second delete;
+        // swallow so that downstream cleanup still runs.
+      }
+    }
     if (openKernel) {
       openKernel.delete();
     }
@@ -975,16 +1172,21 @@ const detectWithOpenCvRuntime = (
     if (dilateKernel) {
       dilateKernel.delete();
     }
+    if (edgeCloseKernel) {
+      edgeCloseKernel.delete();
+    }
 
     hierarchy.delete();
     contours.delete();
     contourMask.delete();
+    closedEdges.delete();
     dilatedEdges.delete();
     edges.delete();
     cleaned.delete();
     opened.delete();
     binary.delete();
     blurred.delete();
+    equalized.delete();
     gray.delete();
     src.delete();
   }
