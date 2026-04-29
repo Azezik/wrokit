@@ -254,6 +254,52 @@ describe('computeConsensus', () => {
     expect(consensus.warnings.some((w) => w.includes('single match'))).toBe(true);
   });
 
+  it('locks onto the largest invariant subset when one heavily-weighted match disagrees', () => {
+    // Object hierarchy intuition: when several objects keep the same relative
+    // positions / sizes / spacing across config and runtime, that subset is the
+    // authoritative reference even if other (heavier-weighted) objects move
+    // inconsistently. Here three small objects all shift by (+0.05, -0.02), and
+    // one large object disagrees with a totally different translate (+0.40,
+    // +0.30). With area-weighted means the large rogue would dominate; with
+    // RANSAC-style maximum inlier search the three agreeing objects win.
+    const config = buildPage([
+      node('cSmall1', rect(0.05, 0.05, 0.10, 0.10), null, [], 0.95),
+      node('cSmall2', rect(0.30, 0.05, 0.10, 0.10), null, [], 0.95),
+      node('cSmall3', rect(0.05, 0.30, 0.10, 0.10), null, [], 0.95),
+      // Very large object whose match disagrees — heavy area weight tries to
+      // dominate the weighted mean.
+      node('cBig', rect(0.40, 0.40, 0.55, 0.55), null, [], 0.95)
+    ]);
+    const runtime = buildPage([
+      node('rSmall1', rect(0.10, 0.03, 0.10, 0.10)),
+      node('rSmall2', rect(0.35, 0.03, 0.10, 0.10)),
+      node('rSmall3', rect(0.10, 0.28, 0.10, 0.10)),
+      // Disagreeing big match: translates by (+0.40, +0.30) instead of the
+      // small-object consensus (+0.05, -0.02). Without RANSAC, this rect's
+      // huge area weight pulls the mean toward (+~0.30, +~0.20).
+      node('rBig', rect(0.80, 0.70, 0.55, 0.55))
+    ]);
+    const matchResult = matchPage(config, runtime, { minHierarchicalConfidence: 0.0 });
+    // Sanity: matcher emits a match for every config object, including cBig.
+    const matchedConfigIds = matchResult.matches.map((m) => m.configObjectId).sort();
+    expect(matchedConfigIds).toEqual(['cBig', 'cSmall1', 'cSmall2', 'cSmall3']);
+
+    const consensus = computeConsensus(matchResult.matches, config, runtime, {
+      scaleOutlierTolerance: 0.15,
+      translateOutlierTolerance: 0.08
+    });
+
+    // Consensus locks onto the small-object subset's transform, NOT the rogue
+    // big match's. translateX should be close to +0.05, not pulled toward the
+    // rogue's +0.40 even though cBig's area weight is far larger than any
+    // single small object's.
+    expect(consensus.transform).not.toBeNull();
+    expect(consensus.transform!.translateX).toBeCloseTo(0.05, 2);
+    expect(consensus.transform!.translateY).toBeCloseTo(-0.02, 2);
+    expect(consensus.contributingMatchCount).toBe(3);
+    expect(consensus.outliers.map((o) => o.configObjectId)).toEqual(['cBig']);
+  });
+
   it('virtual-projection cross-check raises confidence when projections agree', () => {
     const config = buildPage([
       node('c1', rect(0.0, 0.0, 0.3, 0.3)),

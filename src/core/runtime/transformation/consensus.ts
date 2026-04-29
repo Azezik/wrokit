@@ -5,6 +5,20 @@
  * level summaries (border, refined-border, object, parent-chain) and a single
  * page-level consensus block.
  *
+ * Consensus strategy: maximum inlier set (RANSAC-style). For each match's
+ * implied affine, count how many other matches' affines agree within
+ * tolerance; the affine with the largest agreeing subset (with weighted total
+ * as tiebreaker) seeds the consensus, and the agreeing subset is then averaged
+ * via weighted mean to refine the seed. Disagreeing matches become outliers.
+ *
+ * This implements the object-hierarchy intuition that the highest authority
+ * is the largest subset of objects whose pairwise relative geometry is
+ * preserved across config and runtime, even when other (heavier-weighted)
+ * objects move inconsistently. The earlier "weighted-mean → reject outliers
+ * from the mean" approach was fragile in exactly that scenario, because a
+ * single high-weight bad match could drag the mean far enough to make the
+ * truly-agreeing subset look like outliers.
+ *
  * Honesty rules:
  * - Never invents an object. Operates only on the matches the matcher emitted.
  * - Outliers are reported, not removed silently.
@@ -129,21 +143,35 @@ const weightedMeanConfidence = (entries: WeightedMatch[]): number => {
   return totalWeight > 1e-9 ? sum / totalWeight : 0;
 };
 
-const splitOutliers = (
+interface InlierPartition {
+  /**
+   * The match whose own affine was used as the seed hypothesis. The "winning"
+   * inlier set is the set of matches whose transforms agree (within tolerance)
+   * with this hypothesis.
+   */
+  seedTransform: TransformationAffine;
+  seedConfigObjectId: string;
+  kept: WeightedMatch[];
+  outliers: { entry: WeightedMatch; reason: string }[];
+}
+
+const partitionAgainstHypothesis = (
   entries: WeightedMatch[],
-  reference: TransformationAffine,
-  options: Required<ConsensusOptions>
-): { kept: WeightedMatch[]; outliers: { entry: WeightedMatch; reason: string }[] } => {
+  hypothesis: TransformationAffine,
+  options: Required<ConsensusOptions>,
+  seedLabel: string
+): { kept: WeightedMatch[]; outliers: { entry: WeightedMatch; reason: string }[]; weight: number } => {
   const kept: WeightedMatch[] = [];
   const outliers: { entry: WeightedMatch; reason: string }[] = [];
+  let weight = 0;
   for (const entry of entries) {
-    const { scaleDelta, translateDelta } = affineDistance(entry.match.transform, reference);
+    const { scaleDelta, translateDelta } = affineDistance(entry.match.transform, hypothesis);
     if (scaleDelta > options.scaleOutlierTolerance) {
       outliers.push({
         entry,
         reason: `scale deviation ${scaleDelta.toFixed(3)} exceeds tolerance ${options.scaleOutlierTolerance.toFixed(
           3
-        )}`
+        )} from inlier set seeded by ${seedLabel}`
       });
       continue;
     }
@@ -152,13 +180,86 @@ const splitOutliers = (
         entry,
         reason: `translate deviation ${translateDelta.toFixed(3)} exceeds tolerance ${options.translateOutlierTolerance.toFixed(
           3
-        )}`
+        )} from inlier set seeded by ${seedLabel}`
       });
       continue;
     }
     kept.push(entry);
+    weight += entry.weight;
   }
-  return { kept, outliers };
+  return { kept, outliers, weight };
+};
+
+/**
+ * Find the largest mutually-consistent subset of matches (RANSAC-style maximum
+ * inlier search). For each match's own implied affine we count how many other
+ * matches' affines agree within tolerance; the affine with the most agreeing
+ * matches (with weighted total as tiebreaker) is the seed. The remainder are
+ * outliers — matches whose transforms disagree with the dominant subset.
+ *
+ * This replaces the old "weighted-mean → reject outliers from the mean" path,
+ * which was fragile when a single high-weight bad match dragged the mean far
+ * enough to make the truly-agreeing matches look like outliers. The user-facing
+ * intuition this captures: when several objects keep the same relative
+ * positions / sizes / spacing across config and runtime, that subset is the
+ * authoritative reference even if other (heavier-weighted) objects move
+ * inconsistently.
+ *
+ * Falls back to the trivial single-entry case when only one match exists.
+ */
+const findMaxInlierSet = (
+  entries: WeightedMatch[],
+  options: Required<ConsensusOptions>
+): InlierPartition | null => {
+  if (entries.length === 0) {
+    return null;
+  }
+  if (entries.length === 1) {
+    const only = entries[0];
+    return {
+      seedTransform: only.match.transform,
+      seedConfigObjectId: only.match.configObjectId,
+      kept: [only],
+      outliers: []
+    };
+  }
+
+  let best: InlierPartition | null = null;
+  let bestCount = -1;
+  let bestWeight = -1;
+
+  for (const candidate of entries) {
+    const partition = partitionAgainstHypothesis(
+      entries,
+      candidate.match.transform,
+      options,
+      candidate.match.configObjectId
+    );
+    const count = partition.kept.length;
+    // Prefer the largest agreeing subset by count, then by weighted total
+    // (area×confidence) so that, when two subsets tie on count, the one
+    // covering more of the page wins. Deterministic id ordering breaks the
+    // last tie so test runs are stable.
+    if (
+      count > bestCount ||
+      (count === bestCount && partition.weight > bestWeight) ||
+      (count === bestCount &&
+        partition.weight === bestWeight &&
+        (best === null ||
+          candidate.match.configObjectId.localeCompare(best.seedConfigObjectId) < 0))
+    ) {
+      bestCount = count;
+      bestWeight = partition.weight;
+      best = {
+        seedTransform: candidate.match.transform,
+        seedConfigObjectId: candidate.match.configObjectId,
+        kept: partition.kept,
+        outliers: partition.outliers
+      };
+    }
+  }
+
+  return best;
 };
 
 const projectionAgreement = (
@@ -195,21 +296,20 @@ const summarizeFromMatches = (
     };
   }
 
-  const initialMean = weightedMeanAffine(entries);
-  if (!initialMean) {
+  const inlier = findMaxInlierSet(entries, options);
+  if (!inlier) {
     return {
       level,
       transform: null,
       confidence: 0,
       contributingMatchCount: 0,
       notes: [],
-      warnings: [`could not compute weighted mean for ${level} level`]
+      warnings: [`could not find an inlier subset for ${level} level`]
     };
   }
 
-  const { kept } = splitOutliers(entries, initialMean, options);
-  const refined = kept.length > 0 ? weightedMeanAffine(kept) ?? initialMean : initialMean;
-  const contributing = kept.length > 0 ? kept : entries;
+  const refined = weightedMeanAffine(inlier.kept) ?? inlier.seedTransform;
+  const contributing = inlier.kept;
   const meanConfidence = weightedMeanConfidence(contributing);
   const projection = projectionAgreement(refined, contributing);
   const confidence = clamp01(meanConfidence * (0.5 + 0.5 * projection));
@@ -335,6 +435,10 @@ export const computeParentChainLevelSummary = (
   return summarizeFromMatches('parent-chain', entries, opts);
 };
 
+export const __testing = {
+  findMaxInlierSet
+};
+
 export const computeConsensus = (
   matches: ReadonlyArray<TransformationObjectMatch>,
   configPage: StructuralPage,
@@ -359,21 +463,21 @@ export const computeConsensus = (
     };
   }
 
-  const initialMean = weightedMeanAffine(entries);
-  if (!initialMean) {
+  const inlier = findMaxInlierSet(entries, opts);
+  if (!inlier) {
     return {
       transform: null,
       confidence: 0,
       contributingMatchCount: 0,
       outliers: [],
       notes: [],
-      warnings: ['could not compute initial weighted-mean consensus']
+      warnings: ['could not find an inlier subset for consensus']
     };
   }
 
-  const { kept, outliers } = splitOutliers(entries, initialMean, opts);
-  const consensus = kept.length > 0 ? weightedMeanAffine(kept) ?? initialMean : initialMean;
-  const contributing = kept.length > 0 ? kept : entries;
+  const consensus = weightedMeanAffine(inlier.kept) ?? inlier.seedTransform;
+  const contributing = inlier.kept;
+  const outliers = inlier.outliers;
 
   const reportedOutliers: TransformationConsensusOutlier[] = outliers.map((o) => ({
     configObjectId: o.entry.match.configObjectId,
@@ -404,6 +508,7 @@ export const computeConsensus = (
 
   const notes: string[] = [
     `${contributing.length} of ${entries.length} match(es) contributed to consensus`,
+    `inlier set seeded by ${inlier.seedConfigObjectId}`,
     `weight coverage: ${coverage.toFixed(3)}`,
     `projection agreement (avg IoU): ${projection.toFixed(3)}`
   ];
