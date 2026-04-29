@@ -449,6 +449,122 @@ describe('createOpenCvJsAdapter', () => {
     expect(result.objectsSurface.some((object) => matches(object.bboxSurface))).toBe(true);
   });
 
+  it('detects a low-Δ rounded-corner filled panel on a dark page (heuristic / gradient evidence)', async () => {
+    // Reddit-style profile card: a filled panel whose luminance is only ~13
+    // units brighter than the surrounding page. Under the global luminance
+    // threshold alone (which is tuned to suppress text-anti-aliasing noise
+    // on dark pages), every panel pixel reads as background and the heuristic
+    // fallback returns zero objects. The gradient-aware predicate must catch
+    // the panel border via Sobel evidence so the rounded-rect outline forms a
+    // connected component whose bounding box is the panel rect.
+    const adapter = createOpenCvJsAdapter();
+    const w = 240;
+    const h = 240;
+    const data = new Uint8ClampedArray(w * h * 4);
+    for (let i = 0; i < data.length; i += 4) {
+      data[i] = 14;
+      data[i + 1] = 14;
+      data[i + 2] = 14;
+      data[i + 3] = 255;
+    }
+    const panel = { left: 40, top: 40, right: 200, bottom: 220 };
+    for (let y = panel.top; y < panel.bottom; y += 1) {
+      for (let x = panel.left; x < panel.right; x += 1) {
+        const i = (y * w + x) * 4;
+        data[i] = 27;
+        data[i + 1] = 27;
+        data[i + 2] = 27;
+        data[i + 3] = 255;
+      }
+    }
+    // Erase 12×12 corner squares to approximate a rounded-corner panel.
+    const corners = [
+      { x: panel.left, y: panel.top },
+      { x: panel.right - 12, y: panel.top },
+      { x: panel.left, y: panel.bottom - 12 },
+      { x: panel.right - 12, y: panel.bottom - 12 }
+    ];
+    for (const corner of corners) {
+      for (let y = corner.y; y < corner.y + 12; y += 1) {
+        for (let x = corner.x; x < corner.x + 12; x += 1) {
+          const i = (y * w + x) * 4;
+          data[i] = 14;
+          data[i + 1] = 14;
+          data[i + 2] = 14;
+          data[i + 3] = 255;
+        }
+      }
+    }
+    const raster: CvSurfaceRaster = {
+      surface: { pageIndex: 0, surfaceWidth: w, surfaceHeight: h },
+      pixels: { width: w, height: h, data, colorSpace: 'srgb' } as unknown as ImageData
+    };
+
+    const result = await adapter.detectContentRect(raster);
+    expect(result.executionMode).toBe('heuristic-fallback');
+
+    const matches = (
+      bbox: { x: number; y: number; width: number; height: number }
+    ) =>
+      Math.abs(bbox.x - 40) <= 6 &&
+      Math.abs(bbox.y - 40) <= 6 &&
+      Math.abs(bbox.width - 160) <= 6 &&
+      Math.abs(bbox.height - 180) <= 6;
+
+    expect(result.objectsSurface.some((object) => matches(object.bboxSurface))).toBe(true);
+  });
+
+  it('detects a low-Δ outline-only panel on a dark page via gradient evidence', async () => {
+    // The harder case: the panel is just a 1-pixel border (no fill), still
+    // only ~13 luminance units brighter than the page. Border pixels
+    // themselves are below the global threshold so the only thing that can
+    // surface this rect is the gradient pass — its Sobel response on either
+    // side of the 1-px border peaks at ~26, well above the gradient floor.
+    // This mirrors what the real OpenCV contour pipeline catches.
+    const adapter = createOpenCvJsAdapter();
+    const w = 240;
+    const h = 240;
+    const data = new Uint8ClampedArray(w * h * 4);
+    for (let i = 0; i < data.length; i += 4) {
+      data[i] = 14;
+      data[i + 1] = 14;
+      data[i + 2] = 14;
+      data[i + 3] = 255;
+    }
+    const paint = (x: number, y: number) => {
+      const i = (y * w + x) * 4;
+      data[i] = 27;
+      data[i + 1] = 27;
+      data[i + 2] = 27;
+      data[i + 3] = 255;
+    };
+    for (let x = 40; x < 200; x += 1) {
+      paint(x, 40);
+      paint(x, 219);
+    }
+    for (let y = 40; y < 220; y += 1) {
+      paint(40, y);
+      paint(199, y);
+    }
+    const raster: CvSurfaceRaster = {
+      surface: { pageIndex: 0, surfaceWidth: w, surfaceHeight: h },
+      pixels: { width: w, height: h, data, colorSpace: 'srgb' } as unknown as ImageData
+    };
+
+    const result = await adapter.detectContentRect(raster);
+    expect(result.executionMode).toBe('heuristic-fallback');
+
+    const matches = (
+      bbox: { x: number; y: number; width: number; height: number }
+    ) =>
+      Math.abs(bbox.x - 40) <= 6 &&
+      Math.abs(bbox.y - 40) <= 6 &&
+      Math.abs(bbox.width - 160) <= 6 &&
+      Math.abs(bbox.height - 180) <= 6;
+
+    expect(result.objectsSurface.some((object) => matches(object.bboxSurface))).toBe(true);
+  });
+
   it('extracts contour objects through the OpenCV runtime boundary, but does not emit line segments as objects', async () => {
     const adapter = createOpenCvJsAdapter({
       opencvRuntime: createMockOpenCvRuntime()
