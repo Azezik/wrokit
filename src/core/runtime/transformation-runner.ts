@@ -97,6 +97,20 @@ export const createTransformationRunner = (
         createdAtIso: nowIso ?? now()
       });
 
+      // Cross-document: the structural matcher should de-emphasize absolute
+      // position in favor of refined-border-relative position. Detected here
+      // (not in the matcher) so the matcher stays a pure pairwise comparison
+      // and the document-identity decision lives at the composition layer.
+      // An explicit caller-supplied `weights` in `matcherOptions` still wins.
+      const crossDocument = config.documentFingerprint !== runtime.documentFingerprint;
+      const effectiveMatcherOptions = {
+        ...(matcherOptions ?? {}),
+        crossDocument:
+          matcherOptions?.crossDocument !== undefined
+            ? matcherOptions.crossDocument
+            : crossDocument
+      };
+
       const populatedPages: TransformationPage[] = base.pages.map((emptyPage) => {
         const configPage = config.pages.find((p) => p.pageIndex === emptyPage.pageIndex);
         if (!configPage) {
@@ -113,7 +127,7 @@ export const createTransformationRunner = (
           };
         }
 
-        const result = matchPage(configPage, runtimePage, matcherOptions);
+        const result = matchPage(configPage, runtimePage, effectiveMatcherOptions);
         const levelSummaries = buildLevelSummaries(
           configPage,
           runtimePage,

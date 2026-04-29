@@ -11,6 +11,7 @@ import { isTransformationModel } from '../../src/core/contracts/transformation-m
 import { matchPage } from '../../src/core/runtime/transformation/hierarchical-matcher';
 import {
   computeObjectSimilarity,
+  CROSS_DOCUMENT_SIMILARITY_WEIGHTS,
   DEFAULT_SIMILARITY_WEIGHTS
 } from '../../src/core/runtime/transformation/similarity';
 import { createTransformationRunner } from '../../src/core/runtime/transformation-runner';
@@ -320,5 +321,73 @@ describe('transformation-runner with hierarchical matcher', () => {
     const runner = createTransformationRunner();
     runner.compute({ config: configModel, runtime: runtimeModel });
     expect(configModel).toEqual(before);
+  });
+
+  it('uses cross-document weights when fingerprints differ (matcher option set)', () => {
+    // The runner detects mismatched fingerprints and forwards
+    // `crossDocument: true` to the matcher. We verify that path by capturing
+    // the effective options the runner passes — the matcher itself is
+    // unit-tested in matchPage tests below, so here we just confirm the
+    // composition layer wires the flag through. We do this by computing two
+    // runners on the same models, once with matching fingerprints and once
+    // with differing ones, and asserting that match scores differ when the
+    // refined-border relation between sides also differs.
+    const refinedConfig: StructuralRefinedBorder = {
+      rectNorm: rect(0, 0, 0.5, 1),
+      source: 'cv-content',
+      influencedByBBoxCount: 0,
+      containsAllSavedBBoxes: true
+    };
+    const refinedRuntime: StructuralRefinedBorder = {
+      rectNorm: rect(0.5, 0, 0.5, 1),
+      source: 'cv-content',
+      influencedByBBoxCount: 0,
+      containsAllSavedBBoxes: true
+    };
+    const configPage: StructuralPage = {
+      ...buildPage([node('cfg_target', rect(0.05, 0.4, 0.15, 0.1))]),
+      refinedBorder: refinedConfig
+    };
+    const runtimePage: StructuralPage = {
+      ...buildPage([node('rt_target', rect(0.55, 0.4, 0.15, 0.1))]),
+      refinedBorder: refinedRuntime
+    };
+    const cfg = buildModel('cfg_xd', 'surface:cfg-xd.pdf#0:1000x1000', configPage);
+    const rtSameDoc = buildModel('rt_xd_same', 'surface:cfg-xd.pdf#0:1000x1000', runtimePage);
+    const rtDifferentDoc = buildModel('rt_xd_diff', 'surface:rt-xd.pdf#0:1000x1000', runtimePage);
+
+    const runner = createTransformationRunner({
+      generateId: () => 'xform_xd',
+      now: () => '2026-04-27T12:00:00Z'
+    });
+    const sameDoc = runner.compute({ config: cfg, runtime: rtSameDoc });
+    const diffDoc = runner.compute({ config: cfg, runtime: rtDifferentDoc });
+
+    const sameDocMatch = sameDoc.pages[0].objectMatches.find(
+      (m) => m.configObjectId === 'cfg_target'
+    );
+    const diffDocMatch = diffDoc.pages[0].objectMatches.find(
+      (m) => m.configObjectId === 'cfg_target'
+    );
+
+    // Both runs find the only candidate. The score MUST differ because the
+    // weight profile changes: cross-document weighs the (perfect)
+    // refined-border-relation higher and the (degraded) absolute position
+    // lower than the within-document profile does.
+    expect(sameDocMatch?.runtimeObjectId).toBe('rt_target');
+    expect(diffDocMatch?.runtimeObjectId).toBe('rt_target');
+    expect(diffDocMatch?.confidence).toBeGreaterThan(sameDocMatch?.confidence ?? 1);
+  });
+
+  it('CROSS_DOCUMENT_SIMILARITY_WEIGHTS sum to 1 and de-emphasize absolute position', () => {
+    const w = CROSS_DOCUMENT_SIMILARITY_WEIGHTS;
+    const total = w.position + w.size + w.aspect + w.parentChain + w.refinedBorderRelation;
+    expect(total).toBeCloseTo(1, 6);
+    // The whole point: relative-to-refined-border outweighs absolute position.
+    expect(w.refinedBorderRelation).toBeGreaterThan(w.position);
+    // The within-document profile keeps the inverse relationship.
+    expect(DEFAULT_SIMILARITY_WEIGHTS.position).toBeGreaterThan(
+      DEFAULT_SIMILARITY_WEIGHTS.refinedBorderRelation
+    );
   });
 });

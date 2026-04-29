@@ -806,6 +806,34 @@ const resolveFromTransformationCandidate = (
 const CONSENSUS_RESCUE_MIN_CONFIDENCE = 0.6;
 
 /**
+ * Minimum consensus confidence required before consensus is allowed to
+ * OVERRIDE an already-resolved primary object/parent anchor whose own
+ * projection disagrees with where consensus says the field should sit.
+ * Higher than {@link CONSENSUS_RESCUE_MIN_CONFIDENCE} because we are
+ * second-guessing a candidate the matcher actually picked, so the bar to
+ * preempt it should be commensurately higher.
+ */
+const CONSENSUS_OVERRIDE_MIN_CONFIDENCE = 0.7;
+
+/**
+ * Minimum number of contributing matches before consensus is allowed to
+ * override. A single-match consensus is structurally degenerate (just one
+ * anchor's affine elevated to "page-level"); promoting it over another
+ * single-anchor's projection adds no real cross-validation, so we require
+ * at least two contributing matches before the override fires.
+ */
+const CONSENSUS_OVERRIDE_MIN_CONTRIBUTORS = 2;
+
+/**
+ * Maximum IoU between the chosen primary's projected box and the consensus's
+ * projected box before the two are considered to AGREE. Below this they
+ * disagree about where the field lives, and (with a confident consensus
+ * available) the override fires. Set looser than the agreement floor used
+ * for warnings so we override only when the disagreement is real.
+ */
+const CONSENSUS_OVERRIDE_MAX_IOU = 0.4;
+
+/**
  * Stricter floor used when a consensus has only a SINGLE contributing match.
  * A 1-match consensus is structurally degenerate: it is just that one match's
  * own affine elevated to "page-level" status, with no second match available
@@ -1508,6 +1536,66 @@ export const createLocalizationRunner = (): LocalizationRunner => ({
                 });
               }
             }
+
+            // Consensus override of a weak/disagreeing primary anchor.
+            // The matcher's first-place pick can land on a structurally
+            // adjacent-but-wrong runtime object when content widths shift
+            // across documents (typical Run Mode case). When the chosen
+            // primary is an object/parent anchor AND a high-confidence
+            // multi-match consensus exists AND the primary's projection
+            // disagrees materially with the consensus projection, prefer
+            // consensus. The single-anchor primary is just one vote; the
+            // consensus averages many object matches and is far more stable
+            // across small CV detection drift. Refined-border / border /
+            // legacy resolutions are NOT overridden — they are deliberate
+            // page-level fallbacks already.
+            if (
+              resolution &&
+              primaryCandidate &&
+              isObjectAnchorCandidate(primaryCandidate) &&
+              consensusBox &&
+              transformationPage.consensus.confidence >= CONSENSUS_OVERRIDE_MIN_CONFIDENCE &&
+              transformationPage.consensus.contributingMatchCount >=
+                CONSENSUS_OVERRIDE_MIN_CONTRIBUTORS
+            ) {
+              const primaryConsensusIou = iouOfRects(resolution.predictedBox, consensusBox);
+              if (primaryConsensusIou < CONSENSUS_OVERRIDE_MAX_IOU) {
+                const overrideResolution = resolveFromConsensusRescue(
+                  field,
+                  transformationPage.consensus,
+                  CONSENSUS_OVERRIDE_MIN_CONFIDENCE
+                );
+                if (overrideResolution) {
+                  const overrideWarning =
+                    `consensus override: primary anchor ${chosenLabel} ` +
+                    `disagreed with page consensus (IoU ` +
+                    `${primaryConsensusIou.toFixed(2)} < ` +
+                    `${CONSENSUS_OVERRIDE_MAX_IOU.toFixed(2)}); ` +
+                    `consensus confidence ` +
+                    `${transformationPage.consensus.confidence.toFixed(2)} ` +
+                    `from ${transformationPage.consensus.contributingMatchCount} ` +
+                    `contributing match(es) preferred over single-anchor projection`;
+                  const mergedWarnings = [
+                    ...(overrideResolution.warnings ?? []),
+                    overrideWarning
+                  ];
+                  // Demote the displaced primary to an alternative so the
+                  // existing IoU agreement check still surfaces it for
+                  // diagnostic visibility.
+                  alternatives.push({
+                    label: chosenLabel,
+                    predictedBox: resolution.predictedBox
+                  });
+                  resolution = {
+                    ...overrideResolution,
+                    warnings: mergedWarnings
+                  };
+                  primaryCandidate = undefined;
+                  chosenLabel = 'page-consensus';
+                  hasConsensusAlternative = false;
+                }
+              }
+            }
           }
         }
 
@@ -1598,6 +1686,9 @@ export const __testing = {
   validateArtifactCrossReferences,
   isPositionalObjectId,
   CONSENSUS_RESCUE_MIN_CONFIDENCE,
+  CONSENSUS_OVERRIDE_MIN_CONFIDENCE,
+  CONSENSUS_OVERRIDE_MIN_CONTRIBUTORS,
+  CONSENSUS_OVERRIDE_MAX_IOU,
   SINGLE_MATCH_CONSENSUS_MIN_CONFIDENCE,
   ANCHOR_AGREEMENT_IOU_MIN,
   WEAK_OBJECT_MATCH_CONFIDENCE,

@@ -34,6 +34,37 @@ export const DEFAULT_SIMILARITY_WEIGHTS: SimilarityWeights = {
   refinedBorderRelation: 0.15
 };
 
+/**
+ * Weight profile used when the matcher knows it is comparing two structural
+ * models built from DIFFERENT documents (different `documentFingerprint`).
+ *
+ * Across-document matching has a different reliability profile:
+ *   - Absolute normalized position (`position`) is fragile — even
+ *     instances of the same template shift their objects by a few percent
+ *     because content widths (4-digit vs 5-digit values, longer names,
+ *     different counts of repeating elements) move the line-grid cells the
+ *     CV adapter detects.
+ *   - Relative position INSIDE the refined border (`refinedBorderRelation`)
+ *     is the strongest cross-document signal: the refined border is the
+ *     content-area summary, so an object sitting "in the top-left of the
+ *     right-sidebar card" stays in the top-left of that card on a similar
+ *     document even if the card's outer bounds shift.
+ *   - Parent-chain stays critical (an object inside the same matched
+ *     ancestor is far more likely to be the correct counterpart).
+ *   - Size and aspect remain useful as sanity checks but should not dominate.
+ *
+ * Within-document matching (Config Capture re-loaded into Run Mode against
+ * the same NormalizedPage) keeps the original profile because absolute
+ * position IS reliable in that case — there is no content drift.
+ */
+export const CROSS_DOCUMENT_SIMILARITY_WEIGHTS: SimilarityWeights = {
+  position: 0.15,
+  size: 0.2,
+  aspect: 0.1,
+  parentChain: 0.25,
+  refinedBorderRelation: 0.3
+};
+
 export interface SimilarityContext {
   /**
    * Refined border rect for the page each object lives on. Used so the scorer
