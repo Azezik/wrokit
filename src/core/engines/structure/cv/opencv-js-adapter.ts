@@ -48,6 +48,8 @@ interface OpenCvMat {
   rows: number;
   cols: number;
   data32S?: Int32Array;
+  /** Optional raw byte view (real OpenCV.js exposes this on single-channel mats). */
+  data?: Uint8Array;
   delete(): void;
 }
 
@@ -83,6 +85,16 @@ interface OpenCvLikeRuntime {
   getStructuringElement(shape: number, ksize: unknown): OpenCvMat;
   morphologyEx(src: OpenCvMat, dst: OpenCvMat, op: number, kernel: OpenCvMat): void;
   Canny(src: OpenCvMat, dst: OpenCvMat, threshold1: number, threshold2: number): void;
+  /** Optional pre-Canny blur. Skipped if the runtime does not expose it. */
+  GaussianBlur?(
+    src: OpenCvMat,
+    dst: OpenCvMat,
+    ksize: unknown,
+    sigmaX: number,
+    sigmaY?: number
+  ): void;
+  /** Optional dilation primitive used to close fragmented edges. */
+  dilate?(src: OpenCvMat, dst: OpenCvMat, kernel: OpenCvMat): void;
   bitwise_or(src1: OpenCvMat, src2: OpenCvMat, dst: OpenCvMat): void;
   findContours(
     image: OpenCvMat,
@@ -178,6 +190,196 @@ interface PixelBounds {
   right: number;
   bottom: number;
 }
+
+/**
+ * Background-profile detection: a hard-coded "white = background" assumption
+ * collapses on dark UIs (every pixel becomes foreground, the heuristic
+ * fallback flood-fills the entire page as one blob, and identical inputs
+ * produce inconsistent partial detections from run to run). We sample the
+ * page perimeter — corners plus a small inset border — and use the median
+ * luminance to decide whether the page is light- or dark-themed.
+ *
+ * The downstream detectors are written to expect "light bg, dark content".
+ * For dark-themed pages we normalize by inverting RGB so the same predicate
+ * (and the same `backgroundLuminanceThreshold = 245`) applies in either
+ * polarity. The returned `normalizedThreshold` is what callers should pass
+ * to the line-grid detector and connected-component flood fill.
+ */
+interface BackgroundProfile {
+  isDark: boolean;
+  /** Median perimeter luminance (0..255) before normalization. */
+  perimeterMedian: number;
+  /** Threshold to apply on the post-normalization (always light-bg) raster. */
+  normalizedThreshold: number;
+}
+
+const luminanceAt = (data: Uint8ClampedArray, i: number): number =>
+  0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+
+const detectBackgroundProfile = (
+  pixels: ImageData,
+  baseThreshold: number
+): BackgroundProfile => {
+  const { width, height, data } = pixels;
+  const samples: number[] = [];
+  const inset = Math.max(2, Math.min(8, Math.floor(Math.min(width, height) / 32)));
+
+  const sampleAt = (x: number, y: number) => {
+    if (x < 0 || y < 0 || x >= width || y >= height) {
+      return;
+    }
+    const i = (y * width + x) * 4;
+    if (data[i + 3] < 8) {
+      return;
+    }
+    samples.push(luminanceAt(data, i));
+  };
+
+  for (let dy = 0; dy < inset; dy += 1) {
+    for (let dx = 0; dx < inset; dx += 1) {
+      sampleAt(dx, dy);
+      sampleAt(width - 1 - dx, dy);
+      sampleAt(dx, height - 1 - dy);
+      sampleAt(width - 1 - dx, height - 1 - dy);
+    }
+  }
+
+  // Light raster (no opaque pixels at all) — fall back to the supplied
+  // threshold so existing tests with synthetic transparent rasters continue
+  // to behave the same way.
+  if (samples.length === 0) {
+    return { isDark: false, perimeterMedian: 255, normalizedThreshold: baseThreshold };
+  }
+
+  samples.sort((a, b) => a - b);
+  const perimeterMedian = samples[Math.floor(samples.length / 2)];
+  const isDark = perimeterMedian < 128;
+
+  if (!isDark) {
+    // Light page — keep the caller-supplied threshold so existing
+    // light-background calibrations and tests stay unchanged.
+    return { isDark, perimeterMedian, normalizedThreshold: baseThreshold };
+  }
+
+  // Dark page — after RGB inversion, background pixels land at
+  // `255 - perimeterMedian`, which is rarely as bright as 245. Pin the
+  // threshold a small distance below the inverted background luminance so
+  // all dark-page panels still register as background while their content
+  // (grey panels, near-white text, light grid rules) registers as
+  // foreground. Floor at 180 so heavy dark themes (perimeter ≈ 0) still
+  // admit reasonable foreground variation.
+  const invertedBg = 255 - perimeterMedian;
+  const tolerance = 16;
+  const normalizedThreshold = Math.max(180, Math.min(baseThreshold, invertedBg - tolerance));
+  return { isDark, perimeterMedian, normalizedThreshold };
+};
+
+/**
+ * If the page is dark-themed, return a new ImageData with RGB inverted so the
+ * downstream detectors see "light bg, dark content". Alpha is preserved. For
+ * light pages this returns the input unchanged (no allocation).
+ */
+const normalizeRasterForLightBackground = (
+  pixels: ImageData,
+  profile: BackgroundProfile
+): ImageData => {
+  if (!profile.isDark) {
+    return pixels;
+  }
+  const { width, height, data } = pixels;
+  const out = new Uint8ClampedArray(data.length);
+  for (let i = 0; i < data.length; i += 4) {
+    out[i] = 255 - data[i];
+    out[i + 1] = 255 - data[i + 1];
+    out[i + 2] = 255 - data[i + 2];
+    out[i + 3] = data[i + 3];
+  }
+  return { width, height, data: out, colorSpace: pixels.colorSpace ?? 'srgb' } as unknown as ImageData;
+};
+
+/**
+ * Auto-tune Canny thresholds via the standard "median ± sigma" rule. A fixed
+ * (50, 150) pair is too tight for low-contrast UIs and is not adaptive to
+ * brightness, which means the same panel border passes Canny in one capture
+ * and fragments into broken edges in the next. Computing the median once per
+ * page and deriving (lo, hi) keeps detection consistent across captures of
+ * the same content.
+ */
+const computeAutoCannyThresholds = (pixels: ImageData): { lo: number; hi: number } => {
+  const { data } = pixels;
+  const stride = 16;
+  const samples: number[] = [];
+  for (let i = 0; i < data.length; i += 4 * stride) {
+    if (data[i + 3] < 8) {
+      continue;
+    }
+    samples.push(luminanceAt(data, i));
+  }
+  if (samples.length === 0) {
+    return { lo: 50, hi: 150 };
+  }
+  samples.sort((a, b) => a - b);
+  const median = samples[Math.floor(samples.length / 2)];
+  const sigma = 0.33;
+  const lo = Math.max(0, Math.floor((1 - sigma) * median));
+  const hi = Math.min(255, Math.floor((1 + sigma) * median));
+  // Guarantee a non-trivial hysteresis band even when the page has very low
+  // luminance variance (e.g. a uniform dark UI).
+  if (hi - lo < 20) {
+    return { lo: Math.max(0, lo - 10), hi: Math.min(255, hi + 10) };
+  }
+  return { lo, hi };
+};
+
+const intersectionOverUnion = (a: PixelBounds, b: PixelBounds): number => {
+  const interLeft = Math.max(a.left, b.left);
+  const interTop = Math.max(a.top, b.top);
+  const interRight = Math.min(a.right, b.right);
+  const interBottom = Math.min(a.bottom, b.bottom);
+  if (interRight <= interLeft || interBottom <= interTop) {
+    return 0;
+  }
+  const inter = (interRight - interLeft) * (interBottom - interTop);
+  const areaA = Math.max(0, a.right - a.left) * Math.max(0, a.bottom - a.top);
+  const areaB = Math.max(0, b.right - b.left) * Math.max(0, b.bottom - b.top);
+  const union = areaA + areaB - inter;
+  return union <= 0 ? 0 : inter / union;
+};
+
+/**
+ * Suppress near-duplicate rects produced by anti-aliased edges that fragment
+ * differently between captures. Without this step, a single panel border can
+ * produce two sub-pixel-offset boxes that look identical visually but differ
+ * in the structural model — the dominant source of cross-run inconsistency.
+ */
+const mergeNearDuplicateRects = (
+  rects: PixelBounds[],
+  iouThreshold = 0.85
+): PixelBounds[] => {
+  if (rects.length <= 1) {
+    return rects.slice();
+  }
+  const sorted = rects
+    .map((rect) => ({
+      rect,
+      area: Math.max(0, rect.right - rect.left) * Math.max(0, rect.bottom - rect.top)
+    }))
+    .sort((a, b) => b.area - a.area);
+  const kept: PixelBounds[] = [];
+  for (const { rect } of sorted) {
+    let suppressed = false;
+    for (const accepted of kept) {
+      if (intersectionOverUnion(rect, accepted) >= iouThreshold) {
+        suppressed = true;
+        break;
+      }
+    }
+    if (!suppressed) {
+      kept.push(rect);
+    }
+  }
+  return kept;
+};
 
 const isLikelyOpenCvRuntime = (value: unknown): value is OpenCvLikeRuntime => {
   if (typeof value !== 'object' || value === null) {
@@ -585,19 +787,32 @@ const detectWithOpenCvRuntime = (
   const { pixels, surface } = input;
   const src = cv.matFromImageData(pixels);
   const gray = new cv.Mat();
+  const blurred = new cv.Mat();
   const binary = new cv.Mat();
   const opened = new cv.Mat();
   const cleaned = new cv.Mat();
   const edges = new cv.Mat();
+  const dilatedEdges = new cv.Mat();
   const contourMask = new cv.Mat();
   const contours = new cv.MatVector();
   const hierarchy = new cv.Mat();
 
   let openKernel: OpenCvMat | null = null;
   let closeKernel: OpenCvMat | null = null;
+  let dilateKernel: OpenCvMat | null = null;
 
   try {
     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+
+    // Pre-blur stabilizes Canny against capture-to-capture noise on
+    // anti-aliased UI borders. When the runtime does not expose
+    // GaussianBlur (mock or stripped build), we feed the raw gray mat
+    // straight into Canny.
+    let cannyInput: OpenCvMat = gray;
+    if (typeof cv.GaussianBlur === 'function') {
+      cv.GaussianBlur(gray, blurred, new cv.Size(3, 3), 0);
+      cannyInput = blurred;
+    }
 
     const adaptiveBlockSize = Math.max(3, Math.floor(Math.min(pixels.width, pixels.height) / 24) * 2 + 1);
     cv.adaptiveThreshold(
@@ -616,8 +831,29 @@ const detectWithOpenCvRuntime = (
     cv.morphologyEx(binary, opened, cv.MORPH_OPEN, openKernel);
     cv.morphologyEx(opened, cleaned, cv.MORPH_CLOSE, closeKernel);
 
-    cv.Canny(cleaned, edges, 50, 150);
-    cv.bitwise_or(cleaned, edges, contourMask);
+    // Auto-tune Canny: median±sigma adapts to overall page brightness so
+    // identical content produces identical edge masks across captures, even
+    // on low-contrast (dark UI / muted theme) surfaces.
+    const cannyThresholds = computeAutoCannyThresholds(pixels);
+    cv.Canny(cannyInput, edges, cannyThresholds.lo, cannyThresholds.hi);
+
+    // Edge dilation closes 1-pixel gaps in fragmented anti-aliased borders
+    // so adjacent contour pieces resolve into the same bounding box rather
+    // than into a different set of broken pieces each run. We try the
+    // dedicated `dilate` op first, then fall back to morphologyEx with
+    // MORPH_DILATE (when available), and finally to the raw edge mask.
+    let dilatedReady = false;
+    dilateKernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(2, 2));
+    if (typeof cv.dilate === 'function') {
+      try {
+        cv.dilate(edges, dilatedEdges, dilateKernel);
+        dilatedReady = true;
+      } catch {
+        dilatedReady = false;
+      }
+    }
+    const edgeMaskForContours: OpenCvMat = dilatedReady ? dilatedEdges : edges;
+    cv.bitwise_or(cleaned, edgeMaskForContours, contourMask);
 
     // RETR_TREE / RETR_LIST surface NESTED contours, which is required so that
     // boxes-inside-boxes (e.g. table cells inside a table) become structural
@@ -650,10 +886,15 @@ const detectWithOpenCvRuntime = (
       lineRects = [];
     }
 
+    // NMS-merge near-duplicate rects so that anti-aliased borders fragmenting
+    // into slightly different sub-pixel offsets produce the SAME bounding
+    // box on every run.
+    const mergedContourRects = mergeNearDuplicateRects(contourRects);
+
     // Contour rects: 2D shapes. Line-shaped rects are dropped because they
     // are 1D primitives that belong to the line-grid pipeline.
     const objectsFromContours = buildObjectsFromContourRects(
-      contourRects,
+      mergedContourRects,
       surface.surfaceWidth,
       surface.surfaceHeight,
       'obj_cv',
@@ -687,7 +928,7 @@ const detectWithOpenCvRuntime = (
     );
 
     const contentBounds =
-      unionBounds([...contourRects, ...lineRects]) ??
+      unionBounds([...mergedContourRects, ...lineRects]) ??
       computeContentBoundsFromPixels(pixels, backgroundThreshold);
 
     if (!contentBounds) {
@@ -731,14 +972,19 @@ const detectWithOpenCvRuntime = (
     if (closeKernel) {
       closeKernel.delete();
     }
+    if (dilateKernel) {
+      dilateKernel.delete();
+    }
 
     hierarchy.delete();
     contours.delete();
     contourMask.delete();
+    dilatedEdges.delete();
     edges.delete();
     cleaned.delete();
     opened.delete();
     binary.delete();
+    blurred.delete();
     gray.delete();
     src.delete();
   }
@@ -760,21 +1006,42 @@ export const createOpenCvJsAdapter = (options: OpenCvJsAdapterOptions = {}): CvA
         input.surface.surfaceHeight
       );
 
+      // Decide light vs dark page from perimeter samples and, if dark,
+      // hand all downstream detectors an inverted "light bg, dark content"
+      // raster so the same predicates apply uniformly. The line-grid
+      // detector and the heuristic flood fill are agnostic to this — they
+      // only ever see normalized pixels and a normalized threshold.
+      const profile = detectBackgroundProfile(input.pixels, backgroundThreshold);
+      const normalizedPixels = normalizeRasterForLightBackground(input.pixels, profile);
+      const normalizedInput: CvSurfaceRaster =
+        normalizedPixels === input.pixels ? input : { surface: input.surface, pixels: normalizedPixels };
+      const effectiveThreshold = profile.normalizedThreshold;
+
       const runtime = resolveOpenCvRuntime(runtimeOverride);
       if (!runtime) {
-        return detectWithHeuristicFallback(input, backgroundThreshold, minSidePx, thresholds);
+        return detectWithHeuristicFallback(
+          normalizedInput,
+          effectiveThreshold,
+          minSidePx,
+          thresholds
+        );
       }
 
       try {
         return detectWithOpenCvRuntime(
           runtime,
-          input,
-          backgroundThreshold,
+          normalizedInput,
+          effectiveThreshold,
           minSidePx,
           thresholds
         );
       } catch {
-        return detectWithHeuristicFallback(input, backgroundThreshold, minSidePx, thresholds);
+        return detectWithHeuristicFallback(
+          normalizedInput,
+          effectiveThreshold,
+          minSidePx,
+          thresholds
+        );
       }
     }
   };
