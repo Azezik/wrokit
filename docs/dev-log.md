@@ -1,3 +1,42 @@
+## 2026-04-29 — Fix: Cross-document anchor selection (highest-confidence wins, not first-by-order)
+
+### Why this step
+- The earlier same-day fix (cross-document similarity weights + consensus override) had no visible effect on the screenshots the user reported. Field 2 still landed on structurally adjacent but wrong elements (Reddit-Age cell on one runtime profile, Karma label on another). On re-investigation the override was usually NOT firing because the chosen primary anchor and the page consensus *agreed* on the wrong place — they were both pulled the same direction by the same systematic bias.
+- The actual root cause was upstream of consensus: in `localization-runner.run`, the first pass over `TransformationFieldCandidate`s broke as soon as ANY object-anchor candidate resolved (`break;` inside the for-loop). Candidates were emitted in `fallbackOrder` with `matched-object` (smallest containing object) before `parent-object`. Net effect: a low-confidence small-cell match preempted a high-confidence parent-card match every single time, regardless of confidence.
+- Cross-document, the smallest containing object is the LEAST stable structural element across two instances of the same template (a stat tile is reshaped by 4-digit vs 5-digit values; a parent card is not). Specificity-first ordering is correct within-document but exactly backwards cross-document — and the runner had no mechanism to switch.
+
+### What changed
+- `src/core/runtime/localization-runner.ts`:
+  - First-pass object-anchor selection rewritten from "first to resolve wins" to "highest-confidence resolved candidate wins". Replaced the `break` with a single-pass `bestObjectAnchor` reducer over all `matched-object` and `parent-object` candidates that resolve on the runtime page; the relational-rescue rung, consensus rescue, refined-border / border fallbacks, and the consensus-override rung still run unchanged after this selection.
+  - This change is the actual fix for the cross-document Reddit-profile screenshots: when matched-object pairs the unstable stat tile with the wrong runtime cell (low confidence) but parent-object pairs the stable right-sidebar card (high confidence), the parent now wins and the field projects through the stable container.
+
+### Why this preserves within-document behavior
+- `field-candidates.ts` builds `matched-object` confidence as `match.confidence × RANK_CONFIDENCE_FACTOR['primary'=1]` and `parent-object` confidence as `match.confidence × PARENT_INDIRECTION_PENALTY (0.85)`. Within-document, the underlying `match.confidence` is essentially identical for both, so matched-object's factor of 1.0 still beats parent-object's 0.85 — specificity wins, exactly as before. The new rule only flips when `match.confidence` itself is meaningfully lower for the small-cell match than for the parent-card match, which is precisely the cross-document failure mode.
+
+### Tests
+- `tests/unit/localization-runner.test.ts` — two new regression tests:
+  - `prefers the highest-confidence object-anchor candidate, not the first by fallbackOrder (cross-document)` — low-confidence (0.30) `matched-object` paired with a wrong runtime cell + high-confidence (0.78) `parent-object` paired with the correct parent. Asserts the parent wins, anchor tier is `field-object-b`, and the projection lands on the parent's affine, not the wrong cell's.
+  - `still picks matched-object over parent-object when matched-object confidence is higher (within-document)` — symmetrical proof: when matched-object's confidence (0.9) beats parent-object's (0.765), matched-object still wins. Specificity is preserved when both anchors match strongly.
+
+### Boundaries preserved
+- No change to `StructuralModel`, `GeometryFile`, `WizardFile`, `TransformationModel`, or `PredictedGeometryFile` shapes/versions.
+- `field-candidates.ts` is unchanged; the candidate list (matched-object / parent-object / refined-border / border with their confidences and `fallbackOrder`) is exactly what it was. The change is purely at the consumer side — *which* candidate the localization runner picks first.
+- Consensus rescue, consensus override, relational rescue, refined-border / border fallback, and legacy stable-anchor path all run unchanged after the new selection.
+- Within-document Run Mode behavior is unchanged: matched-object's `primary` rank factor still beats parent-object's parent-indirection penalty at equal underlying match confidence.
+- All transforms remain in canonical normalized [0, 1] space. No normalization changes; no parallel coordinate system.
+
+### Files modified
+- `src/core/runtime/localization-runner.ts` (highest-confidence selection)
+- `tests/unit/localization-runner.test.ts` (two new regression tests)
+- `docs/dev-log.md` (this entry)
+
+### Checks run
+- `npm run check` — clean.
+- `npm test` — 215/215 passing across 21 files (213 prior + 2 new).
+- `npm run build` — clean.
+
+---
+
 ## 2026-04-29 — Fix: Cross-document field accuracy (similarity weights + consensus override)
 
 ### Why this step

@@ -1386,13 +1386,34 @@ export const createLocalizationRunner = (): LocalizationRunner => ({
             field.fieldId
           );
 
-          // First pass: try every object-anchor candidate (matched-object,
-          // parent-object) directly, in fallbackOrder. A direct match — even
-          // a parent-object one — beats a rescued match, because rescue
-          // reconstructs a virtual runtime rect from the config containment
-          // graph rather than observing one in the runtime model. Trying
-          // rescue inline (per candidate) was wrong: a rescued candidate A
-          // could preempt a clean direct B further down the list.
+          // First pass: pick the HIGHEST-CONFIDENCE object-anchor candidate
+          // (matched-object or parent-object) that resolves on the runtime
+          // page. The previous "first-by-fallbackOrder wins" rule guaranteed
+          // that `matched-object` (smallest containing object) always beat
+          // `parent-object` whenever it resolved at all — which is correct
+          // within-document, where small-cell matches are essentially
+          // perfect, but exactly backwards cross-document. The smallest
+          // containing object is also the LEAST stable element across two
+          // instances of the same template (a stat tile is reshaped by a
+          // 4-digit vs 5-digit value; a parent card is not), so a low-
+          // confidence small-cell match was preempting a high-confidence
+          // larger-container match. Picking by confidence gives the right
+          // answer in both regimes:
+          //   - within-document, matched-object's rank factor (1.0 for
+          //     primary) beats parent-object's parent-indirection penalty
+          //     (0.85) at equal underlying match confidence, so the most
+          //     specific anchor still wins;
+          //   - cross-document, when the matched-object pairing is weak
+          //     and the parent pairing is strong, the parent wins,
+          //     anchoring the field to the stable container instead of the
+          //     drifting cell.
+          // Refined-border / border candidates are still tried only after
+          // object anchors fail (and after consensus rescue). Relational
+          // rescue is still inline for missing matched-object candidates.
+          let bestObjectAnchor: {
+            candidate: TransformationFieldCandidate;
+            resolution: AnchorResolution;
+          } | null = null;
           for (const candidate of candidates) {
             if (!isObjectAnchorCandidate(candidate)) {
               continue;
@@ -1403,12 +1424,20 @@ export const createLocalizationRunner = (): LocalizationRunner => ({
               configStructuralPage,
               runtimeStructuralPage
             );
-            if (candidateResolution) {
-              resolution = candidateResolution;
-              primaryCandidate = candidate;
-              chosenLabel = labelForCandidate(candidate);
-              break;
+            if (!candidateResolution) {
+              continue;
             }
+            if (
+              !bestObjectAnchor ||
+              candidate.confidence > bestObjectAnchor.candidate.confidence
+            ) {
+              bestObjectAnchor = { candidate, resolution: candidateResolution };
+            }
+          }
+          if (bestObjectAnchor) {
+            resolution = bestObjectAnchor.resolution;
+            primaryCandidate = bestObjectAnchor.candidate;
+            chosenLabel = labelForCandidate(bestObjectAnchor.candidate);
           }
 
           // Second pass — relational rescue rung inside the TM-driven path:
