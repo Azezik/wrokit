@@ -1376,6 +1376,335 @@ describe('localization-runner', () => {
       expect(predicted.bbox.hNorm).toBeCloseTo(0.1, 6);
     });
 
+    it('prefers the highest-confidence object-anchor candidate, not the first by fallbackOrder (cross-document)', async () => {
+      // Cross-document scenario: Field 2 on a Reddit profile lives inside a
+      // small "stat tile" cell (matched-object) AND inside the larger right-
+      // sidebar card (parent-object). Across two profiles with different
+      // content widths, the small cell is reshaped (4-digit vs 5-digit
+      // karma) and the matcher pairs it weakly with a structurally adjacent
+      // wrong cell — confidence 0.30 — while the larger card pairs robustly
+      // — confidence 0.78. Picking the first to resolve (matched-object,
+      // fallbackOrder 0) lands the field on the wrong cell. Picking by
+      // confidence anchors it to the stable parent.
+      const runner = createLocalizationRunner();
+      const configWithChild: StructuralModel = {
+        ...baseConfigModel,
+        id: 'config_xd',
+        documentFingerprint: 'config_xd-fp',
+        pages: [
+          {
+            ...baseConfigModel.pages[0],
+            objectHierarchy: {
+              objects: [
+                {
+                  objectId: 'cfg_parent',
+                  objectRectNorm: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.5, hNorm: 0.5 },
+                  bbox: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.5, hNorm: 0.5 },
+                  parentObjectId: null,
+                  childObjectIds: ['cfg_child'],
+                  confidence: 0.9,
+                  depth: 0
+                },
+                {
+                  objectId: 'cfg_child',
+                  objectRectNorm: { xNorm: 0.25, yNorm: 0.2, wNorm: 0.2, hNorm: 0.1 },
+                  bbox: { xNorm: 0.25, yNorm: 0.2, wNorm: 0.2, hNorm: 0.1 },
+                  parentObjectId: 'cfg_parent',
+                  childObjectIds: [],
+                  confidence: 0.85,
+                  depth: 1
+                }
+              ]
+            }
+          }
+        ]
+      };
+      const runtimeWithBoth: StructuralModel = {
+        ...baseRuntimeModel,
+        id: 'runtime_xd',
+        documentFingerprint: 'runtime_xd-fp',
+        pages: [
+          {
+            ...baseRuntimeModel.pages[0],
+            objectHierarchy: {
+              objects: [
+                {
+                  objectId: 'rt_parent',
+                  objectRectNorm: { xNorm: 0.3, yNorm: 0.2, wNorm: 0.5, hNorm: 0.5 },
+                  bbox: { xNorm: 0.3, yNorm: 0.2, wNorm: 0.5, hNorm: 0.5 },
+                  parentObjectId: null,
+                  childObjectIds: ['rt_wrong_cell'],
+                  confidence: 0.9,
+                  depth: 0
+                },
+                {
+                  // Wrong runtime cell: similar size and shape as cfg_child,
+                  // but at a different relative location inside the parent
+                  // (a content-width shift moved it by 0.10 in y).
+                  objectId: 'rt_wrong_cell',
+                  objectRectNorm: { xNorm: 0.45, yNorm: 0.4, wNorm: 0.2, hNorm: 0.1 },
+                  bbox: { xNorm: 0.45, yNorm: 0.4, wNorm: 0.2, hNorm: 0.1 },
+                  parentObjectId: 'rt_parent',
+                  childObjectIds: [],
+                  confidence: 0.85,
+                  depth: 1
+                }
+              ]
+            }
+          }
+        ]
+      };
+
+      const transformationModel: TransformationModel = {
+        schema: 'wrokit/transformation-model',
+        version: '1.0',
+        transformVersion: 'wrokit/transformation/v1',
+        id: 'xform_xd',
+        config: {
+          id: configWithChild.id,
+          documentFingerprint: configWithChild.documentFingerprint
+        },
+        runtime: {
+          id: runtimeWithBoth.id,
+          documentFingerprint: runtimeWithBoth.documentFingerprint
+        },
+        pages: [
+          {
+            pageIndex: 0,
+            levelSummaries: [],
+            objectMatches: [],
+            unmatchedConfigObjectIds: [],
+            unmatchedRuntimeObjectIds: [],
+            consensus: {
+              transform: null,
+              confidence: 0,
+              contributingMatchCount: 0,
+              outliers: [],
+              notes: [],
+              warnings: []
+            },
+            fieldAlignments: [
+              {
+                fieldId: 'invoice_number',
+                candidates: [
+                  {
+                    // Low-confidence matched-object (the unstable small cell).
+                    // Used to win unconditionally because it had fallbackOrder
+                    // 0; now the higher-confidence parent-object beats it.
+                    source: 'matched-object',
+                    fallbackOrder: 0,
+                    configObjectId: 'cfg_child',
+                    runtimeObjectId: 'rt_wrong_cell',
+                    transform: { scaleX: 1, scaleY: 1, translateX: 0.2, translateY: 0.2 },
+                    relativeFieldRect: { xRatio: 0, yRatio: 0, wRatio: 1, hRatio: 1 },
+                    confidence: 0.3,
+                    notes: []
+                  },
+                  {
+                    // High-confidence parent-object (the stable card).
+                    source: 'parent-object',
+                    fallbackOrder: 1,
+                    configObjectId: 'cfg_parent',
+                    runtimeObjectId: 'rt_parent',
+                    transform: { scaleX: 1, scaleY: 1, translateX: 0.2, translateY: 0.1 },
+                    relativeFieldRect: { xRatio: 0.3, yRatio: 0.2, wRatio: 0.4, hRatio: 0.2 },
+                    confidence: 0.78,
+                    notes: []
+                  }
+                ],
+                warnings: []
+              }
+            ],
+            notes: [],
+            warnings: []
+          }
+        ],
+        overallConfidence: 0,
+        notes: [],
+        warnings: [],
+        createdAtIso: '2026-04-27T00:00:00Z'
+      };
+
+      const result = await runner.run({
+        wizardId: 'Invoice Wizard',
+        configGeometry,
+        configStructuralModel: configWithChild,
+        runtimeStructuralModel: runtimeWithBoth,
+        runtimePages: [runtimePage],
+        transformationModel,
+        predictedId: 'pred_tm_confidence_pick',
+        nowIso: '2026-04-27T00:00:00Z'
+      });
+
+      const predicted = result.fields[0];
+      // Parent-object wins because its confidence (0.78) beats the
+      // matched-object's (0.30), even though matched-object has lower
+      // fallbackOrder.
+      expect(predicted.anchorTierUsed).toBe('field-object-b');
+      expect(predicted.transform.configObjectId).toBe('cfg_parent');
+      expect(predicted.transform.runtimeObjectId).toBe('rt_parent');
+      // Field (0.25, 0.20, 0.20, 0.10) under parent affine (1,1,0.2,0.1) ->
+      // (0.45, 0.30, 0.20, 0.10), NOT (0.45, 0.40, ...) which the
+      // wrong-cell match would have produced.
+      expect(predicted.bbox.xNorm).toBeCloseTo(0.45, 6);
+      expect(predicted.bbox.yNorm).toBeCloseTo(0.3, 6);
+    });
+
+    it('still picks matched-object over parent-object when matched-object confidence is higher (within-document)', async () => {
+      // Within-document, matched-object's primary rank factor (1.0) is
+      // higher than parent-object's parent-indirection penalty (0.85), so
+      // matched-object naturally has higher candidate confidence at equal
+      // underlying match strength. The new "highest-confidence wins" rule
+      // must preserve that — specificity still beats indirection when
+      // both anchors match strongly.
+      const runner = createLocalizationRunner();
+      const configWithChild: StructuralModel = {
+        ...baseConfigModel,
+        id: 'config_within',
+        documentFingerprint: 'config_within-fp',
+        pages: [
+          {
+            ...baseConfigModel.pages[0],
+            objectHierarchy: {
+              objects: [
+                {
+                  objectId: 'cfg_parent',
+                  objectRectNorm: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.5, hNorm: 0.5 },
+                  bbox: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.5, hNorm: 0.5 },
+                  parentObjectId: null,
+                  childObjectIds: ['cfg_child'],
+                  confidence: 0.9,
+                  depth: 0
+                },
+                {
+                  objectId: 'cfg_child',
+                  objectRectNorm: { xNorm: 0.25, yNorm: 0.2, wNorm: 0.2, hNorm: 0.1 },
+                  bbox: { xNorm: 0.25, yNorm: 0.2, wNorm: 0.2, hNorm: 0.1 },
+                  parentObjectId: 'cfg_parent',
+                  childObjectIds: [],
+                  confidence: 0.85,
+                  depth: 1
+                }
+              ]
+            }
+          }
+        ]
+      };
+      const runtimeWithChild: StructuralModel = {
+        ...baseRuntimeModel,
+        id: 'runtime_within',
+        documentFingerprint: 'runtime_within-fp',
+        pages: [
+          {
+            ...baseRuntimeModel.pages[0],
+            objectHierarchy: {
+              objects: [
+                {
+                  objectId: 'rt_parent',
+                  objectRectNorm: { xNorm: 0.3, yNorm: 0.2, wNorm: 0.5, hNorm: 0.5 },
+                  bbox: { xNorm: 0.3, yNorm: 0.2, wNorm: 0.5, hNorm: 0.5 },
+                  parentObjectId: null,
+                  childObjectIds: ['rt_child'],
+                  confidence: 0.9,
+                  depth: 0
+                },
+                {
+                  objectId: 'rt_child',
+                  objectRectNorm: { xNorm: 0.45, yNorm: 0.3, wNorm: 0.2, hNorm: 0.1 },
+                  bbox: { xNorm: 0.45, yNorm: 0.3, wNorm: 0.2, hNorm: 0.1 },
+                  parentObjectId: 'rt_parent',
+                  childObjectIds: [],
+                  confidence: 0.85,
+                  depth: 1
+                }
+              ]
+            }
+          }
+        ]
+      };
+      const transformationModel: TransformationModel = {
+        schema: 'wrokit/transformation-model',
+        version: '1.0',
+        transformVersion: 'wrokit/transformation/v1',
+        id: 'xform_within',
+        config: {
+          id: configWithChild.id,
+          documentFingerprint: configWithChild.documentFingerprint
+        },
+        runtime: {
+          id: runtimeWithChild.id,
+          documentFingerprint: runtimeWithChild.documentFingerprint
+        },
+        pages: [
+          {
+            pageIndex: 0,
+            levelSummaries: [],
+            objectMatches: [],
+            unmatchedConfigObjectIds: [],
+            unmatchedRuntimeObjectIds: [],
+            consensus: {
+              transform: null,
+              confidence: 0,
+              contributingMatchCount: 0,
+              outliers: [],
+              notes: [],
+              warnings: []
+            },
+            fieldAlignments: [
+              {
+                fieldId: 'invoice_number',
+                candidates: [
+                  {
+                    source: 'matched-object',
+                    fallbackOrder: 0,
+                    configObjectId: 'cfg_child',
+                    runtimeObjectId: 'rt_child',
+                    transform: { scaleX: 1, scaleY: 1, translateX: 0.2, translateY: 0.1 },
+                    relativeFieldRect: { xRatio: 0, yRatio: 0, wRatio: 1, hRatio: 1 },
+                    confidence: 0.9,
+                    notes: []
+                  },
+                  {
+                    source: 'parent-object',
+                    fallbackOrder: 1,
+                    configObjectId: 'cfg_parent',
+                    runtimeObjectId: 'rt_parent',
+                    transform: { scaleX: 1, scaleY: 1, translateX: 0.2, translateY: 0.1 },
+                    relativeFieldRect: { xRatio: 0.3, yRatio: 0.2, wRatio: 0.4, hRatio: 0.2 },
+                    confidence: 0.765,
+                    notes: []
+                  }
+                ],
+                warnings: []
+              }
+            ],
+            notes: [],
+            warnings: []
+          }
+        ],
+        overallConfidence: 0,
+        notes: [],
+        warnings: [],
+        createdAtIso: '2026-04-27T00:00:00Z'
+      };
+
+      const result = await runner.run({
+        wizardId: 'Invoice Wizard',
+        configGeometry,
+        configStructuralModel: configWithChild,
+        runtimeStructuralModel: runtimeWithChild,
+        runtimePages: [runtimePage],
+        transformationModel,
+        predictedId: 'pred_tm_specificity_wins',
+        nowIso: '2026-04-27T00:00:00Z'
+      });
+
+      const predicted = result.fields[0];
+      expect(predicted.anchorTierUsed).toBe('field-object-a');
+      expect(predicted.transform.configObjectId).toBe('cfg_child');
+      expect(predicted.transform.runtimeObjectId).toBe('rt_child');
+    });
+
     it('uses a TransformationModel refined-border candidate sourced from the page refined-border rects', async () => {
       const runner = createLocalizationRunner();
       const transformationModel = buildTransformationModel([
