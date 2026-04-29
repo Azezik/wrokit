@@ -42,7 +42,6 @@ import {
   affineFromRects,
   applyAffineToRect,
   iouOfRects,
-  rectArea,
   subtractAffine
 } from './transform-math';
 
@@ -65,8 +64,14 @@ export interface ConsensusOptions {
 }
 
 const DEFAULTS: Required<ConsensusOptions> = {
-  scaleOutlierTolerance: 0.15,
-  translateOutlierTolerance: 0.08,
+  // Tightened from 0.15 / 0.08 to require near-identical implied affines
+  // before two matches are considered to "agree" inside the RANSAC inlier
+  // search. The earlier loose values let mutually-incoherent matches form a
+  // fat inlier set whose weighted mean drifted 5-10% off the truly-perfect
+  // subset; tight tolerances force the inlier set to be a real "this object
+  // didn't move relative to the others" agreement.
+  scaleOutlierTolerance: 0.05,
+  translateOutlierTolerance: 0.03,
   minMatchesForConsensus: 1
 };
 
@@ -79,6 +84,23 @@ interface WeightedMatch {
   weight: number;
 }
 
+/**
+ * Build per-match weights for consensus.
+ *
+ * Trust-weighted (confidence²), NOT area-weighted. The earlier
+ * `confidence × √area` formula let a single large-but-mediocre rectangle
+ * dominate the consensus mean even after RANSAC had identified a clean
+ * inlier set: the largest rect's vote could outweigh several smaller-but-
+ * tighter agreers. After RANSAC has confirmed that a subset of matches
+ * agree on geometry, the relevant question is "which of these do we trust
+ * most?" — and the answer is confidence, not size. Squaring amplifies the
+ * gap between a 0.95-confidence match and a 0.70-confidence match (0.90 vs
+ * 0.49) so the refined mean leans on the strongest matches inside the
+ * inlier set.
+ *
+ * `rectArea` is no longer imported here — this file used to import it solely
+ * for the area-weight calculation.
+ */
 const buildWeightedMatches = (
   matches: ReadonlyArray<TransformationObjectMatch>,
   configObjects: ReadonlyMap<string, StructuralObjectNode>,
@@ -91,8 +113,7 @@ const buildWeightedMatches = (
     if (!c || !r) {
       continue;
     }
-    const area = rectArea(c.objectRectNorm);
-    const weight = Math.max(1e-6, match.confidence * Math.sqrt(area));
+    const weight = Math.max(1e-6, match.confidence * match.confidence);
     result.push({
       match,
       configRect: c.objectRectNorm,

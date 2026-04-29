@@ -458,6 +458,53 @@ interface ResolveObjectOptions {
   crossDocument?: boolean;
 }
 
+/**
+ * Maximum {@link geometryDistance} (sum of |dx| + |dy| + |dw| + |dh| in
+ * normalized coordinates) between a config object and the candidate runtime
+ * object the legacy hierarchy-geometry resolver picks. Above this, the
+ * candidate is rejected and the caller falls through to relational rescue
+ * or refined-border. Previously the resolver always returned the closest
+ * same-depth runtime object regardless of how far off it was — exactly the
+ * "morph bad data into good data" pattern we are removing. With this cap the
+ * resolver is willing to say "no good runtime counterpart exists."
+ *
+ * Kept lenient enough to allow hierarchy-confirmed matches with moderate
+ * cross-document drift (the kitchen-tray and positional-id tests both rely
+ * on hierarchy beating raw geometry, with respective distances ~0.20 and
+ * ~0.30).
+ */
+const HIERARCHY_GEOMETRY_MAX_DISTANCE = 0.35;
+
+/**
+ * Maximum size delta (per-axis, normalized to the larger side) accepted by
+ * the legacy hierarchy-geometry resolver. Mirrors the size floor used in
+ * similarity scoring so the legacy fallback applies the same "near-perfect"
+ * bar as the matcher does.
+ */
+const HIERARCHY_GEOMETRY_MAX_SIZE_DELTA = 0.5;
+
+/**
+ * Minimum aspect-ratio parity (smaller-aspect / larger-aspect) accepted by
+ * the legacy hierarchy-geometry resolver. Below this the candidate is the
+ * wrong shape, regardless of position or hierarchy depth.
+ */
+const HIERARCHY_GEOMETRY_MIN_ASPECT_RATIO = 0.7;
+
+const sizeDelta = (a: StructuralNormalizedRect, b: StructuralNormalizedRect): number => {
+  const dw = Math.abs(a.wNorm - b.wNorm) / Math.max(a.wNorm, b.wNorm, 1e-6);
+  const dh = Math.abs(a.hNorm - b.hNorm) / Math.max(a.hNorm, b.hNorm, 1e-6);
+  return Math.max(dw, dh);
+};
+
+const aspectRatioParity = (
+  a: StructuralNormalizedRect,
+  b: StructuralNormalizedRect
+): number => {
+  const arA = a.hNorm > 1e-9 ? a.wNorm / a.hNorm : 1;
+  const arB = b.hNorm > 1e-9 ? b.wNorm / b.hNorm : 1;
+  return Math.min(arA, arB) / Math.max(arA, arB, 1e-6);
+};
+
 const resolveRuntimeObject = (
   configPage: StructuralPage,
   runtimePage: StructuralPage,
@@ -531,8 +578,28 @@ const resolveRuntimeObject = (
       return left.object.objectId.localeCompare(right.object.objectId);
     });
 
+  // Reject candidates that are too far off geometrically or have the wrong
+  // shape entirely. The legacy resolver used to always return its top-ranked
+  // candidate regardless of how marginal it was; the caller (resolveFieldAnchor)
+  // would then anchor a field on it. Now we apply the same "near-perfect"
+  // bar the matcher uses, so the legacy fallback can honestly say there is
+  // no good runtime counterpart and the caller falls through to relational
+  // rescue / refined-border.
+  const winner = ranked[0];
+  if (winner.distance > HIERARCHY_GEOMETRY_MAX_DISTANCE) {
+    return null;
+  }
+  if (sizeDelta(configObject.objectRectNorm, winner.object.objectRectNorm) >
+    HIERARCHY_GEOMETRY_MAX_SIZE_DELTA) {
+    return null;
+  }
+  if (aspectRatioParity(configObject.objectRectNorm, winner.object.objectRectNorm) <
+    HIERARCHY_GEOMETRY_MIN_ASPECT_RATIO) {
+    return null;
+  }
+
   return {
-    object: ranked[0].object,
+    object: winner.object,
     strategy: 'type-hierarchy-geometry'
   };
 };
@@ -598,7 +665,21 @@ const resolveRescuerObjectStrict = (
     (object) => getObjectDepth(runtimePage, object.objectId) === configDepth
   );
   if (sameDepth.length === 1) {
-    return { object: sameDepth[0], strategy: 'type-hierarchy-geometry' };
+    const candidate = sameDepth[0];
+    // Same near-perfect gates as the lenient direct picker — a unique
+    // same-depth runtime object is only a usable rescuer when its geometry
+    // actually matches the config rescuer it is standing in for.
+    if (
+      geometryDistance(configObject.objectRectNorm, candidate.objectRectNorm) >
+        HIERARCHY_GEOMETRY_MAX_DISTANCE ||
+      sizeDelta(configObject.objectRectNorm, candidate.objectRectNorm) >
+        HIERARCHY_GEOMETRY_MAX_SIZE_DELTA ||
+      aspectRatioParity(configObject.objectRectNorm, candidate.objectRectNorm) <
+        HIERARCHY_GEOMETRY_MIN_ASPECT_RATIO
+    ) {
+      return null;
+    }
+    return { object: candidate, strategy: 'type-hierarchy-geometry' };
   }
 
   return null;
@@ -828,10 +909,17 @@ const CONSENSUS_OVERRIDE_MIN_CONTRIBUTORS = 2;
  * Maximum IoU between the chosen primary's projected box and the consensus's
  * projected box before the two are considered to AGREE. Below this they
  * disagree about where the field lives, and (with a confident consensus
- * available) the override fires. Set looser than the agreement floor used
- * for warnings so we override only when the disagreement is real.
+ * available) the override fires.
+ *
+ * Tightened from 0.4 to 0.6 in the "filter for good data" pass: a confident
+ * multi-match consensus is the more cross-validated signal, so when a
+ * single-anchor primary projection only marginally overlaps the consensus,
+ * we now prefer the consensus rather than letting the primary's marginal
+ * agreement keep it as the chosen anchor. Still loose enough that anchors
+ * derived from different objects can pixel-disagree slightly without
+ * triggering an override on a fundamentally-correct primary.
  */
-const CONSENSUS_OVERRIDE_MAX_IOU = 0.4;
+const CONSENSUS_OVERRIDE_MAX_IOU = 0.6;
 
 /**
  * Stricter floor used when a consensus has only a SINGLE contributing match.

@@ -2765,11 +2765,15 @@ describe('localization-runner', () => {
 
       const resolution = __testing.resolveFieldAnchor(fieldRel, configPage, runtimePageStructural);
 
-      // Rescue rejected → direct B path takes over.
-      expect(resolution.tier).toBe('field-object-b');
-      // The lenient direct picker selects one of the two same-type runtime
-      // candidates and exposes it explicitly.
-      expect(resolution.transform.runtimeObjectId).toBeDefined();
+      // Rescue rejected (ambiguous parent) AND the direct B picker also
+      // refuses both runtime candidates because their geometry is too far
+      // off the config B (config 0.50×0.50 at (0.10, 0.10) vs runtime
+      // 0.40×0.40 at (0.30, 0.20) / (0.55, 0.20) — total normalized
+      // geometry distance 0.40 / 0.65, exceeding the near-perfect floor).
+      // Falls through to refined-border, which is the correct "filter for
+      // good data" behavior: when no object anchor passes the bar, the
+      // page-level fallback is used instead of force-fitting a marginal one.
+      expect(resolution.tier).toBe('refined-border');
     });
 
     it('does not chain when no container relation between B and A exists in config', () => {
