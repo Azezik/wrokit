@@ -564,7 +564,8 @@ const boundsToRect = (bounds: PixelBounds) => ({
 
 const computeContentBoundsFromPixels = (
   pixels: ImageData,
-  backgroundThreshold: number
+  backgroundThreshold: number,
+  foregroundMask: Uint8Array | null = null
 ): PixelBounds | null => {
   const { width, height, data } = pixels;
   let left = width;
@@ -574,17 +575,23 @@ const computeContentBoundsFromPixels = (
 
   for (let y = 0; y < height; y += 1) {
     const rowStart = y * width * 4;
+    const pixelRow = y * width;
     let rowHasContent = false;
     for (let x = 0; x < width; x += 1) {
-      const i = rowStart + x * 4;
-      const r = data[i];
-      const g = data[i + 1];
-      const b = data[i + 2];
-      const a = data[i + 3];
-      const isBackground =
-        a < 8 ||
-        (r >= backgroundThreshold && g >= backgroundThreshold && b >= backgroundThreshold);
-      if (!isBackground) {
+      let isForeground: boolean;
+      if (foregroundMask) {
+        isForeground = foregroundMask[pixelRow + x] === 1;
+      } else {
+        const i = rowStart + x * 4;
+        const r = data[i];
+        const g = data[i + 1];
+        const b = data[i + 2];
+        const a = data[i + 3];
+        isForeground =
+          !(a < 8 ||
+            (r >= backgroundThreshold && g >= backgroundThreshold && b >= backgroundThreshold));
+      }
+      if (isForeground) {
         if (x < left) left = x;
         if (x > right) right = x;
         rowHasContent = true;
@@ -603,10 +610,112 @@ const computeContentBoundsFromPixels = (
   return { left, top, right: right + 1, bottom: bottom + 1 };
 };
 
+/**
+ * Sobel-like gradient threshold above which a pixel counts as "edge evidence".
+ *
+ * The kernel used here is the standard 3×3 Sobel (Gx = [[-1,0,1],[-2,0,2],
+ * [-1,0,1]], Gy transposed). For a clean axis-aligned step of magnitude Δ in
+ * luminance, |Gx| or |Gy| ≈ 4·Δ. Capture noise on anti-aliased UI strokes
+ * sits at roughly |Gx|+|Gy| ≈ 12–16. A floor of 24 admits panel borders
+ * whose contrast against the page is Δ ≈ 6 luminance units while staying
+ * above ambient noise — the rounded-corner Reddit profile card (Δ ≈ 13)
+ * produces gradients of ~52, well above this floor.
+ *
+ * The floor is intentionally conservative: lowering it further would start
+ * marking text-anti-aliasing seams as foreground and re-introduce the noise
+ * the global luminance threshold was tuned to suppress.
+ */
+const GRADIENT_FOREGROUND_FLOOR = 24;
+
+/**
+ * Build a per-pixel foreground mask from BOTH the existing global luminance
+ * threshold AND a Sobel-equivalent local gradient magnitude pass. A pixel is
+ * foreground if (a) the global threshold marks it OR (b) its 3×3 Sobel
+ * response exceeds the gradient floor.
+ *
+ * Why this is needed:
+ *   The heuristic fallback classifies pixels with a single global luminance
+ *   threshold derived from the page perimeter median. On a dark page (lum ≈ 12)
+ *   with a Reddit-style profile card (lum ≈ 25), the inverted threshold lands
+ *   at ~225 and the inverted panel pixel at ~230 — the panel reads as
+ *   background, while only its high-contrast contents (white text, blue
+ *   buttons) survive. A global widen would pull glyph noise back in. Local
+ *   gradient evidence catches the panel border (Δ ≈ 13 produces |Gx|≈52,
+ *   well above the floor) without disturbing the global tolerance band, so
+ *   the rounded-corner outline forms a closed connected component whose
+ *   bounding box is the panel rect.
+ */
+const computeForegroundMask = (
+  pixels: ImageData,
+  backgroundThreshold: number
+): Uint8Array => {
+  const { width, height, data } = pixels;
+  const mask = new Uint8Array(width * height);
+
+  // Pre-compute luminance once per pixel — Sobel needs neighborhood reads
+  // and recomputing 0.299·r + 0.587·g + 0.114·b nine times per pixel is the
+  // hottest path in the heuristic detector on a 2000-wide raster.
+  const lum = new Uint8ClampedArray(width * height);
+  for (let i = 0, p = 0; i < data.length; i += 4, p += 1) {
+    if (data[i + 3] < 8) {
+      lum[p] = 255; // transparent → treat as background-bright for gradient purposes
+    } else {
+      lum[p] = (0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]) | 0;
+    }
+  }
+
+  // 1) Global-threshold foreground: same predicate as detectConnectedBounds
+  //    used pre-fix. Kept verbatim so the existing dark-UI / ruled-form tests
+  //    classify pixels exactly the way they did before.
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const i = (y * width + x) * 4;
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      const a = data[i + 3];
+      const isBg =
+        a < 8 ||
+        (r >= backgroundThreshold && g >= backgroundThreshold && b >= backgroundThreshold);
+      if (!isBg) {
+        mask[y * width + x] = 1;
+      }
+    }
+  }
+
+  // 2) Gradient-evidence foreground: 3×3 Sobel on the luminance grid. Skipped
+  //    on the 1-pixel border (insufficient neighborhood) — those edge pixels
+  //    keep whatever the global threshold assigned them.
+  for (let y = 1; y < height - 1; y += 1) {
+    const rowAbove = (y - 1) * width;
+    const row = y * width;
+    const rowBelow = (y + 1) * width;
+    for (let x = 1; x < width - 1; x += 1) {
+      const tl = lum[rowAbove + x - 1];
+      const tc = lum[rowAbove + x];
+      const tr = lum[rowAbove + x + 1];
+      const ml = lum[row + x - 1];
+      const mr = lum[row + x + 1];
+      const bl = lum[rowBelow + x - 1];
+      const bc = lum[rowBelow + x];
+      const br = lum[rowBelow + x + 1];
+      const gx = -tl + tr - 2 * ml + 2 * mr - bl + br;
+      const gy = -tl - 2 * tc - tr + bl + 2 * bc + br;
+      const magnitude = (gx < 0 ? -gx : gx) + (gy < 0 ? -gy : gy);
+      if (magnitude >= GRADIENT_FOREGROUND_FLOOR) {
+        mask[row + x] = 1;
+      }
+    }
+  }
+
+  return mask;
+};
+
 const detectConnectedBounds = (
   pixels: ImageData,
   backgroundThreshold: number,
-  minObjectAreaPx: number
+  minObjectAreaPx: number,
+  foregroundMask: Uint8Array | null = null
 ): PixelBounds[] => {
   const { width, height, data } = pixels;
   const visited = new Uint8Array(width * height);
@@ -614,6 +723,9 @@ const detectConnectedBounds = (
   const queue = new Int32Array(width * height);
 
   const isForeground = (x: number, y: number): boolean => {
+    if (foregroundMask) {
+      return foregroundMask[y * width + x] === 1;
+    }
     const i = (y * width + x) * 4;
     const r = data[i];
     const g = data[i + 1];
@@ -700,7 +812,8 @@ const isLineShaped = (
 const detectHeuristicSurfaceObjects = (
   pixels: ImageData,
   backgroundThreshold: number,
-  thresholds: SizeRelativeThresholds
+  thresholds: SizeRelativeThresholds,
+  foregroundMask: Uint8Array
 ): CvSurfaceObject[] => {
   const { width, height } = pixels;
   const objects: CvSurfaceObject[] = [];
@@ -709,7 +822,12 @@ const detectHeuristicSurfaceObjects = (
   // 1. Connected components — kept for non-line-bounded shapes (logos, signatures).
   //    Word-noise is dropped via min-side and area floors. Line-shaped blobs
   //    are skipped because they belong to the line-grid pipeline.
-  const components = detectConnectedBounds(pixels, backgroundThreshold, thresholds.minObjectAreaPx);
+  const components = detectConnectedBounds(
+    pixels,
+    backgroundThreshold,
+    thresholds.minObjectAreaPx,
+    foregroundMask
+  );
   let id = 0;
   for (const component of components) {
     const bounds = clampRectToSurface(width, height, component);
@@ -734,7 +852,7 @@ const detectHeuristicSurfaceObjects = (
 
   // 2. Shared line-grid pipeline: line-bounded rects only. The line segments
   //    themselves are an internal primitive and are not emitted as objects.
-  const segments = detectLineSegments(pixels, backgroundThreshold, thresholds);
+  const segments = detectLineSegments(pixels, backgroundThreshold, thresholds, foregroundMask);
   const cellRects = buildLineBoundedRects(segments, {
     surfaceWidth: width,
     surfaceHeight: height
@@ -756,7 +874,23 @@ const detectWithHeuristicFallback = (
   minSidePx: number,
   thresholds: SizeRelativeThresholds
 ): CvContentRectResult => {
-  const bounds = computeContentBoundsFromPixels(input.pixels, backgroundThreshold);
+  // Compute the gradient-augmented foreground mask once and reuse it for
+  // surface-object detection. The mask combines the existing global
+  // luminance test with a 3×3 Sobel pass so a Δ ≈ 13 panel border survives
+  // a global threshold tuned to suppress text anti-aliasing.
+  //
+  // For content-bounds we first try the luminance-only predicate so the
+  // canonical "black rect on white page" test continues to report the exact
+  // ink rectangle (Sobel response leaks 1 px into surrounding background and
+  // would inflate the rect). Only if that predicate finds nothing — the
+  // dark-page-low-Δ-panel case where every pixel reads as background under
+  // the global threshold — do we fall back to the gradient-augmented mask
+  // so the panel border has a chance to drive the bounds.
+  const foregroundMask = computeForegroundMask(input.pixels, backgroundThreshold);
+  let bounds = computeContentBoundsFromPixels(input.pixels, backgroundThreshold);
+  if (!bounds) {
+    bounds = computeContentBoundsFromPixels(input.pixels, backgroundThreshold, foregroundMask);
+  }
   const { surface } = input;
 
   if (!bounds) {
@@ -796,7 +930,12 @@ const detectWithHeuristicFallback = (
       width,
       height
     },
-    objectsSurface: detectHeuristicSurfaceObjects(input.pixels, backgroundThreshold, thresholds)
+    objectsSurface: detectHeuristicSurfaceObjects(
+      input.pixels,
+      backgroundThreshold,
+      thresholds,
+      foregroundMask
+    )
   };
 };
 

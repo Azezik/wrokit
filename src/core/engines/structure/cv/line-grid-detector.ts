@@ -56,6 +56,26 @@ const isBgAt = (data: Uint8ClampedArray, i: number, threshold: number): boolean 
   data[i + 3] < 8 ||
   (data[i] >= threshold && data[i + 1] >= threshold && data[i + 2] >= threshold);
 
+/**
+ * Foreground predicate for a single pixel. When `foregroundMask` is provided,
+ * it overrides the per-channel luminance test — this is how the gradient-aware
+ * predicate from `opencv-js-adapter` plugs in extra foreground evidence
+ * (panel borders whose luminance is within the global tolerance band but
+ * whose local gradient is above the noise floor).
+ */
+const isFgAt = (
+  data: Uint8ClampedArray,
+  i: number,
+  threshold: number,
+  foregroundMask: Uint8Array | null,
+  pixelIndex: number
+): boolean => {
+  if (foregroundMask) {
+    return foregroundMask[pixelIndex] === 1;
+  }
+  return !isBgAt(data, i, threshold);
+};
+
 interface RowRun {
   start: number;
   end: number; // exclusive
@@ -72,16 +92,18 @@ const longestForegroundRunInRow = (
   y: number,
   threshold: number,
   minLineLengthPx: number,
-  maxGap: number
+  maxGap: number,
+  foregroundMask: Uint8Array | null
 ): RowRun | null => {
   const rowBase = y * width * 4;
+  const pixelRowBase = y * width;
   let bestStart = -1;
   let bestLen = 0;
   let curStart = -1;
   let curEnd = -1; // exclusive position last fg pixel +1
   let gap = 0;
   for (let x = 0; x < width; x += 1) {
-    const fg = !isBgAt(data, rowBase + x * 4, threshold);
+    const fg = isFgAt(data, rowBase + x * 4, threshold, foregroundMask, pixelRowBase + x);
     if (fg) {
       if (curStart < 0) {
         curStart = x;
@@ -122,7 +144,8 @@ const longestForegroundRunInColumn = (
   x: number,
   threshold: number,
   minLineLengthPx: number,
-  maxGap: number
+  maxGap: number,
+  foregroundMask: Uint8Array | null
 ): RowRun | null => {
   let bestStart = -1;
   let bestLen = 0;
@@ -130,7 +153,8 @@ const longestForegroundRunInColumn = (
   let curEnd = -1;
   let gap = 0;
   for (let y = 0; y < height; y += 1) {
-    const fg = !isBgAt(data, (y * width + x) * 4, threshold);
+    const pixelIndex = y * width + x;
+    const fg = isFgAt(data, pixelIndex * 4, threshold, foregroundMask, pixelIndex);
     if (fg) {
       if (curStart < 0) {
         curStart = y;
@@ -182,7 +206,8 @@ const overlapFraction = (a: RowRun, b: RowRun): number => {
 export const detectLineSegments = (
   pixels: ImageData,
   backgroundThreshold: number,
-  thresholds: SizeRelativeThresholds
+  thresholds: SizeRelativeThresholds,
+  foregroundMask: Uint8Array | null = null
 ): LineSegments => {
   const { width, height, data } = pixels;
   const maxGap = Math.max(2, Math.round(thresholds.maxLineThicknessPx));
@@ -197,7 +222,8 @@ export const detectLineSegments = (
       y,
       backgroundThreshold,
       thresholds.minLineLengthPx,
-      maxGap
+      maxGap,
+      foregroundMask
     );
   }
 
@@ -245,7 +271,8 @@ export const detectLineSegments = (
       x,
       backgroundThreshold,
       thresholds.minLineLengthPx,
-      maxGap
+      maxGap,
+      foregroundMask
     );
   }
 
