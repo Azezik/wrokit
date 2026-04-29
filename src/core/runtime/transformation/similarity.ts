@@ -103,6 +103,40 @@ export interface SimilarityResult {
   notes: string[];
 }
 
+/**
+ * Per-component floors a candidate pair must clear before it is treated as a
+ * real match. The aggregate weighted score is fragile — a high parent-chain or
+ * refined-border-relation contribution can paper over a wildly mismatched
+ * size/aspect/location pair. The floors enforce the user-facing intuition that
+ * a match must look like the same object: similar shape, similar size, and
+ * similar position (either absolute or relative to the refined border).
+ *
+ * If ANY of these floors is missed, `computeObjectSimilarity` returns
+ * `score: 0`, which means the pair never reaches downstream consensus,
+ * field-candidate emission, or localization-runner selection — regardless of
+ * how many other components scored well. We do not "morph" partial matches
+ * into usable ones: we drop them.
+ *
+ * Tunings:
+ *   - `size`: linear penalty `1 - max(dw, dh) / max(w)`; floor 0.5 admits a
+ *     ~50% size delta (matches a uniform 1.5x scale; user-stated "10x10 vs
+ *     8x8 should be fine" lands at 0.8, well above the floor).
+ *   - `aspect`: ratio of the smaller-aspect to the larger-aspect; floor 0.7
+ *     rejects pairs whose aspect ratios differ by more than ~30%.
+ *   - `positionOrRefinedBorder`: at least ONE of the position signals must be
+ *     reasonably strong. Cross-document matching deliberately weakens
+ *     absolute position (CROSS_DOCUMENT_SIMILARITY_WEIGHTS) — the
+ *     refined-border-relation IS the strong cross-document position signal.
+ *     We accept a pair when either is ≥ 0.55, but reject when BOTH are weak,
+ *     since that means the runtime object isn't sitting where the config
+ *     object should be in any frame of reference.
+ */
+export const SIMILARITY_COMPONENT_FLOORS = {
+  size: 0.5,
+  aspect: 0.7,
+  positionOrRefinedBorder: 0.55
+} as const;
+
 const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v);
 
 const rectCenter = (r: StructuralNormalizedRect): { x: number; y: number } => ({
@@ -233,6 +267,42 @@ export const computeObjectSimilarity = (
     )
   };
 
+  const notes: string[] = [];
+
+  // Per-component floors (see SIMILARITY_COMPONENT_FLOORS for rationale).
+  // Any miss collapses the score to 0 so the pair is treated as a non-match
+  // everywhere downstream (matcher threshold, consensus weighting, candidate
+  // emission, localization selection). We still return the components so
+  // diagnostics can see why the pair was rejected.
+  const sizeMissed = components.size < SIMILARITY_COMPONENT_FLOORS.size;
+  const aspectMissed = components.aspect < SIMILARITY_COMPONENT_FLOORS.aspect;
+  const positionSignalMissed =
+    Math.max(components.position, components.refinedBorderRelation) <
+    SIMILARITY_COMPONENT_FLOORS.positionOrRefinedBorder;
+
+  if (sizeMissed || aspectMissed || positionSignalMissed) {
+    if (sizeMissed) {
+      notes.push(
+        `size component ${components.size.toFixed(3)} below floor ` +
+          `${SIMILARITY_COMPONENT_FLOORS.size.toFixed(2)} — pair rejected as non-match`
+      );
+    }
+    if (aspectMissed) {
+      notes.push(
+        `aspect component ${components.aspect.toFixed(3)} below floor ` +
+          `${SIMILARITY_COMPONENT_FLOORS.aspect.toFixed(2)} — pair rejected as non-match`
+      );
+    }
+    if (positionSignalMissed) {
+      notes.push(
+        `neither position (${components.position.toFixed(3)}) nor ` +
+          `refined-border-relation (${components.refinedBorderRelation.toFixed(3)}) ` +
+          `cleared floor ${SIMILARITY_COMPONENT_FLOORS.positionOrRefinedBorder.toFixed(2)} — pair rejected as non-match`
+      );
+    }
+    return { score: 0, basis: [], components, notes };
+  }
+
   const score = clamp01(
     weights.position * components.position +
       weights.size * components.size +
@@ -252,7 +322,6 @@ export const computeObjectSimilarity = (
     basis.push('refined-border-relation');
   }
 
-  const notes: string[] = [];
   if (components.position < 0.4) {
     notes.push('center-of-mass differs noticeably');
   }

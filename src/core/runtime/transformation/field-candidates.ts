@@ -66,6 +66,29 @@ const RANK_CONFIDENCE_FACTOR: Record<'primary' | 'secondary' | 'tertiary', numbe
 
 const PARENT_INDIRECTION_PENALTY = 0.85;
 
+/**
+ * Minimum raw `match.confidence` an object-anchor source must carry before it
+ * is allowed to become a field candidate.
+ *
+ * Rationale: the user-facing rule is "only use near-perfect matched objects."
+ * The matcher's own threshold (`minHierarchicalConfidence`) gates whether a
+ * match is *emitted*; this floor gates whether an emitted match is *trusted*
+ * as a field anchor. We do not "morph" a marginal match into a usable anchor —
+ * if the match isn't strong, the field falls through to the next rung
+ * (parent-object, refined-border, border) instead.
+ *
+ * Applied to:
+ *   - matched-object candidates: drop when `match.confidence` is below the floor.
+ *   - parent-object candidates: drop when the ancestor's own `match.confidence`
+ *     is below the floor (re-validated independent of the `PARENT_INDIRECTION_PENALTY`
+ *     applied to the emitted candidate confidence).
+ *
+ * The floor is set just below the matcher's `minHierarchicalConfidence` so an
+ * ambiguity-demoted (×0.85) match can still slip through if it was originally
+ * strong, but a low-quality match that only barely cleared the matcher cannot.
+ */
+const MIN_OBJECT_ANCHOR_MATCH_CONFIDENCE = 0.7;
+
 const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v);
 
 const findLevelSummary = (
@@ -114,10 +137,22 @@ const buildFieldCandidates = (input: BuildCandidateInputs): {
   const warnings: string[] = [];
   let order = 0;
 
-  // 1. Matched-object candidates, in objectAnchor rank order.
+  // 1. Matched-object candidates, in objectAnchor rank order. We only emit a
+  //    candidate when the underlying match is near-perfect (raw confidence
+  //    above MIN_OBJECT_ANCHOR_MATCH_CONFIDENCE). A marginal match is dropped
+  //    here so the field falls through to the next rung instead of anchoring
+  //    on weak data.
   for (const anchor of input.field.fieldAnchors.objectAnchors) {
     const match = input.matchesByConfigId.get(anchor.objectId);
     if (!match) {
+      continue;
+    }
+    if (match.confidence < MIN_OBJECT_ANCHOR_MATCH_CONFIDENCE) {
+      warnings.push(
+        `${anchor.rank} object anchor ${anchor.objectId} matched ${match.runtimeObjectId} ` +
+          `but match confidence ${match.confidence.toFixed(3)} is below the near-perfect floor ` +
+          `${MIN_OBJECT_ANCHOR_MATCH_CONFIDENCE.toFixed(2)} — candidate not emitted`
+      );
       continue;
     }
     const factor = RANK_CONFIDENCE_FACTOR[anchor.rank];
@@ -145,6 +180,20 @@ const buildFieldCandidates = (input: BuildCandidateInputs): {
     for (const ancestor of ancestors) {
       const match = input.matchesByConfigId.get(ancestor.objectId);
       if (!match) {
+        continue;
+      }
+      // Re-validate the ancestor's OWN match confidence against the same
+      // near-perfect floor that gates matched-object candidates. The
+      // PARENT_INDIRECTION_PENALTY (0.85x) applied below softens the emitted
+      // candidate confidence, but it does NOT compensate for an ancestor
+      // whose underlying match is itself marginal — if the parent match is
+      // weak, the field should not be reconstructed through it.
+      if (match.confidence < MIN_OBJECT_ANCHOR_MATCH_CONFIDENCE) {
+        warnings.push(
+          `parent-object fallback ancestor ${ancestor.objectId} matched ${match.runtimeObjectId} ` +
+            `but match confidence ${match.confidence.toFixed(3)} is below the near-perfect floor ` +
+            `${MIN_OBJECT_ANCHOR_MATCH_CONFIDENCE.toFixed(2)} — ancestor candidate not emitted`
+        );
         continue;
       }
       // The StructuralModel only records the field's rect relative to its

@@ -51,9 +51,19 @@ export interface MatcherOptions {
   crossDocument?: boolean;
 }
 
+/**
+ * Minimum aggregate similarity required to emit a hierarchical match.
+ *
+ * Raised from 0.55 to 0.75 in tandem with the per-component floors added in
+ * similarity.ts (`SIMILARITY_COMPONENT_FLOORS`). The floors do the real
+ * "near-perfect" gating; this aggregate threshold keeps the system from
+ * accepting a pair that nominally clears every individual floor but whose
+ * weighted blend is still mediocre. Together they enforce: a match must be
+ * geometrically plausible per-component AND its overall score must be high.
+ */
 export const DEFAULT_MATCHER_OPTIONS: Required<Omit<MatcherOptions, 'crossDocument'>> = {
-  minHierarchicalConfidence: 0.55,
-  minGlobalConfidence: 0.7,
+  minHierarchicalConfidence: 0.75,
+  minGlobalConfidence: 0.8,
   weights: DEFAULT_SIMILARITY_WEIGHTS
 };
 
