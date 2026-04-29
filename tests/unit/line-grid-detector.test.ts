@@ -88,6 +88,57 @@ describe('detectLineSegments', () => {
     expect(innerH!.end).toBeLessThanOrEqual(110);
   });
 
+  it('detects every parallel horizontal that shares a row with a longer one', () => {
+    // Three side-by-side boxes whose top edges land on the same row. The
+    // pre-fix detector returned only the longest run per row, so the two
+    // shorter top edges were silently dropped — which is exactly why the
+    // benchmark image's sidebar / target / right-grid containers all
+    // collapsed onto a single visible overlay (only the rightmost grid was
+    // detected, the boxes left of it shared its top row but lost the run
+    // contest).
+    const w = 600;
+    const h = 200;
+    const pixels = makeImageData(w, h, (data) => {
+      // Top edges of three boxes at y=30, with very different lengths.
+      paintRect(data, w, { left: 20, top: 30, right: 100, bottom: 32 }); // short
+      paintRect(data, w, { left: 200, top: 30, right: 350, bottom: 32 }); // medium
+      paintRect(data, w, { left: 400, top: 30, right: 580, bottom: 32 }); // long
+      // Bottom edges of the same three boxes at y=160.
+      paintRect(data, w, { left: 20, top: 160, right: 100, bottom: 162 });
+      paintRect(data, w, { left: 200, top: 160, right: 350, bottom: 162 });
+      paintRect(data, w, { left: 400, top: 160, right: 580, bottom: 162 });
+      // Vertical edges of all three boxes.
+      for (const x of [20, 100, 200, 350, 400, 580]) {
+        paintRect(data, w, { left: x, top: 30, right: x + 2, bottom: 162 });
+      }
+    });
+
+    const segments = detectLineSegments(pixels, 245, baselineThresholds(w, h));
+    // We must see every short horizontal that shares y=30 with the long one.
+    // The fix's invariant is "all qualifying parallel runs survive".
+    const topRowHorizontals = segments.horizontals.filter(
+      (line) => Math.abs(line.axisPos - 30) <= 1
+    );
+    expect(topRowHorizontals.length).toBeGreaterThanOrEqual(3);
+    expect(topRowHorizontals.some((l) => l.start <= 22 && l.end >= 98)).toBe(true);
+    expect(topRowHorizontals.some((l) => l.start <= 202 && l.end >= 348)).toBe(true);
+    expect(topRowHorizontals.some((l) => l.start <= 402 && l.end >= 578)).toBe(true);
+
+    // And the corresponding line-bounded rects must reconstruct all three boxes.
+    const rects = buildLineBoundedRects(segments, { surfaceWidth: w, surfaceHeight: h });
+    const has = (l: number, t: number, r: number, b: number) =>
+      rects.some(
+        (rect) =>
+          Math.abs(rect.left - l) <= 2 &&
+          Math.abs(rect.top - t) <= 2 &&
+          Math.abs(rect.right - r) <= 2 &&
+          Math.abs(rect.bottom - b) <= 2
+      );
+    expect(has(20, 30, 100, 162)).toBe(true);
+    expect(has(200, 30, 350, 162)).toBe(true);
+    expect(has(400, 30, 580, 162)).toBe(true);
+  });
+
   it('does not emit lines for word-shaped short runs', () => {
     const w = 600;
     const h = 600;
