@@ -82,11 +82,18 @@ interface RowRun {
 }
 
 /**
- * Find the longest horizontal run of foreground pixels in row `y`. Small gaps
- * (<= maxGap pixels) within a run are tolerated to handle anti-aliased lines.
- * Returns null when the longest run is shorter than minLineLengthPx.
+ * Find ALL qualifying horizontal runs of foreground pixels in row `y`. Small
+ * gaps (<= maxGap pixels) within a run are tolerated to handle anti-aliased
+ * lines. Returns every run whose length >= minLineLengthPx.
+ *
+ * Why "all" instead of "longest": a complex UI layout has multiple parallel
+ * boxes whose top/bottom borders share rows. The previous "longest only"
+ * scan silently dropped every shorter parallel border, which is why the
+ * detector found the right grid (whose lines are the longest in their rows)
+ * but missed the sidebar, target, info box, details box, notes box, and
+ * every nested sub-element that shared a y-coordinate with a longer line.
  */
-const longestForegroundRunInRow = (
+const allForegroundRunsInRow = (
   data: Uint8ClampedArray,
   width: number,
   y: number,
@@ -94,13 +101,12 @@ const longestForegroundRunInRow = (
   minLineLengthPx: number,
   maxGap: number,
   foregroundMask: Uint8Array | null
-): RowRun | null => {
+): RowRun[] => {
   const rowBase = y * width * 4;
   const pixelRowBase = y * width;
-  let bestStart = -1;
-  let bestLen = 0;
+  const runs: RowRun[] = [];
   let curStart = -1;
-  let curEnd = -1; // exclusive position last fg pixel +1
+  let curEnd = -1;
   let gap = 0;
   for (let x = 0; x < width; x += 1) {
     const fg = isFgAt(data, rowBase + x * 4, threshold, foregroundMask, pixelRowBase + x);
@@ -114,9 +120,8 @@ const longestForegroundRunInRow = (
       gap += 1;
       if (gap > maxGap) {
         const len = curEnd - curStart;
-        if (len > bestLen) {
-          bestLen = len;
-          bestStart = curStart;
+        if (len >= minLineLengthPx) {
+          runs.push({ start: curStart, end: curEnd });
         }
         curStart = -1;
         curEnd = -1;
@@ -126,18 +131,14 @@ const longestForegroundRunInRow = (
   }
   if (curStart >= 0) {
     const len = curEnd - curStart;
-    if (len > bestLen) {
-      bestLen = len;
-      bestStart = curStart;
+    if (len >= minLineLengthPx) {
+      runs.push({ start: curStart, end: curEnd });
     }
   }
-  if (bestStart < 0 || bestLen < minLineLengthPx) {
-    return null;
-  }
-  return { start: bestStart, end: bestStart + bestLen };
+  return runs;
 };
 
-const longestForegroundRunInColumn = (
+const allForegroundRunsInColumn = (
   data: Uint8ClampedArray,
   width: number,
   height: number,
@@ -146,9 +147,8 @@ const longestForegroundRunInColumn = (
   minLineLengthPx: number,
   maxGap: number,
   foregroundMask: Uint8Array | null
-): RowRun | null => {
-  let bestStart = -1;
-  let bestLen = 0;
+): RowRun[] => {
+  const runs: RowRun[] = [];
   let curStart = -1;
   let curEnd = -1;
   let gap = 0;
@@ -165,9 +165,8 @@ const longestForegroundRunInColumn = (
       gap += 1;
       if (gap > maxGap) {
         const len = curEnd - curStart;
-        if (len > bestLen) {
-          bestLen = len;
-          bestStart = curStart;
+        if (len >= minLineLengthPx) {
+          runs.push({ start: curStart, end: curEnd });
         }
         curStart = -1;
         curEnd = -1;
@@ -177,15 +176,11 @@ const longestForegroundRunInColumn = (
   }
   if (curStart >= 0) {
     const len = curEnd - curStart;
-    if (len > bestLen) {
-      bestLen = len;
-      bestStart = curStart;
+    if (len >= minLineLengthPx) {
+      runs.push({ start: curStart, end: curEnd });
     }
   }
-  if (bestStart < 0 || bestLen < minLineLengthPx) {
-    return null;
-  }
-  return { start: bestStart, end: bestStart + bestLen };
+  return runs;
 };
 
 const overlapFraction = (a: RowRun, b: RowRun): number => {
@@ -197,6 +192,88 @@ const overlapFraction = (a: RowRun, b: RowRun): number => {
   const overlap = end - start;
   const denom = Math.max(a.end - a.start, b.end - b.start, 1);
   return overlap / denom;
+};
+
+interface ActiveStripe {
+  startScan: number;
+  current: RowRun;
+}
+
+const STRIPE_OVERLAP_THRESHOLD = 0.6;
+
+/**
+ * Build line segments from a per-scanline list of qualifying foreground runs.
+ * Multiple stripes can be active concurrently — when a row carries N runs that
+ * line up with N different already-active stripes, every stripe gets extended.
+ *
+ * The pre-multi-run version assumed at most one stripe was alive at any time,
+ * which is fine for synthetic test rasters but collapsed the moment a real UI
+ * had two parallel borders sharing a row. Greedy best-overlap matching pairs
+ * each active stripe with the run that overlaps it most; unpaired runs spawn
+ * fresh stripes; unpaired stripes close out and are emitted if their thickness
+ * stays under `maxLineThicknessPx` (i.e. they really are line-shaped, not
+ * 2D blocks).
+ */
+const buildStripeSegments = (
+  runsPerScan: RowRun[][],
+  scanLength: number,
+  maxLineThicknessPx: number
+): LineSegment[] => {
+  const segments: LineSegment[] = [];
+  let active: ActiveStripe[] = [];
+
+  for (let s = 0; s <= scanLength; s += 1) {
+    const runs = s < scanLength ? runsPerScan[s] : [];
+    const usedRunIdx = new Uint8Array(runs.length);
+    const nextActive: ActiveStripe[] = [];
+
+    for (const stripe of active) {
+      let bestIdx = -1;
+      let bestOverlap = 0;
+      for (let r = 0; r < runs.length; r += 1) {
+        if (usedRunIdx[r] === 1) {
+          continue;
+        }
+        const o = overlapFraction(runs[r], stripe.current);
+        if (o >= STRIPE_OVERLAP_THRESHOLD && o > bestOverlap) {
+          bestOverlap = o;
+          bestIdx = r;
+        }
+      }
+      if (bestIdx >= 0) {
+        usedRunIdx[bestIdx] = 1;
+        const run = runs[bestIdx];
+        nextActive.push({
+          startScan: stripe.startScan,
+          current: {
+            start: Math.min(stripe.current.start, run.start),
+            end: Math.max(stripe.current.end, run.end)
+          }
+        });
+      } else {
+        const thickness = s - stripe.startScan;
+        if (thickness <= maxLineThicknessPx) {
+          segments.push({
+            axisPos: stripe.startScan + Math.floor(thickness / 2),
+            thickness,
+            start: stripe.current.start,
+            end: stripe.current.end
+          });
+        }
+      }
+    }
+
+    for (let r = 0; r < runs.length; r += 1) {
+      if (usedRunIdx[r] === 1) {
+        continue;
+      }
+      nextActive.push({ startScan: s, current: runs[r] });
+    }
+
+    active = nextActive;
+  }
+
+  return segments;
 };
 
 /**
@@ -213,10 +290,9 @@ export const detectLineSegments = (
   const maxGap = Math.max(2, Math.round(thresholds.maxLineThicknessPx));
 
   // --- horizontals ---
-  const horizontals: LineSegment[] = [];
-  const rowRuns: (RowRun | null)[] = new Array(height);
+  const rowRuns: RowRun[][] = new Array(height);
   for (let y = 0; y < height; y += 1) {
-    rowRuns[y] = longestForegroundRunInRow(
+    rowRuns[y] = allForegroundRunsInRow(
       data,
       width,
       y,
@@ -226,45 +302,12 @@ export const detectLineSegments = (
       foregroundMask
     );
   }
-
-  let stripeStartY = -1;
-  let stripeRun: RowRun | null = null;
-  for (let y = 0; y <= height; y += 1) {
-    const run = y < height ? rowRuns[y] : null;
-    if (run && stripeRun && overlapFraction(run, stripeRun) >= 0.6) {
-      stripeRun = {
-        start: Math.min(stripeRun.start, run.start),
-        end: Math.max(stripeRun.end, run.end)
-      };
-    } else if (run && !stripeRun) {
-      stripeStartY = y;
-      stripeRun = run;
-    } else {
-      if (stripeRun) {
-        const thickness = y - stripeStartY;
-        if (thickness <= thresholds.maxLineThicknessPx) {
-          horizontals.push({
-            axisPos: stripeStartY + Math.floor(thickness / 2),
-            thickness,
-            start: stripeRun.start,
-            end: stripeRun.end
-          });
-        }
-        stripeRun = null;
-        stripeStartY = -1;
-      }
-      if (run) {
-        stripeStartY = y;
-        stripeRun = run;
-      }
-    }
-  }
+  const horizontals = buildStripeSegments(rowRuns, height, thresholds.maxLineThicknessPx);
 
   // --- verticals ---
-  const verticals: LineSegment[] = [];
-  const colRuns: (RowRun | null)[] = new Array(width);
+  const colRuns: RowRun[][] = new Array(width);
   for (let x = 0; x < width; x += 1) {
-    colRuns[x] = longestForegroundRunInColumn(
+    colRuns[x] = allForegroundRunsInColumn(
       data,
       width,
       height,
@@ -275,39 +318,7 @@ export const detectLineSegments = (
       foregroundMask
     );
   }
-
-  let stripeStartX = -1;
-  let stripeColRun: RowRun | null = null;
-  for (let x = 0; x <= width; x += 1) {
-    const run = x < width ? colRuns[x] : null;
-    if (run && stripeColRun && overlapFraction(run, stripeColRun) >= 0.6) {
-      stripeColRun = {
-        start: Math.min(stripeColRun.start, run.start),
-        end: Math.max(stripeColRun.end, run.end)
-      };
-    } else if (run && !stripeColRun) {
-      stripeStartX = x;
-      stripeColRun = run;
-    } else {
-      if (stripeColRun) {
-        const thickness = x - stripeStartX;
-        if (thickness <= thresholds.maxLineThicknessPx) {
-          verticals.push({
-            axisPos: stripeStartX + Math.floor(thickness / 2),
-            thickness,
-            start: stripeColRun.start,
-            end: stripeColRun.end
-          });
-        }
-        stripeColRun = null;
-        stripeStartX = -1;
-      }
-      if (run) {
-        stripeStartX = x;
-        stripeColRun = run;
-      }
-    }
-  }
+  const verticals = buildStripeSegments(colRuns, width, thresholds.maxLineThicknessPx);
 
   return { horizontals, verticals };
 };

@@ -180,7 +180,18 @@ const MIN_BLOB_MIN_SIDE_FRAC = 0.012;
  * land near the existing absolute constants.
  */
 const MIN_OBJECT_AREA_FRAC_OF_PAGE = 0.0008; // 0.08% of pageArea (filters glyph-noise)
-const MIN_LINE_LENGTH_FRAC_OF_MIN_SIDE = 0.04; // 4% of min(W, H)
+/**
+ * Min line-length floor: small UI boxes (a 30 px-tall sidebar item, a 28 px
+ * tall date / note pill) only contribute ~30 px-long vertical edges. Holding
+ * this at 4% of min-side meant the vertical edges of every such box were
+ * culled before they reached the line-grid reconstructor, so the box was
+ * silently lost. 2.5% admits ~30 px edges on typical 1000 px-min-side
+ * captures while still sitting above text-stroke length, and the absolute
+ * `MIN_LINE_LENGTH_PX = 24` floor protects small synthetic test rasters.
+ * Word-shaped glyph strokes never form lines anyway because they exceed
+ * `maxLineThicknessPx`, so the lower length floor is safe.
+ */
+const MIN_LINE_LENGTH_FRAC_OF_MIN_SIDE = 0.025;
 const MAX_LINE_THICKNESS_FRAC_OF_MIN_SIDE = 0.01; // 1% of min(W, H)
 
 interface SizeRelativeThresholds {
