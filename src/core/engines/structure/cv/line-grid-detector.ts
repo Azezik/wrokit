@@ -356,7 +356,18 @@ export const buildLineBoundedRects = (
 
   const minSide = Math.max(1, Math.min(options.surfaceWidth, options.surfaceHeight));
   const positionTolerance = Math.max(2, Math.round(minSide * (options.positionToleranceFraction ?? 0.005)));
-  const maxRects = options.maxRects ?? 1200;
+  /**
+   * Cap exists only to bound runtime/memory on pathological grids (e.g. a
+   * ruled tax form whose 100×100 cell layout produces ~25M valid quadruples).
+   * For realistic UIs the actual count is in the low thousands — the previous
+   * 1200 ceiling fired hard on a 65-container benchmark (uncapped count
+   * ≈ 4800), and because iteration found inner sub-cells before outer
+   * containers, the truncated result silently dropped exactly the parents
+   * the user reported missing (HEADER, INFO BOX, SECTION A/B, NOTES BOX,
+   * FOOTER, the page boundary, …). 20k clears that case while still
+   * protecting against true blow-up.
+   */
+  const maxRects = options.maxRects ?? 20000;
 
   const sortedH = [...horizontals].sort((a, b) => a.axisPos - b.axisPos);
   const sortedV = [...verticals].sort((a, b) => a.axisPos - b.axisPos);
@@ -369,9 +380,23 @@ export const buildLineBoundedRects = (
     return `${bin(left)},${bin(top)},${bin(right)},${bin(bottom)}`;
   };
 
+  /**
+   * Iteration order — outer/largest first.
+   *
+   * For each top horizontal, walk the bottom horizontals in DESCENDING axis
+   * order so the largest-height (top, bottom) pair (the would-be outer
+   * container) is tried before any internal sub-row. Same trick on the
+   * vertical pair: walk right verticals from rightmost to leftmost. The
+   * effect is that if `maxRects` ever does fire on a pathological grid, the
+   * surviving rects favor the outermost containers instead of the innermost
+   * sub-cells. Reordering does NOT change which rects are considered valid —
+   * dedupe is position-keyed, so the set of emitted rects under a generous
+   * cap is identical to the ascending-order version. Only the truncation
+   * priority changes.
+   */
   outer: for (let i = 0; i < sortedH.length; i += 1) {
     const top = sortedH[i];
-    for (let j = i + 1; j < sortedH.length; j += 1) {
+    for (let j = sortedH.length - 1; j > i; j -= 1) {
       const bottom = sortedH[j];
       if (bottom.axisPos - top.axisPos < positionTolerance) {
         continue;
@@ -392,7 +417,7 @@ export const buildLineBoundedRects = (
           continue;
         }
 
-        for (let b = a + 1; b < sortedV.length; b += 1) {
+        for (let b = sortedV.length - 1; b > a; b -= 1) {
           const right = sortedV[b];
           if (right.axisPos < xFrom - positionTolerance || right.axisPos > xTo + positionTolerance) {
             continue;
