@@ -23,6 +23,10 @@ const MAX_RELATION_GRAPH_OBJECTS = 12;
 const NEAR_DISTANCE_THRESHOLD = 0.35;
 const ADJACENT_GAP_THRESHOLD = 0.04;
 
+const DUPLICATE_IOU_MIN = 0.85;
+const DUPLICATE_AREA_RATIO_MIN = 0.85;
+const DUPLICATE_ASPECT_RATIO_MIN = 0.85;
+
 const rectArea = (rect: StructuralNormalizedRect): number => rect.wNorm * rect.hNorm;
 
 const rectContains = (
@@ -36,6 +40,56 @@ const rectContains = (
     inner.xNorm + inner.wNorm <= outer.xNorm + outer.wNorm + epsilon &&
     inner.yNorm + inner.hNorm <= outer.yNorm + outer.hNorm + epsilon
   );
+};
+
+const rectIou = (a: StructuralNormalizedRect, b: StructuralNormalizedRect): number => {
+  const interLeft = Math.max(a.xNorm, b.xNorm);
+  const interTop = Math.max(a.yNorm, b.yNorm);
+  const interRight = Math.min(a.xNorm + a.wNorm, b.xNorm + b.wNorm);
+  const interBottom = Math.min(a.yNorm + a.hNorm, b.yNorm + b.hNorm);
+  if (interRight <= interLeft || interBottom <= interTop) {
+    return 0;
+  }
+  const inter = (interRight - interLeft) * (interBottom - interTop);
+  const union = rectArea(a) + rectArea(b) - inter;
+  return union <= 0 ? 0 : inter / union;
+};
+
+/**
+ * Predicate for "these two rects are near-duplicate detections of the same
+ * visual object". Mirrors the cross-pipeline predicate in the CV adapter:
+ * high IoU + similar area + similar aspect ratio + neither rect strictly
+ * containing the other. The area-ratio gate alone preserves valid nesting,
+ * because a child fully inside a parent has area ratio < 1.0 unless the
+ * rects are the same size — at which point the containment exclusion is the
+ * final guard.
+ */
+const isDuplicateOf = (
+  a: StructuralNormalizedRect,
+  b: StructuralNormalizedRect
+): boolean => {
+  const areaA = rectArea(a);
+  const areaB = rectArea(b);
+  if (areaA <= 0 || areaB <= 0) {
+    return false;
+  }
+  if (rectIou(a, b) < DUPLICATE_IOU_MIN) {
+    return false;
+  }
+  const areaRatio = Math.min(areaA, areaB) / Math.max(areaA, areaB);
+  if (areaRatio < DUPLICATE_AREA_RATIO_MIN) {
+    return false;
+  }
+  const arA = a.wNorm / Math.max(EPS, a.hNorm);
+  const arB = b.wNorm / Math.max(EPS, b.hNorm);
+  const arRatio = Math.min(arA, arB) / Math.max(arA, arB);
+  if (arRatio < DUPLICATE_ASPECT_RATIO_MIN) {
+    return false;
+  }
+  if (rectContains(a, b, EPS) || rectContains(b, a, EPS)) {
+    return false;
+  }
+  return true;
 };
 
 const rectCenter = (rect: StructuralNormalizedRect) => ({
@@ -374,11 +428,18 @@ export const buildObjectHierarchy = (rawObjects: RawObjectInput[]): StructuralOb
     }
   }
 
+  // Sibling dedup: within each parent group (including rootless nodes), drop
+  // near-duplicate detections of the same visual object. Containment is
+  // preserved because a contained child is never a sibling of its parent —
+  // they live in different parent groups. Tiebreak: larger area wins, ties
+  // broken by objectId for determinism.
+  const survivingNodes = applySiblingDedup(nodes);
+
   // Compute depth by walking up to a parentless ancestor. Done after parent
   // links are established so cycles (which shouldn't happen, but guard anyway)
   // do not infinite-loop the walk.
-  const nodeById = new Map(nodes.map((node) => [node.objectId, node]));
-  for (const node of nodes) {
+  const nodeById = new Map(survivingNodes.map((node) => [node.objectId, node]));
+  for (const node of survivingNodes) {
     let depth = 0;
     let cursor = node.parentObjectId ? nodeById.get(node.parentObjectId) ?? null : null;
     const seen = new Set<string>([node.objectId]);
@@ -390,7 +451,106 @@ export const buildObjectHierarchy = (rawObjects: RawObjectInput[]): StructuralOb
     node.depth = depth;
   }
 
-  return { objects: nodes };
+  return { objects: survivingNodes };
+};
+
+const applySiblingDedup = (nodes: StructuralObjectNode[]): StructuralObjectNode[] => {
+  if (nodes.length <= 1) {
+    return nodes;
+  }
+
+  const groups = new Map<string | null, StructuralObjectNode[]>();
+  for (const node of nodes) {
+    const key = node.parentObjectId;
+    const list = groups.get(key);
+    if (list) {
+      list.push(node);
+    } else {
+      groups.set(key, [node]);
+    }
+  }
+
+  const removedIds = new Set<string>();
+  const replacements = new Map<string, string>();
+
+  for (const siblings of groups.values()) {
+    if (siblings.length < 2) {
+      continue;
+    }
+    const sorted = [...siblings].sort((a, b) => {
+      const areaA = rectArea(a.objectRectNorm);
+      const areaB = rectArea(b.objectRectNorm);
+      if (areaA !== areaB) {
+        return areaB - areaA;
+      }
+      return a.objectId.localeCompare(b.objectId);
+    });
+    const kept: StructuralObjectNode[] = [];
+    for (const candidate of sorted) {
+      let dupOf: StructuralObjectNode | null = null;
+      for (const winner of kept) {
+        if (isDuplicateOf(candidate.objectRectNorm, winner.objectRectNorm)) {
+          dupOf = winner;
+          break;
+        }
+      }
+      if (dupOf) {
+        removedIds.add(candidate.objectId);
+        replacements.set(candidate.objectId, dupOf.objectId);
+      } else {
+        kept.push(candidate);
+      }
+    }
+  }
+
+  if (removedIds.size === 0) {
+    return nodes;
+  }
+
+  const resolveReplacement = (id: string): string => {
+    let cursor = id;
+    const seen = new Set<string>();
+    while (replacements.has(cursor) && !seen.has(cursor)) {
+      seen.add(cursor);
+      cursor = replacements.get(cursor) as string;
+    }
+    return cursor;
+  };
+
+  // Reassign children of removed parents to the surviving winner so the
+  // hierarchy stays connected.
+  for (const node of nodes) {
+    if (node.parentObjectId && replacements.has(node.parentObjectId)) {
+      node.parentObjectId = resolveReplacement(node.parentObjectId);
+    }
+  }
+
+  const survivors = nodes.filter((node) => !removedIds.has(node.objectId));
+
+  // Rewrite each survivor's childObjectIds to drop removed nodes and inherit
+  // any orphaned children from removed duplicates.
+  const childIdsByParent = new Map<string, string[]>();
+  for (const survivor of survivors) {
+    childIdsByParent.set(survivor.objectId, []);
+  }
+  for (const survivor of survivors) {
+    if (survivor.parentObjectId && childIdsByParent.has(survivor.parentObjectId)) {
+      childIdsByParent.get(survivor.parentObjectId)!.push(survivor.objectId);
+    }
+  }
+  for (const survivor of survivors) {
+    const updated = childIdsByParent.get(survivor.objectId) ?? [];
+    const seen = new Set<string>();
+    survivor.childObjectIds = updated.filter((id) => {
+      if (seen.has(id)) {
+        return false;
+      }
+      seen.add(id);
+      return true;
+    });
+  }
+
+  return survivors;
 };
 
 export const buildPageAnchorRelations = (input: {
