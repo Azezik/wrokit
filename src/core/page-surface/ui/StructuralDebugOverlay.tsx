@@ -140,12 +140,18 @@ const buildConfigProjectionRender = (
     options
   );
   const filteredIds = new Set(filteredObjects.map((o) => o.objectId));
+  // For the transformed projection, optionally drop "phantom" unmatched
+  // objects entirely so the user can compare the runtime page against
+  // genuinely-matched config evidence only.
+  const hideUnmatched =
+    variant === 'transformed' && options.hideUnmatchedConfigProjections;
   return {
     variant,
     border: normalizedRectToScreen(surfaceTransform, projection.border),
     refinedBorder: normalizedRectToScreen(surfaceTransform, projection.refinedBorder),
     objects: projection.objects
       .filter((o) => filteredIds.has(o.objectId))
+      .filter((o) => !hideUnmatched || o.matched)
       .map((object) => ({
         object,
         screenRect: normalizedRectToScreen(surfaceTransform, object.rectNorm)
@@ -368,9 +374,10 @@ export function StructuralDebugOverlay({
               data-variant={projection.variant}
               data-depth={Math.min(object.depth, 4)}
               data-transform-source={object.transformSource}
+              data-matched={object.matched ? 'true' : 'false'}
               title={
                 projection.variant === 'transformed'
-                  ? `Config object ${object.objectId} · transform via ${object.transformSource} · conf ${object.transformConfidence.toFixed(2)}`
+                  ? `Config object ${object.objectId} · ${object.matched ? 'matched' : 'unmatched (phantom)'} · transform via ${object.transformSource} · conf ${object.transformConfidence.toFixed(2)}`
                   : `Config object ${object.objectId} · raw (no transform) · conf ${object.confidence.toFixed(2)}`
               }
               style={{
@@ -383,7 +390,7 @@ export function StructuralDebugOverlay({
               {options.showLabels ? (
                 <span className="structural-debug-overlay__object-label">
                   {projection.variant === 'transformed'
-                    ? `${object.objectId} · ${object.transformSource} · ${object.transformConfidence.toFixed(2)}`
+                    ? `${object.objectId} · ${object.transformSource}${object.matched ? '' : ' (phantom)'} · ${object.transformConfidence.toFixed(2)}`
                     : `${object.objectId} · raw`}
                 </span>
               ) : null}

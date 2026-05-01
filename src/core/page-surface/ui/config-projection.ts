@@ -54,6 +54,13 @@ export interface ProjectedConfigObject {
   transformSource: ConfigProjectionTransformSource;
   /** Confidence attributed to the chosen transform (0 when identity / unknown). */
   transformConfidence: number;
+  /**
+   * True iff the underlying config object had a direct runtime match
+   * (transformSource === 'matched-object'). Falls back via the parent /
+   * consensus / border ladder render as `false` so the overlay can style
+   * "phantom" projections distinctly from real matches.
+   */
+  matched: boolean;
 }
 
 export interface ProjectedConfigPage {
@@ -168,7 +175,8 @@ export const projectConfigPageRaw = (configPage: StructuralPage): ProjectedConfi
     confidence: object.confidence,
     rectNorm: object.objectRectNorm,
     transformSource: 'identity',
-    transformConfidence: 0
+    transformConfidence: 0,
+    matched: false
   }))
 });
 
@@ -223,7 +231,8 @@ export const projectConfigPageTransformed = (
         confidence: object.confidence,
         rectNorm: applyAffineToRect(object.objectRectNorm, ladder.transform),
         transformSource: ladder.source,
-        transformConfidence: ladder.confidence
+        transformConfidence: ladder.confidence,
+        matched: ladder.source === 'matched-object'
       };
     })
   };

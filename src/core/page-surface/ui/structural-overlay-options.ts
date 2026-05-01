@@ -40,6 +40,15 @@ export interface StructuralOverlayOptions {
    */
   showConfigProjectionTransformed: boolean;
   /**
+   * When true, unmatched config objects in the transformed projection (those
+   * whose transform fell back through parent / consensus / refined-border /
+   * border / identity rather than a direct match) are removed entirely from
+   * the overlay. When false, they are rendered with a dashed border and
+   * lower opacity so the user can still see "phantom" projections without
+   * mistaking them for real matches.
+   */
+  hideUnmatchedConfigProjections: boolean;
+  /**
    * Minimum object confidence to render. Top-level (depth 0) parent objects
    * always pass so the page skeleton stays readable; deeper objects respect
    * this threshold unless `showAllObjects` is on.
@@ -57,6 +66,7 @@ export const SIMPLE_OVERLAY_OPTIONS: StructuralOverlayOptions = {
   showTransformationMatches: false,
   showConfigProjectionRaw: false,
   showConfigProjectionTransformed: false,
+  hideUnmatchedConfigProjections: false,
   minObjectConfidence: 0.75
 };
 
@@ -70,6 +80,7 @@ export const ADVANCED_OVERLAY_OPTIONS: StructuralOverlayOptions = {
   showTransformationMatches: true,
   showConfigProjectionRaw: false,
   showConfigProjectionTransformed: false,
+  hideUnmatchedConfigProjections: false,
   minObjectConfidence: 0
 };
 
@@ -121,6 +132,7 @@ export const optionsMatchPreset = (
     options.showTransformationMatches === preset.showTransformationMatches &&
     options.showConfigProjectionRaw === preset.showConfigProjectionRaw &&
     options.showConfigProjectionTransformed === preset.showConfigProjectionTransformed &&
+    options.hideUnmatchedConfigProjections === preset.hideUnmatchedConfigProjections &&
     options.minObjectConfidence === preset.minObjectConfidence
   );
 };

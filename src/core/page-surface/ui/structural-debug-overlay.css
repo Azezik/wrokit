@@ -211,3 +211,14 @@
   border-style: dotted;
   border-color: rgb(22 163 74 / 0.55);
 }
+
+/* Unmatched config objects in the transformed projection are "phantoms":
+   they were placed via the parent / consensus / refined-border / border /
+   identity fallback ladder, not by a direct match. Render them dashed and
+   at ~30% opacity so they remain visible for inspection but are clearly
+   distinguishable from genuine matched-object projections. */
+.structural-debug-overlay__config-object[data-variant='transformed'][data-matched='false'] {
+  border-style: dashed;
+  opacity: 0.3;
+  background: transparent;
+}
