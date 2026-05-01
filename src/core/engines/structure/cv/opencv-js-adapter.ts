@@ -164,6 +164,57 @@ const MAX_LINE_THICKNESS_PX = 6;
 const MIN_BLOB_MIN_SIDE_FRAC = 0.012;
 
 /**
+ * Glyph-suppression gates applied uniformly across the contour, line-bounded
+ * cell, and heuristic blob pipelines. Text-heavy pages produce thousands of
+ * digit/letter contours (0, 6, 8, 9, B, D, O) whose bounding boxes are
+ * indistinguishable in size from small UI controls; without these gates they
+ * dominate detection and drown out the structural model.
+ *
+ * - Aspect-ratio gate: glyph contours fit roughly inside a 1:2 box; the 1/12
+ *   .. 12 window is permissive enough to admit thin progress bars and tall
+ *   sidebar items while still cutting wide horizontal rule fragments.
+ * - Fill-ratio gate: contour-area / bounding-rect-area for typical glyphs
+ *   sits at 0.25–0.45 (a hollow 8 fills about 0.3 of its bbox), while panel
+ *   borders and filled UI tiles fill ≈1.0. The 0.55 floor cuts glyph hulls
+ *   without touching real panels.
+ *
+ * Confirmed rectangles (those that pass `isShapeRectangle`) bypass both
+ * gates because polygon-approximation already proved they are convex 4-vertex
+ * shapes; the only floor that still applies to them is the min-side gate.
+ */
+const GLYPH_ASPECT_RATIO_MAX = 12;
+const GLYPH_ASPECT_RATIO_MIN = 1 / GLYPH_ASPECT_RATIO_MAX;
+const GLYPH_FILL_RATIO_MIN = 0.55;
+
+const computeGlyphMinSidePx = (surfaceWidth: number, surfaceHeight: number): number =>
+  Math.max(8, Math.round(Math.min(surfaceWidth, surfaceHeight) * MIN_BLOB_MIN_SIDE_FRAC));
+
+const passesGlyphSuppression = (
+  rect: { width: number; height: number },
+  confirmed: boolean,
+  fillRatio: number,
+  minSidePx: number
+): boolean => {
+  if (rect.width <= 0 || rect.height <= 0) {
+    return false;
+  }
+  if (Math.min(rect.width, rect.height) < minSidePx) {
+    return false;
+  }
+  if (confirmed) {
+    return true;
+  }
+  const aspectRatio = rect.width / rect.height;
+  if (aspectRatio < GLYPH_ASPECT_RATIO_MIN || aspectRatio > GLYPH_ASPECT_RATIO_MAX) {
+    return false;
+  }
+  if (fillRatio < GLYPH_FILL_RATIO_MIN) {
+    return false;
+  }
+  return true;
+};
+
+/**
  * Page-size-relative floors used to keep object detection comparable across
  * different raster sizes. The audit flagged that purely absolute pixel
  * thresholds (`MIN_OBJECT_AREA_PX` etc.) under-detect on large rasters and
@@ -390,6 +441,12 @@ interface ScoredRect {
    * cannot silently displace a clean panel rect during NMS.
    */
   confirmed: boolean;
+  /**
+   * Contour fill ratio (contour area / bounding-rect area) when the rect
+   * came from a real contour. `1` for rects synthesized from 4 line segments
+   * (line-bounded cells) and unset for callers that have not measured it.
+   */
+  fillRatio?: number;
 }
 
 /**
@@ -406,40 +463,37 @@ interface ScoredRect {
 const mergeNearDuplicateRects = (
   rects: ScoredRect[] | PixelBounds[],
   iouThreshold = 0.85
-): PixelBounds[] => {
-  if (rects.length <= 1) {
-    return rects.map((entry) => ('rect' in entry ? entry.rect : entry));
+): ScoredRect[] => {
+  const scored: ScoredRect[] = (rects as Array<ScoredRect | PixelBounds>).map((entry) =>
+    'rect' in entry ? entry : { rect: entry, confirmed: false }
+  );
+  if (scored.length <= 1) {
+    return scored;
   }
-  const scored: ScoredRect[] = (rects as Array<ScoredRect | PixelBounds>).map((entry) => {
-    if ('rect' in entry) {
-      return entry;
-    }
-    return { rect: entry, confirmed: false };
-  });
   const sorted = scored
     .map((entry) => ({
-      ...entry,
+      entry,
       area:
         Math.max(0, entry.rect.right - entry.rect.left) *
         Math.max(0, entry.rect.bottom - entry.rect.top)
     }))
     .sort((a, b) => {
-      if (a.confirmed !== b.confirmed) {
-        return a.confirmed ? -1 : 1;
+      if (a.entry.confirmed !== b.entry.confirmed) {
+        return a.entry.confirmed ? -1 : 1;
       }
       return b.area - a.area;
     });
-  const kept: PixelBounds[] = [];
-  for (const { rect } of sorted) {
+  const kept: ScoredRect[] = [];
+  for (const { entry } of sorted) {
     let suppressed = false;
     for (const accepted of kept) {
-      if (intersectionOverUnion(rect, accepted) >= iouThreshold) {
+      if (intersectionOverUnion(entry.rect, accepted.rect) >= iouThreshold) {
         suppressed = true;
         break;
       }
     }
     if (!suppressed) {
-      kept.push(rect);
+      kept.push(entry);
     }
   }
   return kept;
@@ -722,15 +776,54 @@ const computeForegroundMask = (
   return mask;
 };
 
+interface ConnectedComponent extends PixelBounds {
+  /** Count of foreground pixels in the connected component (the "filled" area). */
+  pixelArea: number;
+}
+
+/**
+ * Count luminance-only foreground pixels inside a bounding box. This is the
+ * "ink core" measurement used by the heuristic blob fill-ratio gate: it
+ * counts only pixels that pass the global luminance threshold, ignoring
+ * gradient-only foreground that came from Sobel halo. Without this distinction
+ * the Sobel halo around a 1-px ink stroke fills hollow glyphs (a figure-8
+ * bbox-fill rises from 0.28 → 0.72) and the fill-ratio gate stops
+ * distinguishing glyphs from real shapes.
+ */
+const countLuminanceForegroundInBbox = (
+  pixels: ImageData,
+  backgroundThreshold: number,
+  bbox: PixelBounds
+): number => {
+  const { width, data } = pixels;
+  let count = 0;
+  for (let y = bbox.top; y < bbox.bottom; y += 1) {
+    for (let x = bbox.left; x < bbox.right; x += 1) {
+      const i = (y * width + x) * 4;
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      const a = data[i + 3];
+      const isBg =
+        a < 8 ||
+        (r >= backgroundThreshold && g >= backgroundThreshold && b >= backgroundThreshold);
+      if (!isBg) {
+        count += 1;
+      }
+    }
+  }
+  return count;
+};
+
 const detectConnectedBounds = (
   pixels: ImageData,
   backgroundThreshold: number,
   minObjectAreaPx: number,
   foregroundMask: Uint8Array | null = null
-): PixelBounds[] => {
+): ConnectedComponent[] => {
   const { width, height, data } = pixels;
   const visited = new Uint8Array(width * height);
-  const components: PixelBounds[] = [];
+  const components: ConnectedComponent[] = [];
   const queue = new Int32Array(width * height);
 
   const isForeground = (x: number, y: number): boolean => {
@@ -800,7 +893,7 @@ const detectConnectedBounds = (
       }
 
       if (area >= minObjectAreaPx) {
-        components.push({ left, top, right: right + 1, bottom: bottom + 1 });
+        components.push({ left, top, right: right + 1, bottom: bottom + 1, pixelArea: area });
       }
     }
   }
@@ -820,6 +913,27 @@ const isLineShaped = (
   return isHorizontalLine || isVerticalLine;
 };
 
+/**
+ * Apply the shared glyph-suppression gates to line-bounded cell rects. Cells
+ * are by construction rectangles bounded by 4 detected line segments, so the
+ * aspect-ratio and fill-ratio gates are vacuous (`confirmed=true`,
+ * `fillRatio=1`). The min-side floor is the only test that can drop a cell,
+ * which protects against degenerate sliver cells produced when two parallel
+ * lines sit a couple of pixels apart.
+ */
+const filterCellRectsForGlyphs = (
+  rects: SharedPixelBounds[],
+  surfaceWidth: number,
+  surfaceHeight: number
+): SharedPixelBounds[] => {
+  const minSidePx = computeGlyphMinSidePx(surfaceWidth, surfaceHeight);
+  return rects.filter((bounds) => {
+    const width = bounds.right - bounds.left;
+    const height = bounds.bottom - bounds.top;
+    return passesGlyphSuppression({ width, height }, true, 1, minSidePx);
+  });
+};
+
 const detectHeuristicSurfaceObjects = (
   pixels: ImageData,
   backgroundThreshold: number,
@@ -828,17 +942,27 @@ const detectHeuristicSurfaceObjects = (
 ): CvSurfaceObject[] => {
   const { width, height } = pixels;
   const objects: CvSurfaceObject[] = [];
-  const minBlobSide = Math.max(8, Math.round(Math.min(width, height) * MIN_BLOB_MIN_SIDE_FRAC));
+  const minSidePx = computeGlyphMinSidePx(width, height);
 
   // 1. Connected components — kept for non-line-bounded shapes (logos, signatures).
-  //    Word-noise is dropped via min-side and area floors. Line-shaped blobs
-  //    are skipped because they belong to the line-grid pipeline.
+  //    Glyph-shaped noise is rejected via the shared glyph-suppression gate
+  //    (min-side floor + bbox fill-ratio), and line-shaped blobs are skipped
+  //    because they belong to the line-grid pipeline.
   const components = detectConnectedBounds(
     pixels,
     backgroundThreshold,
     thresholds.minObjectAreaPx,
     foregroundMask
   );
+  // Heuristic equivalent of `isShapeRectangle`: a connected component large
+  // enough that it cannot plausibly be a glyph is presumed rectangular and
+  // bypasses the fill-ratio / aspect-ratio gates. This keeps outline-only
+  // panels (whose connected pixels are just the 1-px border ring, ~2% of
+  // bbox) from being falsely culled by the fill-ratio gate. The 4×
+  // multiplier sits above realistic glyph heights (a 24-pt cap letter on a
+  // 4K capture is still ~3× minSidePx) while admitting the smallest UI
+  // tiles we want to keep.
+  const presumedRectangleThreshold = 4 * minSidePx;
   let id = 0;
   for (const component of components) {
     const bounds = clampRectToSurface(width, height, component);
@@ -846,28 +970,48 @@ const detectHeuristicSurfaceObjects = (
     if (rect.width <= 0 || rect.height <= 0) {
       continue;
     }
-    if (Math.min(rect.width, rect.height) < minBlobSide) {
-      continue; // glyph-shaped noise
-    }
     if (isLineShaped(rect, thresholds)) {
       continue; // a 1D line is a primitive, not an object
     }
-    const area = rect.width * rect.height;
+    const bboxArea = Math.max(1, rect.width * rect.height);
+    // Glyph fill-ratio is measured against the LUMINANCE-only foreground
+    // count, not the gradient-augmented mask, because Sobel response
+    // produces a 1-px halo around every black ink stroke and that halo
+    // alone is enough to push a hollow 12×18 figure-8 above 0.55. For
+    // gradient-only components (low-Δ panel borders whose pixels are
+    // background under the luminance test), no luminance core exists and
+    // the fill-ratio gate is bypassed so the panel survives — its size
+    // already triggers the `presumedRectangular` bypass anyway.
+    const luminanceCore = countLuminanceForegroundInBbox(
+      pixels,
+      backgroundThreshold,
+      bounds
+    );
+    const fillRatio = luminanceCore > 0 ? luminanceCore / bboxArea : 1;
+    const presumedRectangular = Math.min(rect.width, rect.height) >= presumedRectangleThreshold;
+    if (!passesGlyphSuppression(rect, presumedRectangular, fillRatio, minSidePx)) {
+      continue;
+    }
     const pageArea = Math.max(1, width * height);
     objects.push({
       objectId: `obj_blob_${id++}`,
       bboxSurface: rect,
-      confidence: Math.min(0.99, 0.62 + Math.min(1, area / pageArea) * 0.38)
+      confidence: Math.min(0.99, 0.62 + Math.min(1, bboxArea / pageArea) * 0.38)
     });
   }
 
-  // 2. Shared line-grid pipeline: line-bounded rects only. The line segments
-  //    themselves are an internal primitive and are not emitted as objects.
+  // 2. Shared line-grid pipeline: line-bounded rects only. Cells are by
+  //    construction rectangles — they automatically pass the aspect/fill
+  //    gates and only the min-side floor is meaningful here.
   const segments = detectLineSegments(pixels, backgroundThreshold, thresholds, foregroundMask);
-  const cellRects = buildLineBoundedRects(segments, {
-    surfaceWidth: width,
-    surfaceHeight: height
-  });
+  const cellRects = filterCellRectsForGlyphs(
+    buildLineBoundedRects(segments, {
+      surfaceWidth: width,
+      surfaceHeight: height
+    }),
+    width,
+    height
+  );
   objects.push(
     ...lineBoundedRectsToObjects(cellRects, {
       idPrefix: 'obj',
@@ -951,7 +1095,7 @@ const detectWithHeuristicFallback = (
 };
 
 const buildObjectsFromContourRects = (
-  rects: PixelBounds[],
+  rects: ScoredRect[],
   surfaceWidth: number,
   surfaceHeight: number,
   idPrefix: string,
@@ -960,15 +1104,22 @@ const buildObjectsFromContourRects = (
   options: { skipLineShaped?: boolean } = {}
 ): CvSurfaceObject[] => {
   const pageArea = Math.max(1, surfaceWidth * surfaceHeight);
+  const minSidePx = computeGlyphMinSidePx(surfaceWidth, surfaceHeight);
 
   return rects
-    .map((bounds, index) => {
-      const rect = boundsToRect(clampRectToSurface(surfaceWidth, surfaceHeight, bounds));
+    .map((scored, index) => {
+      const rect = boundsToRect(clampRectToSurface(surfaceWidth, surfaceHeight, scored.rect));
       const area = rect.width * rect.height;
       if (rect.width <= 0 || rect.height <= 0 || area < thresholds.minObjectAreaPx) {
         return null;
       }
       if (options.skipLineShaped && isLineShaped(rect, thresholds)) {
+        return null;
+      }
+      // Glyph-suppression gates: min-side floor, then aspect-ratio and
+      // fill-ratio gates that confirmed rectangles bypass.
+      const fillRatio = scored.fillRatio ?? (scored.confirmed ? 1 : 0);
+      if (!passesGlyphSuppression(rect, scored.confirmed, fillRatio, minSidePx)) {
         return null;
       }
 
@@ -1202,6 +1353,22 @@ const detectWithOpenCvRuntime = (
         // as a high-confidence rectangle and protected from NMS suppression
         // by larger non-rectangular contours that overlap it.
         const confirmed = isShapeRectangle(cv, contour, rect);
+        // Bounding-rect fill ratio = contourArea / (rect.width * rect.height).
+        // Glyph contours fill 0.25–0.45 of their bbox (a hollow 8 ≈ 0.30); UI
+        // panel borders fill ≈1.0. The downstream gate uses this to reject
+        // text-shaped contours without inspecting individual pixels. When the
+        // runtime does not expose contourArea (mocks, stripped builds), we
+        // default to 1 so the gate is a no-op rather than a silent culling.
+        let fillRatio = 1;
+        if (typeof cv.contourArea === 'function') {
+          try {
+            const contourArea = Math.abs(cv.contourArea(contour));
+            const bboxArea = Math.max(1, rect.width * rect.height);
+            fillRatio = contourArea / bboxArea;
+          } catch {
+            fillRatio = 1;
+          }
+        }
         contourRects.push({
           rect: {
             left: rect.x,
@@ -1209,7 +1376,8 @@ const detectWithOpenCvRuntime = (
             right: rect.x + rect.width,
             bottom: rect.y + rect.height
           },
-          confirmed
+          confirmed,
+          fillRatio
         });
       } finally {
         contour.delete();
@@ -1253,12 +1421,16 @@ const detectWithOpenCvRuntime = (
     // rectangles) is identical to the heuristic fallback. This is what makes
     // config-time and run-time produce comparable structure.
     const sharedSegments = detectLineSegments(pixels, backgroundThreshold, thresholds);
-    const cellRects = buildLineBoundedRects(sharedSegments, {
-      surfaceWidth: surface.surfaceWidth,
-      surfaceHeight: surface.surfaceHeight
-    });
+    const cellRects = filterCellRectsForGlyphs(
+      buildLineBoundedRects(sharedSegments, {
+        surfaceWidth: surface.surfaceWidth,
+        surfaceHeight: surface.surfaceHeight
+      }) as SharedPixelBounds[],
+      surface.surfaceWidth,
+      surface.surfaceHeight
+    );
     const objectsFromCells: CvSurfaceObject[] = lineBoundedRectsToObjects(
-      cellRects as SharedPixelBounds[],
+      cellRects,
       {
         idPrefix: 'obj_cv_cell',
         surfaceWidth: surface.surfaceWidth,
@@ -1267,7 +1439,7 @@ const detectWithOpenCvRuntime = (
     );
 
     const contentBounds =
-      unionBounds([...mergedContourRects, ...lineRects]) ??
+      unionBounds([...mergedContourRects.map((entry) => entry.rect), ...lineRects]) ??
       computeContentBoundsFromPixels(pixels, backgroundThreshold);
 
     if (!contentBounds) {
