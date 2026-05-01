@@ -192,6 +192,17 @@ export function StructuralOverlayControls({
             />
             Transformed (after correction)
           </label>
+          <label className="structural-overlay-controls__toggle">
+            <input
+              type="checkbox"
+              checked={options.hideUnmatchedConfigProjections}
+              onChange={(event) =>
+                setOption('hideUnmatchedConfigProjections', event.target.checked)
+              }
+              disabled={!options.showConfigProjectionTransformed}
+            />
+            Hide unmatched config projections
+          </label>
         </fieldset>
       ) : null}
 

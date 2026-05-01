@@ -25,7 +25,7 @@ import type {
   TransformationLevelSummary,
   TransformationObjectMatch
 } from '../../contracts/transformation-model';
-import { IDENTITY_AFFINE } from './transform-math';
+import { affineDistance, IDENTITY_AFFINE } from './transform-math';
 
 const REL_RECT_EPS = 1e-9;
 
@@ -88,6 +88,20 @@ const PARENT_INDIRECTION_PENALTY = 0.85;
  * strong, but a low-quality match that only barely cleared the matcher cannot.
  */
 const MIN_OBJECT_ANCHOR_MATCH_CONFIDENCE = 0.7;
+
+/**
+ * Thresholds for the "object candidate is degenerate vs refined-border"
+ * detection. When a matched-object or parent-object candidate's transform is
+ * within these tolerances of the refined-border level summary, AND the
+ * refined-border summary itself is well-supported (>= NEAR_IDENTITY_REFINED_BORDER_MIN_CONFIDENCE),
+ * we treat the object-rung evidence as redundant. The refined border draws on
+ * the full page rather than a single object's identity-ish match, so we let
+ * it win the "pick first" race by demoting the redundant object candidate
+ * below it in fallbackOrder. The candidate is still emitted for inspection.
+ */
+const NEAR_IDENTITY_SCALE_DELTA = 0.01;
+const NEAR_IDENTITY_TRANSLATE_DELTA = 0.01;
+const NEAR_IDENTITY_REFINED_BORDER_MIN_CONFIDENCE = 0.7;
 
 const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v);
 
@@ -286,7 +300,77 @@ const buildFieldCandidates = (input: BuildCandidateInputs): {
     );
   }
 
-  return { candidates, warnings };
+  // Demote object-rung candidates whose transform is essentially identical to
+  // a well-supported refined-border level summary. The matched/parent object
+  // is still emitted (so it shows up for inspection) but moved below the
+  // refined-border candidate in fallbackOrder, so the localization runner's
+  // "pick first" lands on the better-cross-validated refined-border signal
+  // instead of a degenerate identity-ish match that happens to share a rank.
+  const refinedSummary = input.refinedBorderSummary;
+  const refinedTransform = refinedSummary?.transform ?? null;
+  const refinedConfidence = refinedSummary?.confidence ?? 0;
+  const refinedReliable =
+    refinedTransform !== null &&
+    refinedConfidence >= NEAR_IDENTITY_REFINED_BORDER_MIN_CONFIDENCE;
+
+  const isDegenerateObjectCandidate = (c: TransformationFieldCandidate): boolean => {
+    if (!refinedReliable || !refinedTransform) {
+      return false;
+    }
+    if (c.source !== 'matched-object' && c.source !== 'parent-object') {
+      return false;
+    }
+    const { scaleDelta, translateDelta } = affineDistance(c.transform, refinedTransform);
+    return (
+      scaleDelta < NEAR_IDENTITY_SCALE_DELTA &&
+      translateDelta < NEAR_IDENTITY_TRANSLATE_DELTA
+    );
+  };
+
+  const objectCandidates = candidates.filter(
+    (c) => c.source === 'matched-object' || c.source === 'parent-object'
+  );
+  const refinedBorderCandidate = candidates.find((c) => c.source === 'refined-border');
+  const borderCandidate = candidates.find((c) => c.source === 'border');
+
+  const objectKept: TransformationFieldCandidate[] = [];
+  const objectDemoted: TransformationFieldCandidate[] = [];
+  for (const c of objectCandidates) {
+    if (isDegenerateObjectCandidate(c)) {
+      objectDemoted.push({
+        ...c,
+        notes: [
+          ...c.notes,
+          `transform within ±${NEAR_IDENTITY_SCALE_DELTA}/±${NEAR_IDENTITY_TRANSLATE_DELTA} of refined-border ` +
+            `(refined-border confidence ${refinedConfidence.toFixed(3)} ≥ ` +
+            `${NEAR_IDENTITY_REFINED_BORDER_MIN_CONFIDENCE.toFixed(2)}) — demoted below refined-border`
+        ]
+      });
+    } else {
+      objectKept.push(c);
+    }
+  }
+
+  if (objectDemoted.length > 0 && refinedBorderCandidate) {
+    warnings.push(
+      `${objectDemoted.length} object-rung candidate(s) demoted below refined-border ` +
+        'as their transform was within the near-identity tolerance of a confident refined-border summary'
+    );
+  }
+
+  const reordered: TransformationFieldCandidate[] = [];
+  reordered.push(...objectKept);
+  if (refinedBorderCandidate) {
+    reordered.push(refinedBorderCandidate);
+  }
+  reordered.push(...objectDemoted);
+  if (borderCandidate) {
+    reordered.push(borderCandidate);
+  }
+
+  const final = reordered.map((c, index) => ({ ...c, fallbackOrder: index }));
+
+  return { candidates: final, warnings };
 };
 
 export const computeFieldAlignments = (
