@@ -94,6 +94,22 @@ export interface TransformationConsensus {
   confidence: number;
   contributingMatchCount: number;
   outliers: TransformationConsensusOutlier[];
+  /**
+   * Per-object transforms recorded directly from each match's own implied
+   * affine, keyed by configObjectId. Lets downstream consumers ask "what
+   * transform was actually recorded for THIS object?" without going through
+   * the page-wide consensus — useful when the page consensus is identity but
+   * an individual cell carries a real shift.
+   */
+  localTransforms: Record<string, TransformationAffine>;
+  /**
+   * Competing inlier sets that disagree with the primary `transform` and
+   * carry a non-trivial (non-near-identity) affine. Surfaced when the
+   * largest inlier set is near-identity but a coherent regional shift was
+   * detected in a smaller subset; consumers can fall back to these when an
+   * object lives in a region that moved relative to the global background.
+   */
+  regionalTransforms: TransformationAffine[];
   notes: string[];
   warnings: string[];
 }
@@ -285,6 +301,15 @@ const isTransformationConsensusOutlier = (
   );
 };
 
+const isTransformationAffineRecord = (
+  value: unknown
+): value is Record<string, TransformationAffine> => {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return Object.values(value).every(isTransformationAffine);
+};
+
 const isTransformationConsensus = (value: unknown): value is TransformationConsensus => {
   if (!isRecord(value)) {
     return false;
@@ -295,6 +320,9 @@ const isTransformationConsensus = (value: unknown): value is TransformationConse
     isFiniteNumber(value.contributingMatchCount) &&
     Array.isArray(value.outliers) &&
     value.outliers.every(isTransformationConsensusOutlier) &&
+    isTransformationAffineRecord(value.localTransforms) &&
+    Array.isArray(value.regionalTransforms) &&
+    value.regionalTransforms.every(isTransformationAffine) &&
     isStringArray(value.notes) &&
     isStringArray(value.warnings)
   );
@@ -432,6 +460,8 @@ export const createEmptyTransformationModel = (input: {
       confidence: 0,
       contributingMatchCount: 0,
       outliers: [],
+      localTransforms: {},
+      regionalTransforms: [],
       notes: [],
       warnings: []
     },
