@@ -16,6 +16,26 @@ import {
 import { computeFieldAlignments } from './transformation/field-candidates';
 import { matchPage, type MatcherOptions } from './transformation/hierarchical-matcher';
 
+/**
+ * Collect every config object ID named as a primary or secondary anchor of
+ * any field on the page. These are the matcher's most consequential targets:
+ * field localization downstream depends on them, so the matcher gets a small
+ * thumb on the scale via `MatcherOptions.priorityObjectIds`. Tertiary anchors
+ * are intentionally excluded — they're already a fallback, not a load-bearing
+ * input to localization.
+ */
+const collectPriorityObjectIds = (configPage: StructuralPage): Set<string> => {
+  const priority = new Set<string>();
+  for (const fr of configPage.fieldRelationships) {
+    for (const anchor of fr.fieldAnchors.objectAnchors) {
+      if (anchor.rank === 'primary' || anchor.rank === 'secondary') {
+        priority.add(anchor.objectId);
+      }
+    }
+  }
+  return priority;
+};
+
 export interface TransformationRunnerInput {
   config: StructuralModel;
   runtime: StructuralModel;
@@ -127,7 +147,13 @@ export const createTransformationRunner = (
           };
         }
 
-        const result = matchPage(configPage, runtimePage, effectiveMatcherOptions);
+        const priorityObjectIds = collectPriorityObjectIds(configPage);
+        const pageMatcherOptions = {
+          ...effectiveMatcherOptions,
+          priorityObjectIds:
+            effectiveMatcherOptions.priorityObjectIds ?? priorityObjectIds
+        };
+        const result = matchPage(configPage, runtimePage, pageMatcherOptions);
         const levelSummaries = buildLevelSummaries(
           configPage,
           runtimePage,
