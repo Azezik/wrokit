@@ -64,16 +64,30 @@ export interface ConsensusOptions {
 }
 
 const DEFAULTS: Required<ConsensusOptions> = {
-  // Tightened from 0.15 / 0.08 to require near-identical implied affines
-  // before two matches are considered to "agree" inside the RANSAC inlier
-  // search. The earlier loose values let mutually-incoherent matches form a
-  // fat inlier set whose weighted mean drifted 5-10% off the truly-perfect
-  // subset; tight tolerances force the inlier set to be a real "this object
-  // didn't move relative to the others" agreement.
-  scaleOutlierTolerance: 0.05,
-  translateOutlierTolerance: 0.03,
+  // Widened from 0.05 / 0.03 so that matches participating in a coherent
+  // regional shift (e.g. a row of cells that all moved by ~0.04 normalized
+  // units) cluster together in a secondary inlier set instead of each
+  // becoming a one-off outlier. The earlier tight values caused the RANSAC
+  // search to lock onto an identity-like background of unmoved objects and
+  // discard the real shift signal entirely.
+  scaleOutlierTolerance: 0.1,
+  translateOutlierTolerance: 0.06,
   minMatchesForConsensus: 1
 };
+
+/**
+ * Maximum per-parameter deviation from identity for an affine to be
+ * considered "near-identity". Used to detect the case where the largest
+ * inlier set is essentially "nothing moved" and a smaller-but-coherent
+ * regional shift is the actually-interesting signal.
+ */
+const NEAR_IDENTITY_THRESHOLD = 0.005;
+
+const isNearIdentityAffine = (t: TransformationAffine, threshold = NEAR_IDENTITY_THRESHOLD): boolean =>
+  Math.abs(t.scaleX - 1) <= threshold &&
+  Math.abs(t.scaleY - 1) <= threshold &&
+  Math.abs(t.translateX) <= threshold &&
+  Math.abs(t.translateY) <= threshold;
 
 const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v);
 
@@ -211,6 +225,21 @@ const partitionAgainstHypothesis = (
   return { kept, outliers, weight };
 };
 
+interface InlierSearchResult {
+  /**
+   * The largest mutually-consistent subset of matches — the global background
+   * consensus. This is what feeds the page-level transform.
+   */
+  primary: InlierPartition;
+  /**
+   * Competing inlier sets that disagree with the primary and carry a
+   * non-near-identity affine. Populated only when the primary is itself
+   * near-identity (i.e. the page-wide background didn't move) and a coherent
+   * regional shift exists in a smaller subset of size ≥ 2. Empty otherwise.
+   */
+  regionals: InlierPartition[];
+}
+
 /**
  * Find the largest mutually-consistent subset of matches (RANSAC-style maximum
  * inlier search). For each match's own implied affine we count how many other
@@ -226,61 +255,115 @@ const partitionAgainstHypothesis = (
  * authoritative reference even if other (heavier-weighted) objects move
  * inconsistently.
  *
+ * Two-tier reporting: when the largest inlier set is near-identity AND a
+ * competing inlier set of size ≥ 2 has a non-trivial transform, both are
+ * surfaced. The primary still seeds the page consensus (most of the page
+ * really didn't move), but the secondary "regional" sets carry the real shift
+ * signal for the cells that did move — without that, a coherent group of
+ * shifted matches gets silently discarded as outliers and downstream BBOXes
+ * are misplaced.
+ *
  * Falls back to the trivial single-entry case when only one match exists.
  */
 const findMaxInlierSet = (
   entries: WeightedMatch[],
   options: Required<ConsensusOptions>
-): InlierPartition | null => {
+): InlierSearchResult | null => {
   if (entries.length === 0) {
     return null;
   }
   if (entries.length === 1) {
     const only = entries[0];
     return {
-      seedTransform: only.match.transform,
-      seedConfigObjectId: only.match.configObjectId,
-      kept: [only],
-      outliers: []
+      primary: {
+        seedTransform: only.match.transform,
+        seedConfigObjectId: only.match.configObjectId,
+        kept: [only],
+        outliers: []
+      },
+      regionals: []
     };
   }
 
-  let best: InlierPartition | null = null;
-  let bestCount = -1;
-  let bestWeight = -1;
-
-  for (const candidate of entries) {
+  const candidates: Array<{
+    seedTransform: TransformationAffine;
+    seedConfigObjectId: string;
+    kept: WeightedMatch[];
+    outliers: { entry: WeightedMatch; reason: string }[];
+    weight: number;
+  }> = entries.map((candidate) => {
     const partition = partitionAgainstHypothesis(
       entries,
       candidate.match.transform,
       options,
       candidate.match.configObjectId
     );
-    const count = partition.kept.length;
-    // Prefer the largest agreeing subset by count, then by weighted total
-    // (area×confidence) so that, when two subsets tie on count, the one
-    // covering more of the page wins. Deterministic id ordering breaks the
-    // last tie so test runs are stable.
-    if (
-      count > bestCount ||
-      (count === bestCount && partition.weight > bestWeight) ||
-      (count === bestCount &&
-        partition.weight === bestWeight &&
-        (best === null ||
-          candidate.match.configObjectId.localeCompare(best.seedConfigObjectId) < 0))
-    ) {
-      bestCount = count;
-      bestWeight = partition.weight;
-      best = {
-        seedTransform: candidate.match.transform,
-        seedConfigObjectId: candidate.match.configObjectId,
-        kept: partition.kept,
-        outliers: partition.outliers
-      };
+    return {
+      seedTransform: candidate.match.transform,
+      seedConfigObjectId: candidate.match.configObjectId,
+      kept: partition.kept,
+      outliers: partition.outliers,
+      weight: partition.weight
+    };
+  });
+
+  // Rank: largest agreeing subset by count, then by weighted total
+  // (area×confidence) so that, when two subsets tie on count, the one
+  // covering more of the page wins. Deterministic id ordering breaks the
+  // last tie so test runs are stable.
+  candidates.sort((a, b) => {
+    if (b.kept.length !== a.kept.length) {
+      return b.kept.length - a.kept.length;
+    }
+    if (b.weight !== a.weight) {
+      return b.weight - a.weight;
+    }
+    return a.seedConfigObjectId.localeCompare(b.seedConfigObjectId);
+  });
+
+  const best = candidates[0];
+  const primary: InlierPartition = {
+    seedTransform: best.seedTransform,
+    seedConfigObjectId: best.seedConfigObjectId,
+    kept: best.kept,
+    outliers: best.outliers
+  };
+
+  const regionals: InlierPartition[] = [];
+  const refinedPrimary = weightedMeanAffine(best.kept) ?? best.seedTransform;
+  if (isNearIdentityAffine(refinedPrimary)) {
+    // Primary is "nothing moved". Look for coherent regional shifts: a
+    // competing inlier set of size ≥ 2 whose refined transform is not
+    // near-identity. Dedupe so multiple seeds within the same regional
+    // cluster don't each surface as a separate alternate.
+    const reported = new Set<string>();
+    for (const c of candidates) {
+      if (c === best) {
+        continue;
+      }
+      if (c.kept.length < 2) {
+        continue;
+      }
+      const refined = weightedMeanAffine(c.kept) ?? c.seedTransform;
+      if (isNearIdentityAffine(refined)) {
+        continue;
+      }
+      if (reported.has(c.seedConfigObjectId)) {
+        continue;
+      }
+      regionals.push({
+        seedTransform: c.seedTransform,
+        seedConfigObjectId: c.seedConfigObjectId,
+        kept: c.kept,
+        outliers: c.outliers
+      });
+      for (const k of c.kept) {
+        reported.add(k.match.configObjectId);
+      }
     }
   }
 
-  return best;
+  return { primary, regionals };
 };
 
 const projectionAgreement = (
@@ -317,8 +400,8 @@ const summarizeFromMatches = (
     };
   }
 
-  const inlier = findMaxInlierSet(entries, options);
-  if (!inlier) {
+  const inlierResult = findMaxInlierSet(entries, options);
+  if (!inlierResult) {
     return {
       level,
       transform: null,
@@ -329,6 +412,7 @@ const summarizeFromMatches = (
     };
   }
 
+  const inlier = inlierResult.primary;
   const refined = weightedMeanAffine(inlier.kept) ?? inlier.seedTransform;
   const contributing = inlier.kept;
   const meanConfidence = weightedMeanConfidence(contributing);
@@ -473,32 +557,52 @@ export const computeConsensus = (
     indexObjects(runtimePage)
   );
 
+  // Per-match local transforms — exposed so downstream consumers can ask
+  // "what transform was actually recorded for THIS object?" without going
+  // through the page-wide consensus. Built from every weighted match,
+  // independent of inlier-set membership; outliers are still included here
+  // because their individual signal may matter even when they disagree with
+  // the page background.
+  const localTransforms: Record<string, TransformationAffine> = {};
+  for (const entry of entries) {
+    localTransforms[entry.match.configObjectId] = entry.match.transform;
+  }
+
   if (entries.length === 0) {
     return {
       transform: null,
       confidence: 0,
       contributingMatchCount: 0,
       outliers: [],
+      localTransforms,
+      regionalTransforms: [],
       notes: ['no object matches available for consensus'],
       warnings: []
     };
   }
 
-  const inlier = findMaxInlierSet(entries, opts);
-  if (!inlier) {
+  const inlierResult = findMaxInlierSet(entries, opts);
+  if (!inlierResult) {
     return {
       transform: null,
       confidence: 0,
       contributingMatchCount: 0,
       outliers: [],
+      localTransforms,
+      regionalTransforms: [],
       notes: [],
       warnings: ['could not find an inlier subset for consensus']
     };
   }
 
+  const inlier = inlierResult.primary;
   const consensus = weightedMeanAffine(inlier.kept) ?? inlier.seedTransform;
   const contributing = inlier.kept;
   const outliers = inlier.outliers;
+
+  const regionalTransforms: TransformationAffine[] = inlierResult.regionals.map(
+    (r) => weightedMeanAffine(r.kept) ?? r.seedTransform
+  );
 
   const reportedOutliers: TransformationConsensusOutlier[] = outliers.map((o) => ({
     configObjectId: o.entry.match.configObjectId,
@@ -513,6 +617,8 @@ export const computeConsensus = (
       confidence: 0,
       contributingMatchCount: contributing.length,
       outliers: reportedOutliers,
+      localTransforms,
+      regionalTransforms,
       notes: [
         `only ${contributing.length} match(es) survived outlier rejection (minimum ${opts.minMatchesForConsensus})`
       ],
@@ -533,6 +639,11 @@ export const computeConsensus = (
     `weight coverage: ${coverage.toFixed(3)}`,
     `projection agreement (avg IoU): ${projection.toFixed(3)}`
   ];
+  if (regionalTransforms.length > 0) {
+    notes.push(
+      `surfaced ${regionalTransforms.length} regional shift(s) that disagree with the near-identity primary`
+    );
+  }
   const warnings: string[] = [];
   if (reportedOutliers.length > 0) {
     warnings.push(`${reportedOutliers.length} outlier match(es) excluded from consensus`);
@@ -551,6 +662,8 @@ export const computeConsensus = (
     confidence,
     contributingMatchCount: contributing.length,
     outliers: reportedOutliers,
+    localTransforms,
+    regionalTransforms,
     notes,
     warnings
   };
