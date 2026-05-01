@@ -27,6 +27,18 @@ const DUPLICATE_IOU_MIN = 0.85;
 const DUPLICATE_AREA_RATIO_MIN = 0.85;
 const DUPLICATE_ASPECT_RATIO_MIN = 0.85;
 
+/**
+ * Trivial-containment thresholds. When one rect is geometrically contained
+ * inside another but the area ratio is at least 0.95 and IoU at least 0.95,
+ * the "outer" rect is just a 1-2 pixel jittered duplicate of the "inner" one
+ * — collapsing it to parent/child would create artificial nesting that the
+ * sibling-dedup pass cannot reach (a parent and its child are never siblings).
+ * Genuine containment (a child cell inside a panel) has area ratio well below
+ * 0.95 and is unaffected.
+ */
+const TRIVIAL_CONTAINMENT_AREA_RATIO_MIN = 0.95;
+const TRIVIAL_CONTAINMENT_IOU_MIN = 0.95;
+
 const rectArea = (rect: StructuralNormalizedRect): number => rect.wNorm * rect.hNorm;
 
 const rectContains = (
@@ -405,7 +417,16 @@ const buildObjectRelationGraph = (
  * with child objects, a standalone box is an object with no children.
  */
 export const buildObjectHierarchy = (rawObjects: RawObjectInput[]): StructuralObjectHierarchy => {
-  const nodes: StructuralObjectNode[] = rawObjects.map((obj) => ({
+  // Trivial-containment pre-pass: collapse pairs where one rect is contained
+  // in another but they are essentially the same rect (area ratio ≥ 0.95,
+  // IoU ≥ 0.95). Without this, two rects differing by 1-2 pixels become a
+  // parent/child link instead of duplicates — and sibling dedup never sees
+  // them because parents and children live in different sibling groups.
+  const survivors = collapseTrivialContainmentDuplicates(rawObjects);
+  const objectsPreDedup = rawObjects.length;
+  const objectsPostTrivial = survivors.length;
+
+  const nodes: StructuralObjectNode[] = survivors.map((obj) => ({
     objectId: obj.objectId,
     objectRectNorm: obj.bbox,
     bbox: obj.bbox,
@@ -435,6 +456,13 @@ export const buildObjectHierarchy = (rawObjects: RawObjectInput[]): StructuralOb
   // broken by objectId for determinism.
   const survivingNodes = applySiblingDedup(nodes);
 
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[object-hierarchy] objects_pre_dedup=${objectsPreDedup} ` +
+      `post_trivial_containment=${objectsPostTrivial} ` +
+      `objects_post_dedup=${survivingNodes.length}`
+  );
+
   // Compute depth by walking up to a parentless ancestor. Done after parent
   // links are established so cycles (which shouldn't happen, but guard anyway)
   // do not infinite-loop the walk.
@@ -452,6 +480,82 @@ export const buildObjectHierarchy = (rawObjects: RawObjectInput[]): StructuralOb
   }
 
   return { objects: survivingNodes };
+};
+
+/**
+ * Drop pairs where one rect is geometrically contained in another and the
+ * two rects are essentially the same shape (area ratio ≥ 0.95, IoU ≥ 0.95).
+ * Runs BEFORE parent/child links are computed so a 1-px jittered duplicate
+ * never produces artificial nesting. Genuine containment (small child inside
+ * a panel — area ratio well below 0.95) is unaffected.
+ *
+ * Tiebreak mirrors the cross-pipeline merge: higher confidence wins (proxy
+ * for polygon-confirmed, which receives a confidence boost upstream), then
+ * larger area, then objectId for determinism.
+ */
+const collapseTrivialContainmentDuplicates = (rawObjects: RawObjectInput[]): RawObjectInput[] => {
+  if (rawObjects.length <= 1) {
+    return rawObjects.slice();
+  }
+
+  // Sort once by preferred-survivor order so the kept[] scan can stop at the
+  // first hit and the loser is always the later entry.
+  const ranked = [...rawObjects].sort((a, b) => {
+    if (a.confidence !== b.confidence) {
+      return b.confidence - a.confidence;
+    }
+    const areaA = rectArea(a.bbox);
+    const areaB = rectArea(b.bbox);
+    if (areaA !== areaB) {
+      return areaB - areaA;
+    }
+    return a.objectId.localeCompare(b.objectId);
+  });
+
+  const removed = new Set<string>();
+  const kept: RawObjectInput[] = [];
+  for (const candidate of ranked) {
+    let dup = false;
+    for (const winner of kept) {
+      if (isTrivialContainmentDuplicate(winner.bbox, candidate.bbox)) {
+        dup = true;
+        break;
+      }
+    }
+    if (dup) {
+      removed.add(candidate.objectId);
+    } else {
+      kept.push(candidate);
+    }
+  }
+
+  if (removed.size === 0) {
+    return rawObjects.slice();
+  }
+  return rawObjects.filter((obj) => !removed.has(obj.objectId));
+};
+
+const isTrivialContainmentDuplicate = (
+  a: StructuralNormalizedRect,
+  b: StructuralNormalizedRect
+): boolean => {
+  const areaA = rectArea(a);
+  const areaB = rectArea(b);
+  if (areaA <= 0 || areaB <= 0) {
+    return false;
+  }
+  const containment = rectContains(a, b, EPS) || rectContains(b, a, EPS);
+  if (!containment) {
+    return false;
+  }
+  const areaRatio = Math.min(areaA, areaB) / Math.max(areaA, areaB);
+  if (areaRatio < TRIVIAL_CONTAINMENT_AREA_RATIO_MIN) {
+    return false;
+  }
+  if (rectIou(a, b) < TRIVIAL_CONTAINMENT_IOU_MIN) {
+    return false;
+  }
+  return true;
 };
 
 const applySiblingDedup = (nodes: StructuralObjectNode[]): StructuralObjectNode[] => {

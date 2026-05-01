@@ -327,6 +327,84 @@ const segmentSpansAxis = (segment: LineSegment, from: number, to: number, tolera
   return segment.start - tolerance <= from && segment.end + tolerance >= to;
 };
 
+/**
+ * Cluster segments whose `axisPos` differ by less than `positionTolerance`
+ * into a single canonical segment. Anti-aliasing, glyphs sitting on a rule,
+ * and capture noise all fragment one physical line into N stripe segments at
+ * y, y+1, y+2, … with overlapping x-extents. Without clustering, every such
+ * variant feeds the (top × bottom × left × right) quadruple search and the
+ * fan-out is the dominant source of near-identical rects in the overlay.
+ *
+ * Two segments only merge when their x-extents (start..end) actually overlap
+ * (or touch within positionTolerance). Two physically separate parallel lines
+ * that happen to share a y-coordinate are NOT fragments of the same rule and
+ * must remain distinct — merging them would produce a spanning canonical
+ * segment that fabricates rect candidates between unrelated boxes.
+ *
+ * Canonicalization rule: median axisPos, min start, max end, max thickness.
+ */
+export const clusterSegmentsByAxisPos = (
+  segments: LineSegment[],
+  positionTolerance: number
+): LineSegment[] => {
+  if (segments.length <= 1) {
+    return segments.slice();
+  }
+  const sorted = [...segments].sort((a, b) => a.axisPos - b.axisPos);
+  const claimed = new Uint8Array(sorted.length);
+  const clustered: LineSegment[] = [];
+
+  for (let i = 0; i < sorted.length; i += 1) {
+    if (claimed[i] === 1) {
+      continue;
+    }
+    const bucket: LineSegment[] = [sorted[i]];
+    let bucketStart = sorted[i].start;
+    let bucketEnd = sorted[i].end;
+    claimed[i] = 1;
+    for (let j = i + 1; j < sorted.length; j += 1) {
+      if (claimed[j] === 1) {
+        continue;
+      }
+      const seg = sorted[j];
+      if (seg.axisPos - sorted[i].axisPos >= positionTolerance) {
+        break;
+      }
+      // Overlap (or near-touch within positionTolerance) on the primary axis.
+      // Without this gate, parallel-but-disjoint runs at the same y collapse
+      // into one wide canonical segment that spans gaps where no physical
+      // rule actually exists, fabricating spurious rect candidates.
+      const overlapsBucket =
+        seg.start <= bucketEnd + positionTolerance &&
+        seg.end + positionTolerance >= bucketStart;
+      if (!overlapsBucket) {
+        continue;
+      }
+      bucket.push(seg);
+      if (seg.start < bucketStart) bucketStart = seg.start;
+      if (seg.end > bucketEnd) bucketEnd = seg.end;
+      claimed[j] = 1;
+    }
+    clustered.push(canonicalizeBucket(bucket));
+  }
+
+  return clustered;
+};
+
+const canonicalizeBucket = (bucket: LineSegment[]): LineSegment => {
+  const positions = bucket.map((s) => s.axisPos).sort((a, b) => a - b);
+  const median = positions[Math.floor(positions.length / 2)];
+  let start = bucket[0].start;
+  let end = bucket[0].end;
+  let thickness = bucket[0].thickness;
+  for (let i = 1; i < bucket.length; i += 1) {
+    if (bucket[i].start < start) start = bucket[i].start;
+    if (bucket[i].end > end) end = bucket[i].end;
+    if (bucket[i].thickness > thickness) thickness = bucket[i].thickness;
+  }
+  return { axisPos: median, thickness, start, end };
+};
+
 interface BuildLineBoundedRectsOptions {
   surfaceWidth: number;
   surfaceHeight: number;
@@ -344,9 +422,16 @@ interface BuildLineBoundedRectsOptions {
    * biased toward outer containers.
    */
   maxQuadrupleEvaluations?: number;
+  /**
+   * After clustering, keep only the top-N longest segments per axis. Caps the
+   * inner loop at N×N×N×N regardless of how noisy the source raster is.
+   */
+  maxAxisSegments?: number;
 }
 
 const DEFAULT_MAX_QUADRUPLE_EVALUATIONS = 2_000_000;
+const DEFAULT_MAX_AXIS_SEGMENTS = 80;
+const DEFAULT_MAX_RECTS = 800;
 
 /**
  * Build axis-aligned line-bounded rectangles from detected horizontal and
@@ -369,22 +454,46 @@ export const buildLineBoundedRects = (
   const minSide = Math.max(1, Math.min(options.surfaceWidth, options.surfaceHeight));
   const positionTolerance = Math.max(2, Math.round(minSide * (options.positionToleranceFraction ?? 0.005)));
   /**
-   * Cap exists only to bound runtime/memory on pathological grids (e.g. a
-   * ruled tax form whose 100×100 cell layout produces ~25M valid quadruples).
-   * For realistic UIs the actual count is in the low thousands — the previous
-   * 1200 ceiling fired hard on a 65-container benchmark (uncapped count
-   * ≈ 4800), and because iteration found inner sub-cells before outer
-   * containers, the truncated result silently dropped exactly the parents
-   * the user reported missing (HEADER, INFO BOX, SECTION A/B, NOTES BOX,
-   * FOOTER, the page boundary, …). 20k clears that case while still
-   * protecting against true blow-up.
+   * `maxRects` (default 800) bounds emitted rects. A real form has fewer than
+   * 200 visually distinct rectangles; the previous 20k cap was protecting a
+   * pathological combinatorial expansion that pre-clustering shouldn't have
+   * been allowed to happen. Combined with per-axis clustering and the
+   * `maxAxisSegments` cap below, 800 leaves comfortable headroom while
+   * preventing a frozen overlay on noisy captures.
    */
-  const maxRects = options.maxRects ?? 20000;
+  const maxRects = options.maxRects ?? DEFAULT_MAX_RECTS;
   const maxQuadrupleEvaluations =
     options.maxQuadrupleEvaluations ?? DEFAULT_MAX_QUADRUPLE_EVALUATIONS;
+  const maxAxisSegments = options.maxAxisSegments ?? DEFAULT_MAX_AXIS_SEGMENTS;
 
-  const sortedH = [...horizontals].sort((a, b) => a.axisPos - b.axisPos);
-  const sortedV = [...verticals].sort((a, b) => a.axisPos - b.axisPos);
+  // Cluster fragmented stripes (anti-aliasing / glyph-broken lines emit one
+  // physical rule as multiple segments at adjacent axisPos values). One
+  // canonical segment per cluster collapses the (top × bottom × left × right)
+  // fan-out before it can explode.
+  const clusteredH = clusterSegmentsByAxisPos(horizontals, positionTolerance);
+  const clusteredV = clusterSegmentsByAxisPos(verticals, positionTolerance);
+
+  // Hard cap per axis: keep the longest N segments. A real form needs at most
+  // ~30-50 distinct rules per axis; capping at 80 caps the worst-case quadruple
+  // count at 80⁴ ≈ 41M evaluations, which the existing budget then trims
+  // further. Length is the right ranking — short segments inside a dense
+  // glyph cluster contribute little structural value.
+  const segmentLength = (s: LineSegment) => s.end - s.start;
+  const cappedH =
+    clusteredH.length > maxAxisSegments
+      ? [...clusteredH].sort((a, b) => segmentLength(b) - segmentLength(a)).slice(0, maxAxisSegments)
+      : clusteredH;
+  const cappedV =
+    clusteredV.length > maxAxisSegments
+      ? [...clusteredV].sort((a, b) => segmentLength(b) - segmentLength(a)).slice(0, maxAxisSegments)
+      : clusteredV;
+
+  if (cappedH.length < 2 || cappedV.length < 2) {
+    return [];
+  }
+
+  const sortedH = [...cappedH].sort((a, b) => a.axisPos - b.axisPos);
+  const sortedV = [...cappedV].sort((a, b) => a.axisPos - b.axisPos);
 
   const rects: PixelBounds[] = [];
   const seen = new Set<string>();
@@ -476,13 +585,13 @@ export const buildLineBoundedRects = (
     }
   }
 
-  if (budgetExceeded) {
-    // eslint-disable-next-line no-console
-    console.warn(
-      `[line-grid-detector] quadruple evaluation budget reached (${maxQuadrupleEvaluations}); ` +
-        `returning ${rects.length} outer-biased rect(s) from ${horizontals.length}H × ${verticals.length}V segments.`
-    );
-  }
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[line-grid-detector] H_count=${sortedH.length} V_count=${sortedV.length} ` +
+      `quadruples_evaluated=${evaluations} rects_emitted=${rects.length}` +
+      (budgetExceeded ? ` (budget_exceeded=${maxQuadrupleEvaluations})` : '') +
+      ` raw_H=${horizontals.length} raw_V=${verticals.length}`
+  );
 
   return rects;
 };

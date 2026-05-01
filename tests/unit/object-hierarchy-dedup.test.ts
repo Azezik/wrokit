@@ -76,6 +76,44 @@ describe('buildObjectHierarchy: sibling dedup preserves valid structure', () => 
     expect(hierarchy.objects[0].objectId).toBe('a');
   });
 
+  it('trivial containment: outer 1-2 px bigger than inner collapses to one survivor (not parent/child)', () => {
+    // (100, 100, 400, 200) vs (99, 99, 402, 202): outer strictly contains inner,
+    // area ratio ≈ 0.97, IoU ≈ 0.97. Without the trivial-containment pre-pass,
+    // sibling dedup never sees this pair (parent and child are not siblings)
+    // and the overlay shows two near-identical stacked rects.
+    const hierarchy = buildObjectHierarchy([
+      { objectId: 'inner', bbox: rect(100, 100, 400, 200), confidence: 0.8 },
+      { objectId: 'outer', bbox: rect(99, 99, 402, 202), confidence: 0.8 }
+    ]);
+
+    expect(hierarchy.objects).toHaveLength(1);
+    // Equal confidence → larger area wins; 'outer' is larger.
+    expect(hierarchy.objects[0].objectId).toBe('outer');
+    // The survivor must not have an artificial parent/child link to the loser.
+    expect(hierarchy.objects[0].parentObjectId).toBeNull();
+    expect(hierarchy.objects[0].childObjectIds).toEqual([]);
+  });
+
+  it('genuine 3-deep nesting with area ratios ≪ 0.95 is preserved', () => {
+    // Outer 1000×1000 black, magenta 400×120 inside (area ratio = 0.048),
+    // blue 350×80 inside magenta (area ratio = 0.583). Both ratios fall below
+    // 0.95 so trivial-containment dedup must not touch them.
+    const hierarchy = buildObjectHierarchy([
+      { objectId: 'black', bbox: rect(0, 0, 1000, 1000), confidence: 0.7 },
+      { objectId: 'magenta', bbox: rect(100, 100, 400, 120), confidence: 0.8 },
+      { objectId: 'blue', bbox: rect(120, 120, 350, 80), confidence: 0.8 }
+    ]);
+
+    expect(hierarchy.objects).toHaveLength(3);
+    const black = hierarchy.objects.find((n) => n.objectId === 'black')!;
+    const magenta = hierarchy.objects.find((n) => n.objectId === 'magenta')!;
+    const blue = hierarchy.objects.find((n) => n.objectId === 'blue')!;
+
+    expect(black.parentObjectId).toBeNull();
+    expect(magenta.parentObjectId).toBe('black');
+    expect(blue.parentObjectId).toBe('magenta');
+  });
+
   it('same position, different size — NOT a duplicate, both survive in containment', () => {
     // (100, 100, 400, 200) vs (100, 100, 400, 100): IoU = 0.5, area ratio =
     // 0.5 → predicate is false → both survive. Smaller is contained in larger.
