@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildLineBoundedRects,
+  clusterSegmentsByAxisPos,
   detectLineSegments,
   lineBoundedRectsToObjects,
   type SizeRelativeThresholds
@@ -204,6 +205,39 @@ describe('buildLineBoundedRects', () => {
     });
     const segments = detectLineSegments(pixels, 245, baselineThresholds(w, h));
     expect(buildLineBoundedRects(segments, { surfaceWidth: w, surfaceHeight: h })).toEqual([]);
+  });
+});
+
+describe('clusterSegmentsByAxisPos', () => {
+  it('collapses 5 horizontal segments at y = 100..104 with overlapping x-extents into 1 canonical segment', () => {
+    // Anti-aliasing on a single physical rule emits one segment per scanline.
+    // Without clustering, every (top × bottom × left × right) quadruple search
+    // multiplies these out into a fan of near-identical rects. After clustering,
+    // they collapse to a single canonical segment whose axisPos is the median.
+    const segments = [
+      { axisPos: 100, thickness: 1, start: 20, end: 200 },
+      { axisPos: 101, thickness: 1, start: 25, end: 195 },
+      { axisPos: 102, thickness: 1, start: 22, end: 205 },
+      { axisPos: 103, thickness: 2, start: 18, end: 198 },
+      { axisPos: 104, thickness: 1, start: 21, end: 199 }
+    ];
+    const clustered = clusterSegmentsByAxisPos(segments, /* positionTolerance = */ 6);
+    expect(clustered).toHaveLength(1);
+    // Median of 100..104 is 102.
+    expect(clustered[0].axisPos).toBe(102);
+    // start = min, end = max, thickness = max.
+    expect(clustered[0].start).toBe(18);
+    expect(clustered[0].end).toBe(205);
+    expect(clustered[0].thickness).toBe(2);
+  });
+
+  it('keeps segments separated by more than positionTolerance distinct', () => {
+    const segments = [
+      { axisPos: 100, thickness: 1, start: 0, end: 100 },
+      { axisPos: 200, thickness: 1, start: 0, end: 100 }
+    ];
+    const clustered = clusterSegmentsByAxisPos(segments, /* positionTolerance = */ 6);
+    expect(clustered).toHaveLength(2);
   });
 });
 

@@ -91,7 +91,12 @@ describe('benchmark layout: container with corner label tile', () => {
     });
 
     const segments = detectLineSegments(pixels, 245, baselineThresholds(w, h));
-    const rects = buildLineBoundedRects(segments, { surfaceWidth: w, surfaceHeight: h });
+    const rects = buildLineBoundedRects(segments, {
+      surfaceWidth: w,
+      surfaceHeight: h,
+      maxRects: 20000,
+      maxAxisSegments: 200
+    });
 
     // Both rectangles are real and must both be reported.
     expect(has(rects, 50, 50, 552, 552)).toBe(true);
@@ -135,7 +140,17 @@ describe('benchmark layout: container with corner label tile', () => {
     });
 
     const segments = detectLineSegments(pixels, 245, baselineThresholds(w, h));
-    const rects = buildLineBoundedRects(segments, { surfaceWidth: w, surfaceHeight: h });
+    // Synthetic test rasters lack anti-aliasing so clustering doesn't shrink
+    // the H/V count the way it does on real captures. Opt the test into wider
+    // caps so that detection of every container is exercised — production
+    // defaults (smaller caps) protect against frozen overlays on noisy
+    // captures, but they are deliberately tighter than synthetic test density.
+    const rects = buildLineBoundedRects(segments, {
+      surfaceWidth: w,
+      surfaceHeight: h,
+      maxRects: 20000,
+      maxAxisSegments: 200
+    });
 
     // Outer page boundary (the user explicitly called out that the page
     // boundary "1" was being missed).
@@ -289,7 +304,12 @@ describe('benchmark layout: container with corner label tile', () => {
     });
 
     const segments = detectLineSegments(pixels, 245, baselineThresholds(w, h));
-    const rects = buildLineBoundedRects(segments, { surfaceWidth: w, surfaceHeight: h });
+    const rects = buildLineBoundedRects(segments, {
+      surfaceWidth: w,
+      surfaceHeight: h,
+      maxRects: 20000,
+      maxAxisSegments: 200
+    });
 
     // Spot-checks for the specific containers the user reported as missing.
     const containerChecks: Array<[string, number, number, number, number]> = [
