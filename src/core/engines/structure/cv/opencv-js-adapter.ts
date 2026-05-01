@@ -449,6 +449,117 @@ interface ScoredRect {
   fillRatio?: number;
 }
 
+const DUPLICATE_IOU_MIN = 0.85;
+const DUPLICATE_AREA_RATIO_MIN = 0.85;
+const DUPLICATE_ASPECT_RATIO_MIN = 0.85;
+const DUPLICATE_CONTAINMENT_EPS = 1e-6;
+
+const boundsArea = (bounds: PixelBounds): number =>
+  Math.max(0, bounds.right - bounds.left) * Math.max(0, bounds.bottom - bounds.top);
+
+const boundsContains = (outer: PixelBounds, inner: PixelBounds): boolean =>
+  inner.left + DUPLICATE_CONTAINMENT_EPS >= outer.left &&
+  inner.top + DUPLICATE_CONTAINMENT_EPS >= outer.top &&
+  inner.right <= outer.right + DUPLICATE_CONTAINMENT_EPS &&
+  inner.bottom <= outer.bottom + DUPLICATE_CONTAINMENT_EPS;
+
+/**
+ * Predicate for "these two rects are near-duplicate detections of the same
+ * visual object". Requires high IoU, similar area, similar aspect ratio, and
+ * neither rect strictly containing the other. The area-ratio gate alone rules
+ * out every nested-containment case (a child fully inside a parent has area
+ * ratio < 1.0 unless the rects are the same size), so valid nested or
+ * segmented structure is preserved.
+ */
+const isDuplicateOf = (a: PixelBounds, b: PixelBounds): boolean => {
+  const areaA = boundsArea(a);
+  const areaB = boundsArea(b);
+  if (areaA <= 0 || areaB <= 0) {
+    return false;
+  }
+  if (intersectionOverUnion(a, b) < DUPLICATE_IOU_MIN) {
+    return false;
+  }
+  const areaRatio = Math.min(areaA, areaB) / Math.max(areaA, areaB);
+  if (areaRatio < DUPLICATE_AREA_RATIO_MIN) {
+    return false;
+  }
+  const wA = Math.max(1e-9, a.right - a.left);
+  const hA = Math.max(1e-9, a.bottom - a.top);
+  const wB = Math.max(1e-9, b.right - b.left);
+  const hB = Math.max(1e-9, b.bottom - b.top);
+  const arA = wA / hA;
+  const arB = wB / hB;
+  const arRatio = Math.min(arA, arB) / Math.max(arA, arB);
+  if (arRatio < DUPLICATE_ASPECT_RATIO_MIN) {
+    return false;
+  }
+  if (boundsContains(a, b) || boundsContains(b, a)) {
+    return false;
+  }
+  return true;
+};
+
+const objectBounds = (object: CvSurfaceObject): PixelBounds => ({
+  left: object.bboxSurface.x,
+  top: object.bboxSurface.y,
+  right: object.bboxSurface.x + object.bboxSurface.width,
+  bottom: object.bboxSurface.y + object.bboxSurface.height
+});
+
+/**
+ * Cross-pipeline dedup: fold the contour, line-grid, and heuristic blob
+ * pipelines through a single duplicate-removal pass. Only rects that satisfy
+ * `isDuplicateOf` (high IoU + similar area + similar aspect ratio + neither
+ * contains the other) are removed. Valid nested or segmented structure
+ * survives because containment fails the area-ratio test.
+ *
+ * Tiebreak when a duplicate pair is found:
+ *   1. Polygon-confirmed rectangles (those that passed `isShapeRectangle`)
+ *      win over non-confirmed rects.
+ *   2. Larger-area rect wins.
+ *   3. Smaller objectId wins (lexicographic) for determinism.
+ */
+const dedupAcrossPipelines = (
+  objects: CvSurfaceObject[],
+  confirmedIds: ReadonlySet<string>
+): CvSurfaceObject[] => {
+  if (objects.length <= 1) {
+    return objects.slice();
+  }
+  const sorted = objects
+    .map((object) => ({
+      object,
+      bounds: objectBounds(object),
+      area: object.bboxSurface.width * object.bboxSurface.height,
+      confirmed: confirmedIds.has(object.objectId)
+    }))
+    .sort((a, b) => {
+      if (a.confirmed !== b.confirmed) {
+        return a.confirmed ? -1 : 1;
+      }
+      if (a.area !== b.area) {
+        return b.area - a.area;
+      }
+      return a.object.objectId.localeCompare(b.object.objectId);
+    });
+
+  const kept: { object: CvSurfaceObject; bounds: PixelBounds }[] = [];
+  for (const candidate of sorted) {
+    let isDup = false;
+    for (const winner of kept) {
+      if (isDuplicateOf(candidate.bounds, winner.bounds)) {
+        isDup = true;
+        break;
+      }
+    }
+    if (!isDup) {
+      kept.push({ object: candidate.object, bounds: candidate.bounds });
+    }
+  }
+  return kept.map((entry) => entry.object);
+};
+
 /**
  * Suppress near-duplicate rects produced by anti-aliased edges that fragment
  * differently between captures. Without this step, a single panel border can
@@ -1400,15 +1511,26 @@ const detectWithOpenCvRuntime = (
 
     // Contour rects: 2D shapes. Line-shaped rects are dropped because they
     // are 1D primitives that belong to the line-grid pipeline.
+    const contourIdPrefix = 'obj_cv';
     const objectsFromContours = buildObjectsFromContourRects(
       mergedContourRects,
       surface.surfaceWidth,
       surface.surfaceHeight,
-      'obj_cv',
+      contourIdPrefix,
       0.62,
       thresholds,
       { skipLineShaped: true }
     );
+    // Track which surface objects came from polygon-confirmed contours so the
+    // cross-pipeline dedup tiebreak can prefer them over non-confirmed
+    // duplicates. Cell rects are bounded by 4 detected line segments and are
+    // treated as confirmed by construction.
+    const confirmedIds = new Set<string>();
+    mergedContourRects.forEach((scored, index) => {
+      if (scored.confirmed) {
+        confirmedIds.add(`${contourIdPrefix}_${index}`);
+      }
+    });
     // HoughLinesP output (`lineRects`) is retained ONLY for content-bounds
     // computation. Line segments themselves are not emitted as structural
     // objects — they are an internal primitive that feeds line-bounded rect
@@ -1437,6 +1559,14 @@ const detectWithOpenCvRuntime = (
         surfaceHeight: surface.surfaceHeight
       }
     );
+    for (const cellObject of objectsFromCells) {
+      confirmedIds.add(cellObject.objectId);
+    }
+
+    const dedupedObjects = dedupAcrossPipelines(
+      [...objectsFromContours, ...objectsFromLines, ...objectsFromCells],
+      confirmedIds
+    );
 
     const contentBounds =
       unionBounds([...mergedContourRects.map((entry) => entry.rect), ...lineRects]) ??
@@ -1451,7 +1581,7 @@ const detectWithOpenCvRuntime = (
           width: surface.surfaceWidth,
           height: surface.surfaceHeight
         },
-        objectsSurface: [...objectsFromContours, ...objectsFromLines, ...objectsFromCells]
+        objectsSurface: dedupedObjects
       };
     }
 
@@ -1467,14 +1597,14 @@ const detectWithOpenCvRuntime = (
           width: surface.surfaceWidth,
           height: surface.surfaceHeight
         },
-        objectsSurface: [...objectsFromContours, ...objectsFromLines, ...objectsFromCells]
+        objectsSurface: dedupedObjects
       };
     }
 
     return {
       executionMode: 'opencv-runtime',
       contentRectSurface,
-      objectsSurface: [...objectsFromContours, ...objectsFromLines, ...objectsFromCells]
+      objectsSurface: dedupedObjects
     };
   } finally {
     if (clahe && typeof clahe.delete === 'function') {
