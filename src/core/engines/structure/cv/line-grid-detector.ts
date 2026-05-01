@@ -334,7 +334,19 @@ interface BuildLineBoundedRectsOptions {
   maxRects?: number;
   /** Snap horizontal lines into bins of this many pixels (handles minor offsets). */
   positionToleranceFraction?: number;
+  /**
+   * Hard ceiling on the number of (top, bottom, left, right) quadruples evaluated.
+   * `maxRects` caps emitted rects but every rejected quadruple is still considered
+   * — on a complex form with ~150 horizontals × 150 verticals that's >500M
+   * comparisons, enough to freeze the main thread for many seconds. Once this
+   * budget is hit we break out of the loop and return whatever has been
+   * collected so far. Outer-first iteration order keeps the truncated set
+   * biased toward outer containers.
+   */
+  maxQuadrupleEvaluations?: number;
 }
+
+const DEFAULT_MAX_QUADRUPLE_EVALUATIONS = 2_000_000;
 
 /**
  * Build axis-aligned line-bounded rectangles from detected horizontal and
@@ -368,12 +380,16 @@ export const buildLineBoundedRects = (
    * protecting against true blow-up.
    */
   const maxRects = options.maxRects ?? 20000;
+  const maxQuadrupleEvaluations =
+    options.maxQuadrupleEvaluations ?? DEFAULT_MAX_QUADRUPLE_EVALUATIONS;
 
   const sortedH = [...horizontals].sort((a, b) => a.axisPos - b.axisPos);
   const sortedV = [...verticals].sort((a, b) => a.axisPos - b.axisPos);
 
   const rects: PixelBounds[] = [];
   const seen = new Set<string>();
+  let evaluations = 0;
+  let budgetExceeded = false;
 
   const dedupeKey = (left: number, top: number, right: number, bottom: number): string => {
     const bin = (n: number) => Math.round(n / Math.max(1, positionTolerance));
@@ -418,6 +434,11 @@ export const buildLineBoundedRects = (
         }
 
         for (let b = sortedV.length - 1; b > a; b -= 1) {
+          evaluations += 1;
+          if (evaluations >= maxQuadrupleEvaluations) {
+            budgetExceeded = true;
+            break outer;
+          }
           const right = sortedV[b];
           if (right.axisPos < xFrom - positionTolerance || right.axisPos > xTo + positionTolerance) {
             continue;
@@ -453,6 +474,14 @@ export const buildLineBoundedRects = (
         }
       }
     }
+  }
+
+  if (budgetExceeded) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[line-grid-detector] quadruple evaluation budget reached (${maxQuadrupleEvaluations}); ` +
+        `returning ${rects.length} outer-biased rect(s) from ${horizontals.length}H × ${verticals.length}V segments.`
+    );
   }
 
   return rects;
