@@ -197,6 +197,106 @@ describe('buildLineBoundedRects', () => {
     expect(new Set(keys).size).toBe(keys.length);
   });
 
+  it('drops sub-block unions on a 5x3 ruled grid: 15 leaves + 1 outer = 16 rects', () => {
+    // 5 columns × 3 rows formed by SHARED rules. Six verticals, four
+    // horizontals → C(6,2)·C(4,2) = 90 line-bounded quadruples in the raw
+    // enumeration. Only 15 leaf cells and 1 outer container are visually
+    // distinct objects; the remaining 74 rects are sub-block unions of
+    // adjacent cells and must be dropped.
+    const w = 700;
+    const h = 400;
+    const xs = [40, 160, 280, 400, 520, 640];
+    const ys = [40, 160, 280, 360];
+    const pixels = makeImageData(w, h, (data) => {
+      for (const y of ys) {
+        paintRect(data, w, { left: xs[0], top: y, right: xs[xs.length - 1] + 2, bottom: y + 2 });
+      }
+      for (const x of xs) {
+        paintRect(data, w, { left: x, top: ys[0], right: x + 2, bottom: ys[ys.length - 1] + 2 });
+      }
+    });
+
+    const segments = detectLineSegments(pixels, 245, baselineThresholds(w, h));
+    const rects = buildLineBoundedRects(segments, { surfaceWidth: w, surfaceHeight: h });
+
+    expect(rects).toHaveLength(16);
+
+    // Outer container is present.
+    const matches = (rect: { left: number; top: number; right: number; bottom: number }, [l, t, r, b]: number[]) =>
+      Math.abs(rect.left - l) <= 2 &&
+      Math.abs(rect.top - t) <= 2 &&
+      Math.abs(rect.right - r) <= 2 &&
+      Math.abs(rect.bottom - b) <= 2;
+    expect(rects.some((rect) => matches(rect, [40, 40, 642, 362]))).toBe(true);
+
+    // All 15 leaf cells are present.
+    for (let row = 0; row < 3; row += 1) {
+      for (let col = 0; col < 5; col += 1) {
+        const expected = [xs[col], ys[row], xs[col + 1] + 2, ys[row + 1] + 2];
+        expect(rects.some((rect) => matches(rect, expected))).toBe(true);
+      }
+    }
+  });
+
+  it('keeps a HEADER + interior DATE pair as exactly 2 rects (no sub-block union)', () => {
+    // HEADER and DATE drawn as independent boxes — DATE sits inside HEADER
+    // but does not share any of HEADER's borders. The raw enumeration
+    // emits 2 rects (HEADER + DATE); no synthetic "HEADER text region
+    // minus DATE" rectangle is line-bounded because DATE's borders do
+    // not extend across HEADER's interior.
+    const w = 800;
+    const h = 200;
+    const pixels = makeImageData(w, h, (data) => {
+      paintRect(data, w, { left: 30, top: 30, right: 770, bottom: 32 }); // HEADER top
+      paintRect(data, w, { left: 30, top: 158, right: 770, bottom: 160 }); // HEADER bottom
+      paintRect(data, w, { left: 30, top: 30, right: 32, bottom: 160 }); // HEADER left
+      paintRect(data, w, { left: 768, top: 30, right: 770, bottom: 160 }); // HEADER right
+      // DATE box, fully interior, no shared rule with HEADER.
+      paintRect(data, w, { left: 600, top: 60, right: 740, bottom: 62 });
+      paintRect(data, w, { left: 600, top: 128, right: 740, bottom: 130 });
+      paintRect(data, w, { left: 600, top: 60, right: 602, bottom: 130 });
+      paintRect(data, w, { left: 738, top: 60, right: 740, bottom: 130 });
+    });
+
+    const segments = detectLineSegments(pixels, 245, baselineThresholds(w, h));
+    const rects = buildLineBoundedRects(segments, { surfaceWidth: w, surfaceHeight: h });
+
+    expect(rects).toHaveLength(2);
+
+    const matches = (rect: { left: number; top: number; right: number; bottom: number }, [l, t, r, b]: number[]) =>
+      Math.abs(rect.left - l) <= 2 &&
+      Math.abs(rect.top - t) <= 2 &&
+      Math.abs(rect.right - r) <= 2 &&
+      Math.abs(rect.bottom - b) <= 2;
+    expect(rects.some((rect) => matches(rect, [30, 30, 770, 160]))).toBe(true); // HEADER
+    expect(rects.some((rect) => matches(rect, [600, 60, 740, 130]))).toBe(true); // DATE
+  });
+
+  it('exposes diagnostics: pre-filter count and dropped sub-block count', () => {
+    const w = 240;
+    const h = 240;
+    const pixels = makeImageData(w, h, (data) => {
+      for (const y of [20, 120, 220]) {
+        paintRect(data, w, { left: 20, top: y, right: 221, bottom: y + 2 });
+      }
+      for (const x of [20, 120, 220]) {
+        paintRect(data, w, { left: x, top: 20, right: x + 2, bottom: 221 });
+      }
+    });
+
+    const segments = detectLineSegments(pixels, 245, baselineThresholds(w, h));
+    const diagnostics = { rectsBeforeFilter: 0, subblocksDropped: 0 };
+    const rects = buildLineBoundedRects(segments, {
+      surfaceWidth: w,
+      surfaceHeight: h,
+      diagnostics
+    });
+    // 2x2 ruled grid → C(3,2)² = 9 raw rects, filtered to 4 leaves + 1 outer = 5.
+    expect(diagnostics.rectsBeforeFilter).toBe(9);
+    expect(rects.length).toBe(5);
+    expect(diagnostics.subblocksDropped).toBe(4);
+  });
+
   it('returns no rects when fewer than 2 lines per axis are detected', () => {
     const w = 80;
     const h = 80;
