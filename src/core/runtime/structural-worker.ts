@@ -27,11 +27,14 @@ import {
   type OpenCvRuntimeLoadResult,
   type StructuralEngineInput
 } from '../engines/structure';
+import { OPENCV_JS_ASSET_URL } from '../engines/structure/cv/opencv-js-asset';
 import type { NormalizedPage } from '../contracts/normalized-page';
 import type { StructuralModel } from '../contracts/structural-model';
 import type { PageSurface } from '../page-surface/page-surface';
 
-const OPENCV_SCRIPT_URL = 'https://docs.opencv.org/4.x/opencv.js';
+// OpenCV.js is vendored via `@techstark/opencv-js`; the URL resolves to a
+// same-origin asset under the app's base path (e.g. `/wrokit/assets/...`),
+// shared with the main-thread loader. No CDN, no remote fetch.
 
 declare const self: DedicatedWorkerGlobalScope;
 
@@ -66,24 +69,24 @@ const ensureWorkerOpenCvRuntime = (): Promise<OpenCvRuntimeLoadResult> => {
 
     // The structural worker is a module worker (see structural-runner.ts:
     // `new Worker(..., { type: 'module' })`). Module workers do not expose
-    // `importScripts`, so we fetch the OpenCV.js source and evaluate it with
-    // `self`/`globalThis` bound — equivalent to what `importScripts` would
-    // have done in a classic worker. OpenCV.js attaches itself to the worker
-    // global (`self.cv`).
+    // `importScripts`, so we fetch the vendored OpenCV.js source and evaluate
+    // it with `self`/`globalThis` bound — equivalent to what `importScripts`
+    // would have done in a classic worker. OpenCV.js attaches itself to the
+    // worker global (`self.cv`).
     let source: string;
     try {
-      const response = await fetch(OPENCV_SCRIPT_URL);
+      const response = await fetch(OPENCV_JS_ASSET_URL);
       if (!response.ok) {
         return {
           status: 'unavailable',
-          reason: `OpenCV.js fetch failed: HTTP ${response.status} ${response.statusText}`
+          reason: `OpenCV.js asset fetch failed (${OPENCV_JS_ASSET_URL}): HTTP ${response.status} ${response.statusText}`
         };
       }
       source = await response.text();
     } catch (error) {
       return {
         status: 'unavailable',
-        reason: `OpenCV.js fetch failed: ${error instanceof Error ? error.message : String(error)}`
+        reason: `OpenCV.js asset fetch failed (${OPENCV_JS_ASSET_URL}): ${error instanceof Error ? error.message : String(error)}`
       };
     }
 
@@ -102,7 +105,7 @@ const ensureWorkerOpenCvRuntime = (): Promise<OpenCvRuntimeLoadResult> => {
     if (!isOpenCvLike(cv)) {
       return {
         status: 'unavailable',
-        reason: 'OpenCV.js script loaded in worker but globalThis.cv is missing.'
+        reason: 'OpenCV.js script evaluated in worker but globalThis.cv is missing.'
       };
     }
     if (cv.ready === true) {
