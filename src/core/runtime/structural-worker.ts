@@ -63,20 +63,41 @@ const ensureWorkerOpenCvRuntime = (): Promise<OpenCvRuntimeLoadResult> => {
     if (isOpenCvLike(existing)) {
       return { status: 'already-available' };
     }
-    if (typeof (self as unknown as { importScripts?: (...urls: string[]) => void }).importScripts !== 'function') {
-      return {
-        status: 'unavailable',
-        reason: 'importScripts is not available in this worker context.'
-      };
-    }
+
+    // The structural worker is a module worker (see structural-runner.ts:
+    // `new Worker(..., { type: 'module' })`). Module workers do not expose
+    // `importScripts`, so we fetch the OpenCV.js source and evaluate it with
+    // `self`/`globalThis` bound — equivalent to what `importScripts` would
+    // have done in a classic worker. OpenCV.js attaches itself to the worker
+    // global (`self.cv`).
+    let source: string;
     try {
-      (self as unknown as { importScripts: (...urls: string[]) => void }).importScripts(OPENCV_SCRIPT_URL);
+      const response = await fetch(OPENCV_SCRIPT_URL);
+      if (!response.ok) {
+        return {
+          status: 'unavailable',
+          reason: `OpenCV.js fetch failed: HTTP ${response.status} ${response.statusText}`
+        };
+      }
+      source = await response.text();
     } catch (error) {
       return {
         status: 'unavailable',
-        reason: `OpenCV.js importScripts failed: ${error instanceof Error ? error.message : String(error)}`
+        reason: `OpenCV.js fetch failed: ${error instanceof Error ? error.message : String(error)}`
       };
     }
+
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
+      const evaluator = new Function('self', 'globalThis', 'window', source);
+      evaluator.call(self, self, self, self);
+    } catch (error) {
+      return {
+        status: 'unavailable',
+        reason: `OpenCV.js evaluation failed: ${error instanceof Error ? error.message : String(error)}`
+      };
+    }
+
     const cv = (self as unknown as { cv?: unknown }).cv;
     if (!isOpenCvLike(cv)) {
       return {
