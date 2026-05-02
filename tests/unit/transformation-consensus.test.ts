@@ -50,6 +50,7 @@ const node = (
 
 const refinedFullPage: StructuralRefinedBorder = {
   rectNorm: rect(0, 0, 1, 1),
+  cvContentRectNorm: rect(0, 0, 1, 1),
   source: 'full-page-fallback',
   influencedByBBoxCount: 0,
   containsAllSavedBBoxes: true
@@ -57,6 +58,7 @@ const refinedFullPage: StructuralRefinedBorder = {
 
 const refinedCv = (r: StructuralNormalizedRect): StructuralRefinedBorder => ({
   rectNorm: r,
+  cvContentRectNorm: r,
   source: 'cv-content',
   influencedByBBoxCount: 0,
   containsAllSavedBBoxes: true
@@ -136,6 +138,53 @@ describe('border + refined-border level summaries', () => {
     const summary = computeRefinedBorderLevelSummary(cvPage, cvPage);
     expect(summary.confidence).toBeGreaterThanOrEqual(0.9);
     expect(summary.warnings).toEqual([]);
+  });
+
+  // Regression: complex configs grow `rectNorm` via the bbox-union expansion
+  // (config takes a UNION of cv-content + every saved Field BBOX, then expands
+  // to enforce the "every saved BBOX is contained" invariant). Runtime has no
+  // saved BBOXes, so its `rectNorm` is just cv-content. Projecting the
+  // bbox-union-inflated config rect onto the smaller runtime rect produced a
+  // measurable y-shift downward. Both sides build `cvContentRectNorm`
+  // identically, so the level transform must be identity when cv-content is
+  // identical, regardless of how much config's `rectNorm` was inflated.
+  it('refined-border level transform is identity when cv-content matches even though config rectNorm grew to full-page', () => {
+    const cvContent = rect(0.1, 0.1, 0.8, 0.8);
+
+    const inflatedConfigRefined: StructuralRefinedBorder = {
+      // bbox-union expansion drove `rectNorm` to full page (1×1) on the
+      // config side because saved Field BBOXes touched every page corner.
+      rectNorm: rect(0, 0, 1, 1),
+      cvContentRectNorm: cvContent,
+      source: 'cv-and-bbox-union',
+      influencedByBBoxCount: 4,
+      containsAllSavedBBoxes: true
+    };
+    const runtimeRefined: StructuralRefinedBorder = {
+      // Runtime has no saved BBOXes — `rectNorm` and `cvContentRectNorm`
+      // both equal the cv-content rect.
+      rectNorm: cvContent,
+      cvContentRectNorm: cvContent,
+      source: 'cv-content',
+      influencedByBBoxCount: 0,
+      containsAllSavedBBoxes: true
+    };
+
+    const configPage = buildPage([], inflatedConfigRefined);
+    const runtimePage = buildPage([], runtimeRefined);
+
+    const summary = computeRefinedBorderLevelSummary(configPage, runtimePage);
+    expect(summary.transform).not.toBeNull();
+    expect(summary.transform).toEqual(IDENTITY_AFFINE);
+
+    // The previously-buggy behavior would have produced a non-identity
+    // transform driven by mapping `rect(0,0,1,1)` (config) onto the smaller
+    // runtime rect — guard against the regression returning.
+    const buggyTransform = affineFromRects(
+      inflatedConfigRefined.rectNorm,
+      runtimeRefined.rectNorm
+    );
+    expect(summary.transform).not.toEqual(buggyTransform);
   });
 });
 

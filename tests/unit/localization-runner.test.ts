@@ -62,6 +62,7 @@ const createModel = (id: string, xNorm: number, yNorm: number, wNorm: number, hN
       border: { rectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 } },
       refinedBorder: {
         rectNorm: { xNorm, yNorm, wNorm, hNorm },
+        cvContentRectNorm: { xNorm, yNorm, wNorm, hNorm },
         source: 'cv-content',
         influencedByBBoxCount: 0,
         containsAllSavedBBoxes: true
@@ -346,6 +347,7 @@ describe('localization-runner', () => {
       border: { rectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 } },
       refinedBorder: {
         rectNorm: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.8, hNorm: 0.8 },
+        cvContentRectNorm: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.8, hNorm: 0.8 },
         source: 'cv-content',
         influencedByBBoxCount: 0,
         containsAllSavedBBoxes: true
@@ -515,6 +517,7 @@ describe('localization-runner', () => {
       border: { rectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 } },
       refinedBorder: {
         rectNorm: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.8, hNorm: 0.8 },
+        cvContentRectNorm: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.8, hNorm: 0.8 },
         source: 'cv-content',
         influencedByBBoxCount: 0,
         containsAllSavedBBoxes: true
@@ -743,6 +746,7 @@ describe('localization-runner', () => {
             border: { rectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 } },
             refinedBorder: {
               rectNorm: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.8, hNorm: 0.8 },
+              cvContentRectNorm: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.8, hNorm: 0.8 },
               source: 'cv-content',
               influencedByBBoxCount: 0,
               containsAllSavedBBoxes: true
@@ -855,6 +859,7 @@ describe('localization-runner', () => {
       border: { rectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 } },
       refinedBorder: {
         rectNorm: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.8, hNorm: 0.8 },
+        cvContentRectNorm: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.8, hNorm: 0.8 },
         source: 'cv-content',
         influencedByBBoxCount: 0,
         containsAllSavedBBoxes: true
@@ -992,6 +997,7 @@ describe('localization-runner', () => {
           border: { rectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 } },
           refinedBorder: {
             rectNorm: { xNorm: 0.05, yNorm: 0.05, wNorm: 0.9, hNorm: 0.9 },
+            cvContentRectNorm: { xNorm: 0.05, yNorm: 0.05, wNorm: 0.9, hNorm: 0.9 },
             source: 'cv-content',
             influencedByBBoxCount: 0,
             containsAllSavedBBoxes: true
@@ -2596,6 +2602,7 @@ describe('localization-runner', () => {
       border: { rectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 } },
       refinedBorder: {
         rectNorm: { xNorm: 0.05, yNorm: 0.05, wNorm: 0.9, hNorm: 0.9 },
+        cvContentRectNorm: { xNorm: 0.05, yNorm: 0.05, wNorm: 0.9, hNorm: 0.9 },
         source: 'cv-content',
         influencedByBBoxCount: 0,
         containsAllSavedBBoxes: true
@@ -2910,6 +2917,7 @@ describe('localization-runner', () => {
           border: { rectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 } },
           refinedBorder: {
             rectNorm: { xNorm: 0.05, yNorm: 0.05, wNorm: 0.9, hNorm: 0.9 },
+            cvContentRectNorm: { xNorm: 0.05, yNorm: 0.05, wNorm: 0.9, hNorm: 0.9 },
             source: 'cv-content',
             influencedByBBoxCount: 0,
             containsAllSavedBBoxes: true
@@ -3431,6 +3439,7 @@ describe('localization-runner', () => {
         border: { rectNorm: { xNorm: 0, yNorm: 0, wNorm: 1, hNorm: 1 } },
         refinedBorder: {
           rectNorm: { xNorm: 0.05, yNorm: 0.05, wNorm: 0.9, hNorm: 0.9 },
+          cvContentRectNorm: { xNorm: 0.05, yNorm: 0.05, wNorm: 0.9, hNorm: 0.9 },
           source: 'cv-content',
           influencedByBBoxCount: 0,
           containsAllSavedBBoxes: true

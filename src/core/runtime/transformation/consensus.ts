@@ -482,16 +482,40 @@ export const computeRefinedBorderLevelSummary = (
   configPage: StructuralPage,
   runtimePage: StructuralPage
 ): TransformationLevelSummary => {
-  const transform = trivialPairTransform(configPage.refinedBorder, runtimePage.refinedBorder);
+  // Project the unexpanded cv-content rects against each other, NOT the
+  // bbox-union-inflated `rectNorm`. Config's `rectNorm` typically grew to
+  // contain every saved Field BBOX, while runtime's `rectNorm` is just
+  // cv-content (no bboxes available at runtime). Projecting the inflated
+  // config rect onto the smaller runtime rect produced a measurable y-shift.
+  // `cvContentRectNorm` is built identically on both sides.
+  const transform = trivialPairTransform(
+    { rectNorm: configPage.refinedBorder.cvContentRectNorm },
+    { rectNorm: runtimePage.refinedBorder.cvContentRectNorm }
+  );
+  // Confidence is now driven by cv-content quality on both sides. The
+  // bbox-union expansion no longer participates in the projection math, so
+  // the historical 'cv-and-bbox-union' demotion would understate the symmetry
+  // we actually have here. Treat both sides as if they were 'cv-content' for
+  // confidence purposes; the only path that genuinely lacks a cv signal is
+  // 'full-page-fallback' (preserved below) and 'bbox-union' (cv unusable).
+  const confidenceForSummary = (
+    source: StructuralPage['refinedBorder']['source']
+  ): number =>
+    source === 'full-page-fallback'
+      ? refinedBorderConfidence('full-page-fallback')
+      : source === 'bbox-union'
+        ? refinedBorderConfidence('bbox-union')
+        : refinedBorderConfidence('cv-content');
   const confidence = clamp01(
     Math.min(
-      refinedBorderConfidence(configPage.refinedBorder.source),
-      refinedBorderConfidence(runtimePage.refinedBorder.source)
+      confidenceForSummary(configPage.refinedBorder.source),
+      confidenceForSummary(runtimePage.refinedBorder.source)
     )
   );
   const notes: string[] = [
     `config refined border source: ${configPage.refinedBorder.source}`,
-    `runtime refined border source: ${runtimePage.refinedBorder.source}`
+    `runtime refined border source: ${runtimePage.refinedBorder.source}`,
+    'transform computed against cv-content rects (bbox-union expansion excluded)'
   ];
   const warnings: string[] = [];
   if (

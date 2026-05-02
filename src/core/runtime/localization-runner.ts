@@ -844,8 +844,11 @@ const resolveFromTransformationCandidate = (
     sourceConfigRectNorm = configObject.objectRectNorm;
     sourceRuntimeRectNorm = runtimeObject.objectRectNorm;
   } else if (candidate.source === 'refined-border') {
-    sourceConfigRectNorm = configPage.refinedBorder.rectNorm;
-    sourceRuntimeRectNorm = runtimePage.refinedBorder.rectNorm;
+    // Use the cv-content rects so the recorded source pair matches the
+    // refined-border level summary's projection basis (which is built from
+    // cv-content on both sides, not the bbox-union-inflated `rectNorm`).
+    sourceConfigRectNorm = configPage.refinedBorder.cvContentRectNorm;
+    sourceRuntimeRectNorm = runtimePage.refinedBorder.cvContentRectNorm;
   } else {
     sourceConfigRectNorm = configPage.border.rectNorm;
     sourceRuntimeRectNorm = runtimePage.border.rectNorm;
@@ -1270,17 +1273,20 @@ const resolveFieldAnchor = (
 
     const refinedBorderAnchor = relationship.fieldAnchors.refinedBorderAnchor;
     if (refinedBorderAnchor) {
+      // `relativeFieldRect` was recorded against the cv-content rect at config
+      // time, so project through the runtime cv-content rect to keep the math
+      // symmetric with what the refined-border level summary uses.
       const projection = projectRelativeRect(
         refinedBorderAnchor.relativeFieldRect,
-        runtimePage.refinedBorder.rectNorm
+        runtimePage.refinedBorder.cvContentRectNorm
       );
       return {
         tier: 'refined-border',
         transform: solveRectTransform(
           source.pageIndex,
           'refined-border',
-          configPage.refinedBorder.rectNorm,
-          runtimePage.refinedBorder.rectNorm
+          configPage.refinedBorder.cvContentRectNorm,
+          runtimePage.refinedBorder.cvContentRectNorm
         ),
         predictedBox: projection.box,
         ...(projection.clipWarning ? { warnings: [projection.clipWarning] } : {})
@@ -1310,8 +1316,8 @@ const resolveFieldAnchor = (
   const transform = solveRectTransform(
     source.pageIndex,
     'refined-border',
-    configPage.refinedBorder.rectNorm,
-    runtimePage.refinedBorder.rectNorm
+    configPage.refinedBorder.cvContentRectNorm,
+    runtimePage.refinedBorder.cvContentRectNorm
   );
   const projection = applyTransformToBox(source.bbox, transform);
   return {

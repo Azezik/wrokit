@@ -143,14 +143,22 @@ const buildRefinedBorder = (input: BuildRefinedBorderInput): StructuralRefinedBo
   const cvUsable = normalizedRectIsValid(cvNorm);
   let rect: StructuralNormalizedRect;
   let source: StructuralRefinedBorderSource;
+  // Comparable, unexpanded cv-content rect — produced identically by config and
+  // runtime so refined-border projection math sees a symmetric pair regardless
+  // of whether saved BBOXes were available at build time. `rectNorm` continues
+  // to carry the bbox-union + invariant expansion used for ground-truth
+  // containment.
+  let cvContentRectNorm: StructuralNormalizedRect;
 
   if (input.bboxes.length === 0) {
     if (cvUsable) {
       rect = cvNorm;
       source = 'cv-content';
+      cvContentRectNorm = cvNorm;
     } else {
       rect = { ...FULL_PAGE_RECT };
       source = 'full-page-fallback';
+      cvContentRectNorm = { ...FULL_PAGE_RECT };
     }
   } else if (!cvUsable) {
     rect = input.bboxes.reduce<StructuralNormalizedRect>(
@@ -163,12 +171,16 @@ const buildRefinedBorder = (input: BuildRefinedBorderInput): StructuralRefinedBo
       }
     );
     source = 'bbox-union';
+    // No separate cv-only signal exists on this branch; mirror `rectNorm` so
+    // downstream consumers always have a finite rect to project against.
+    cvContentRectNorm = { ...rect };
   } else {
     rect = input.bboxes.reduce<StructuralNormalizedRect>(
       (acc, bbox) => unionNormalizedRects(acc, bbox),
       cvNorm
     );
     source = 'cv-and-bbox-union';
+    cvContentRectNorm = cvNorm;
   }
 
   // Ground truth invariant: every saved BBOX MUST be inside the refined border.
@@ -187,6 +199,7 @@ const buildRefinedBorder = (input: BuildRefinedBorderInput): StructuralRefinedBo
 
   return {
     rectNorm: rect,
+    cvContentRectNorm,
     source,
     influencedByBBoxCount: input.bboxes.length,
     containsAllSavedBBoxes: input.bboxes.every((bbox) => containsRect(rect, bbox))
@@ -234,7 +247,7 @@ export const createStructuralEngine = (
     const fieldRelationships: StructuralFieldRelationship[] = buildFieldRelationships({
       fields: geometryFields,
       borderRect: FULL_PAGE_RECT,
-      refinedBorderRect: refinedBorder.rectNorm,
+      refinedBorderRect: refinedBorder.cvContentRectNorm,
       hierarchy
     });
 
