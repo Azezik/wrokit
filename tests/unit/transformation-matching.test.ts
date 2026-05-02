@@ -490,6 +490,87 @@ describe('matchPage', () => {
     expect(strict.notes.some((n) => n.startsWith('recovery pass admitted'))).toBe(true);
   });
 
+  it('matches a confident geometric pair across a depth 2 vs depth 6 hierarchy gap', () => {
+    // Regression for the diagnosed contract failure: the user's primary anchor
+    // sits at config depth 2 (`obj_rect_6`) and at runtime depth 6
+    // (`obj_rect_17`). The two rects are geometrically near-identical (same
+    // visible rectangle on the form) but the runtime CV pass interposed four
+    // intermediate ruled-line / container rectangles that have no config
+    // counterpart, so the parent chains never reconverge in recursive descent.
+    //
+    // The graded `parentChainScore` awards partial credit for an anchored
+    // ancestor pair — here the matched top-level container — which combined
+    // with strong geometry signals lifts the global-pass aggregate over the
+    // strict threshold and rescues the pair.
+    const cTop0 = node('cTop0', rect(0.05, 0.05, 0.9, 0.9), null, ['cTop1'], 0.9, 0);
+    const cTop1 = node('cTop1', rect(0.10, 0.10, 0.8, 0.8), 'cTop0', ['c_target'], 0.9, 1);
+    const cTarget = node('c_target', rect(0.40, 0.40, 0.10, 0.05), 'cTop1', [], 0.79, 2);
+
+    const rTop0 = node('rTop0', rect(0.05, 0.05, 0.9, 0.9), null, ['rTop1'], 0.9, 0);
+    const rTop1 = node('rTop1', rect(0.10, 0.10, 0.8, 0.8), 'rTop0', ['rExtra1'], 0.9, 1);
+    // Four runtime-only intermediate rectangles. Their geometry deliberately
+    // shares the page's center but at sizes that fall below the size floor
+    // for any config object, so they do not match anything in config.
+    const rExtra1 = node('rExtra1', rect(0.15, 0.15, 0.7, 0.7), 'rTop1', ['rExtra2'], 0.7, 2);
+    const rExtra2 = node('rExtra2', rect(0.20, 0.20, 0.6, 0.6), 'rExtra1', ['rExtra3'], 0.7, 3);
+    const rExtra3 = node('rExtra3', rect(0.25, 0.25, 0.5, 0.5), 'rExtra2', ['rExtra4'], 0.7, 4);
+    const rExtra4 = node('rExtra4', rect(0.30, 0.30, 0.4, 0.4), 'rExtra3', ['r_target'], 0.7, 5);
+    const rTarget = node('r_target', rect(0.40, 0.40, 0.10, 0.05), 'rExtra4', [], 0.79, 6);
+
+    const config = buildPage([cTop0, cTop1, cTarget]);
+    const runtime = buildPage([rTop0, rTop1, rExtra1, rExtra2, rExtra3, rExtra4, rTarget]);
+
+    const result = matchPage(config, runtime);
+
+    const targetMatch = result.matches.find((m) => m.configObjectId === 'c_target');
+    expect(targetMatch?.runtimeObjectId).toBe('r_target');
+
+    // Snapshot the basis tags emitted by the rescued match. Geometry is
+    // near-identical, so object-similarity and refined-border-relation are
+    // present; the graded parent-chain credit (>0) keeps the parent-chain tag
+    // attached too even though the chains disagree on depth.
+    expect(targetMatch?.basis.slice().sort()).toEqual(
+      ['object-similarity', 'parent-chain', 'refined-border-relation'].sort()
+    );
+
+    // No ambiguity warnings — the pair has no realistic rival.
+    expect(targetMatch?.warnings).toEqual([]);
+
+    // The pair landed via the standard global pass, not the recovery pass.
+    expect(result.notes.some((n) => n.startsWith('recovery pass admitted'))).toBe(false);
+
+    // Top-level containers match too; the runtime-only intermediates stay
+    // unmatched because they have no config counterpart of similar size.
+    const matchedConfigIds = result.matches.map((m) => m.configObjectId).sort();
+    expect(matchedConfigIds).toEqual(['cTop0', 'cTop1', 'c_target']);
+    expect(result.unmatchedConfigObjectIds).toEqual([]);
+    expect(result.unmatchedRuntimeObjectIds.sort()).toEqual(
+      ['rExtra1', 'rExtra2', 'rExtra3', 'rExtra4'].sort()
+    );
+  });
+
+  it('graded parent-chain awards 1.0 when the direct parent is matched (no regression)', () => {
+    // Belt-and-braces check that the graded path keeps the binary-1 contract
+    // for the perfectly-aligned case: two children whose parents are matched
+    // 1:1 still receive full parent-chain credit (no rounding noise from the
+    // graded formula).
+    const configChild = node('cc', rect(0.2, 0.2, 0.1, 0.1), 'cp');
+    const runtimeChild = node('rc', rect(0.2, 0.2, 0.1, 0.1), 'rp');
+    const result = computeObjectSimilarity(configChild, runtimeChild, {
+      ...baseSimilarityCtx,
+      parentMatches: new Map([['cp', 'rp']]),
+      runtimeObjectParent: new Map([
+        ['rc', 'rp'],
+        ['rp', null]
+      ]),
+      configObjectParent: new Map([
+        ['cc', 'cp'],
+        ['cp', null]
+      ])
+    });
+    expect(result.components.parentChain).toBe(1);
+  });
+
   it('recovery pass refuses an ambiguous pair whose margin is below the required threshold', () => {
     // Two near-identical runtime candidates for one config object. Both
     // pair scores fall in the recovery-eligible band (below strict global,
