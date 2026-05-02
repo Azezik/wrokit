@@ -612,7 +612,6 @@ export const buildLineBoundedRects = (
     }
   }
 
-  const rectsBeforeAnyFilter = rects.length;
   // Order: leaf-or-outermost FIRST, then chain-endpoints subset suppression.
   //
   // Leaf-tile decomposition is the high-recall pass: when every interior cell
@@ -636,8 +635,7 @@ export const buildLineBoundedRects = (
   const filtered = options.skipLeafOrOutermostFilter
     ? rects
     : applySubsetSuppression(
-        filterToLeavesAndOutermost(rects, positionTolerance),
-        positionTolerance
+        filterToLeavesAndOutermost(rects, positionTolerance)
       );
 
   if (options.diagnostics) {
@@ -692,8 +690,7 @@ export const buildLineBoundedRects = (
  * complete tiling.
  */
 const applySubsetSuppression = (
-  rects: PixelBounds[],
-  positionTolerance: number
+  rects: PixelBounds[]
 ): PixelBounds[] => {
   if (rects.length <= 1) {
     return rects.slice();
