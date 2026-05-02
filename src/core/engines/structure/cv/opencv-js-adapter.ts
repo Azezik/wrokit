@@ -9,6 +9,7 @@ import {
   buildLineBoundedRects,
   detectLineSegments,
   lineBoundedRectsToObjects,
+  type LineBoundedRectsDiagnostics,
   type PixelBounds as SharedPixelBounds
 } from './line-grid-detector';
 
@@ -1234,10 +1235,17 @@ const buildObjectsFromContourRects = (
         return null;
       }
 
+      // Polygon-confirmed contours (4 vertices, convex, ~90° corners,
+      // ≥85% bbox fill) are shape-evidence rectangles — they deserve the
+      // same baseline as a 4-line-bounded cell so simple boxes (HEADER,
+      // SIDEBAR, FOOTER, page boundary) clear the SIMPLE-overlay
+      // confidence floor (0.75) instead of being filtered out at render
+      // time. Non-confirmed contour rects keep the lower 0.62 base.
+      const effectiveBase = scored.confirmed ? 0.78 : confidenceBase;
       return {
         objectId: `${idPrefix}_${index}`,
         bboxSurface: rect,
-        confidence: Math.min(0.99, confidenceBase + Math.min(1, area / pageArea) * (1 - confidenceBase))
+        confidence: Math.min(0.99, effectiveBase + Math.min(1, area / pageArea) * (1 - effectiveBase))
       } satisfies CvSurfaceObject;
     })
     .filter((item): item is CvSurfaceObject => item !== null);
@@ -1543,10 +1551,15 @@ const detectWithOpenCvRuntime = (
     // rectangles) is identical to the heuristic fallback. This is what makes
     // config-time and run-time produce comparable structure.
     const sharedSegments = detectLineSegments(pixels, backgroundThreshold, thresholds);
+    const lineGridDiagnostics: LineBoundedRectsDiagnostics = {
+      rectsBeforeFilter: 0,
+      subblocksDropped: 0
+    };
     const cellRects = filterCellRectsForGlyphs(
       buildLineBoundedRects(sharedSegments, {
         surfaceWidth: surface.surfaceWidth,
-        surfaceHeight: surface.surfaceHeight
+        surfaceHeight: surface.surfaceHeight,
+        diagnostics: lineGridDiagnostics
       }) as SharedPixelBounds[],
       surface.surfaceWidth,
       surface.surfaceHeight
@@ -1566,6 +1579,31 @@ const detectWithOpenCvRuntime = (
     const dedupedObjects = dedupAcrossPipelines(
       [...objectsFromContours, ...objectsFromLines, ...objectsFromCells],
       confirmedIds
+    );
+
+    // Single-line worker-side diagnostic so the next iteration can verify
+    // the (a)/(b)/(c) impact empirically against the benchmark layout.
+    //  - objects_after_a: line-bounded rects surviving the leaf-or-outermost filter.
+    //  - objects_after_b: contour rects emitted after the confidence boost
+    //    (count is unchanged; the boost only affects the confidence value).
+    //  - simple_boxes_detected: confirmed contour rects whose footprint
+    //    is ≥2% of the page area — the simple HEADER/SIDEBAR/FOOTER class.
+    //  - grid_subblocks_dropped: sub-block unions removed by step (a).
+    const pageArea = Math.max(1, surface.surfaceWidth * surface.surfaceHeight);
+    const simpleBoxesDetected = mergedContourRects.reduce((count, scored) => {
+      if (!scored.confirmed) {
+        return count;
+      }
+      const w = Math.max(0, scored.rect.right - scored.rect.left);
+      const h = Math.max(0, scored.rect.bottom - scored.rect.top);
+      return (w * h) / pageArea >= 0.02 ? count + 1 : count;
+    }, 0);
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[structural-worker] objects_after_a=${objectsFromCells.length} ` +
+        `objects_after_b=${objectsFromContours.length} ` +
+        `simple_boxes_detected=${simpleBoxesDetected} ` +
+        `grid_subblocks_dropped=${lineGridDiagnostics.subblocksDropped}`
     );
 
     const contentBounds =
