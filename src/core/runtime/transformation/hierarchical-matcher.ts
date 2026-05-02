@@ -499,6 +499,9 @@ export const matchPage = (
   const runtimeObjectParent = new Map<string, string | null>(
     runtimeObjects.map((o) => [o.objectId, o.parentObjectId])
   );
+  const configObjectParent = new Map<string, string | null>(
+    configObjects.map((o) => [o.objectId, o.parentObjectId])
+  );
 
   const matches: TransformationObjectMatch[] = [];
   const parentMatches = new Map<string, string>();
@@ -512,6 +515,7 @@ export const matchPage = (
     runtimeRefinedBorder: runtimePage.refinedBorder,
     parentMatches: parentMatchesSnapshot,
     runtimeObjectParent,
+    configObjectParent,
     weights: opts.weights
   });
 

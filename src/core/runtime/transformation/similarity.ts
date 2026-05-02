@@ -84,6 +84,16 @@ export interface SimilarityContext {
    * Map from runtime objectId to its parent objectId for parent-chain checks.
    */
   runtimeObjectParent: ReadonlyMap<string, string | null>;
+  /**
+   * Map from config objectId to its parent objectId. Used by the graded
+   * parent-chain scorer to walk the config ancestor chain when the direct
+   * parent is not the matched ancestor (the two documents disagree on object
+   * hierarchy depth, e.g. runtime has CV-detected intermediate rectangles
+   * with no config counterparts). Optional for backwards compatibility — when
+   * absent the scorer can only use the direct-parent fast path and falls back
+   * to zero credit otherwise.
+   */
+  configObjectParent?: ReadonlyMap<string, string | null>;
   weights?: SimilarityWeights;
 }
 
@@ -217,16 +227,69 @@ const refinedBorderRelationScore = (
 };
 
 /**
- * Parent-chain similarity using already-known matches. When both parents are
- * null we award full credit (both are top-level). When the config parent has
- * been matched and the runtime object is a child of that matched parent, full
- * credit. Otherwise zero.
+ * Maximum tolerated depth gap between the config and runtime portions of an
+ * anchored ancestor chain. Beyond this we treat the candidate pair as having
+ * no usable parent-chain evidence (score 0) — the chains are too divergent
+ * to call this a structurally consistent match no matter how far we stretch.
+ *
+ * Four steps comfortably covers real-world cases where the runtime CV pass
+ * fabricates a handful of intermediate ruled-line / container rectangles that
+ * have no config counterpart (the diagnosed depth 2 vs depth 6 contract case
+ * lands exactly at this cap).
+ */
+const MAX_TOLERATED_DEPTH_GAP = 4;
+
+const buildAncestorChain = (
+  startId: string | null,
+  parentLookup: ReadonlyMap<string, string | null>
+): string[] => {
+  const chain: string[] = [];
+  if (startId === null) {
+    return chain;
+  }
+  let cursor: string | null = startId;
+  const seen = new Set<string>();
+  while (cursor !== null && !seen.has(cursor)) {
+    seen.add(cursor);
+    chain.push(cursor);
+    cursor = parentLookup.get(cursor) ?? null;
+  }
+  return chain;
+};
+
+/**
+ * Parent-chain similarity using already-known matches.
+ *
+ * Returns full credit (1) when:
+ *   - both parents are null (both candidates are top-level), or
+ *   - the config parent has been matched and the runtime object is a direct
+ *     child of that matched parent (chains are perfectly aligned).
+ *
+ * When the direct-parent check fails, walk the config ancestor chain looking
+ * for the deepest cAnc whose `parentMatches.get(cAnc)` is also an ancestor
+ * (or self) of the runtime candidate. This is the "anchored ancestor pair"
+ * mode — useful when the two documents disagree on hierarchy depth (the
+ * runtime CV pass adds intermediate rectangles with no config counterparts).
+ *
+ * Score in that mode is `1 - depthGap / maxChainLength`, where:
+ *   - `depthGap` is the absolute difference between how far the candidates
+ *     sit below their respective anchored ancestors,
+ *   - `maxChainLength` is the longer of those two distances.
+ *
+ * We pick the matched ancestor pair that yields the highest score (in
+ * practice, the one whose `maxChainLength` is largest, which gives the
+ * graded penalty more room to absorb the gap). Beyond
+ * `MAX_TOLERATED_DEPTH_GAP` we collapse to 0 — at that point the two chains
+ * are too divergent to count as evidence even in the anchored-ancestor sense.
+ *
+ * No anchored ancestor at all collapses to 0 (preserves prior behaviour).
  */
 const parentChainScore = (
   config: StructuralObjectNode,
   runtime: StructuralObjectNode,
   parentMatches: ReadonlyMap<string, string>,
-  runtimeObjectParent: ReadonlyMap<string, string | null>
+  runtimeObjectParent: ReadonlyMap<string, string | null>,
+  configObjectParent: ReadonlyMap<string, string | null> | undefined
 ): number => {
   if (config.parentObjectId === null && runtime.parentObjectId === null) {
     return 1;
@@ -234,12 +297,58 @@ const parentChainScore = (
   if (config.parentObjectId === null || runtime.parentObjectId === null) {
     return 0;
   }
+
+  // Fast path: direct parent matches. Preserves the prior contract that
+  // perfectly-aligned chains award exactly 1 with no rounding noise.
   const expectedRuntimeParent = parentMatches.get(config.parentObjectId);
-  if (!expectedRuntimeParent) {
+  const actualRuntimeParent = runtimeObjectParent.get(runtime.objectId) ?? null;
+  if (expectedRuntimeParent && expectedRuntimeParent === actualRuntimeParent) {
+    return 1;
+  }
+
+  // Graded path: search for any matched ancestor pair (cAnc, rAnc) such that
+  // parentMatches.get(cAnc) === rAnc and rAnc is an ancestor of the runtime
+  // candidate (its parent chain includes rAnc).
+  const configChain = buildAncestorChain(config.parentObjectId, configObjectParent ?? new Map());
+  const runtimeChain = buildAncestorChain(runtime.parentObjectId, runtimeObjectParent);
+  if (configChain.length === 0 || runtimeChain.length === 0) {
     return 0;
   }
-  const actualRuntimeParent = runtimeObjectParent.get(runtime.objectId) ?? null;
-  return expectedRuntimeParent === actualRuntimeParent ? 1 : 0;
+
+  const runtimeIndexById = new Map<string, number>();
+  for (let i = 0; i < runtimeChain.length; i += 1) {
+    runtimeIndexById.set(runtimeChain[i], i);
+  }
+
+  let best = 0;
+  for (let i = 0; i < configChain.length; i += 1) {
+    const matchedRuntime = parentMatches.get(configChain[i]);
+    if (matchedRuntime === undefined) {
+      continue;
+    }
+    const j = runtimeIndexById.get(matchedRuntime);
+    if (j === undefined) {
+      continue;
+    }
+    // Distance from the candidate up to its anchored ancestor on each side.
+    // Chains start at the candidate's parent so add 1 to count the candidate
+    // itself as a step.
+    const configDistance = i + 1;
+    const runtimeDistance = j + 1;
+    const depthGap = Math.abs(configDistance - runtimeDistance);
+    if (depthGap > MAX_TOLERATED_DEPTH_GAP) {
+      continue;
+    }
+    if (depthGap === 0) {
+      return 1;
+    }
+    const maxChainLength = Math.max(configDistance, runtimeDistance);
+    const candidate = clamp01(1 - depthGap / maxChainLength);
+    if (candidate > best) {
+      best = candidate;
+    }
+  }
+  return best;
 };
 
 export const computeObjectSimilarity = (
@@ -257,7 +366,8 @@ export const computeObjectSimilarity = (
       config,
       runtime,
       context.parentMatches,
-      context.runtimeObjectParent
+      context.runtimeObjectParent,
+      context.configObjectParent
     ),
     refinedBorderRelation: refinedBorderRelationScore(
       config.objectRectNorm,
