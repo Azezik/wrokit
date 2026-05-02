@@ -54,6 +54,19 @@ export interface StructuralRefinedBorder {
    * exist. When uncertain, the Structural Engine expands rather than crops.
    */
   rectNorm: StructuralNormalizedRect;
+  /**
+   * The unexpanded cv-content rect — produced identically by config and runtime
+   * regardless of whether saved Field BBOXes were available. This is the
+   * comparable rect used for refined-border level transform math (config→runtime
+   * projection); `rectNorm` is union/expansion-inflated to enforce the
+   * "every saved BBOX is contained" invariant and is therefore asymmetric
+   * between config and runtime.
+   *
+   * For the `full-page-fallback` source this is the full-page rect. When
+   * cv-content was unusable (`bbox-union` source) this mirrors `rectNorm`
+   * because there is no separate cv-only signal.
+   */
+  cvContentRectNorm: StructuralNormalizedRect;
   source: StructuralRefinedBorderSource;
   /**
    * Number of saved Field BBOXes on this page that influenced the refined border. Zero
@@ -288,6 +301,7 @@ const isStructuralRefinedBorder = (value: unknown): value is StructuralRefinedBo
   }
   return (
     isStructuralNormalizedRect(value.rectNorm) &&
+    isStructuralNormalizedRect(value.cvContentRectNorm) &&
     isStructuralRefinedBorderSource(value.source) &&
     isFiniteNumber(value.influencedByBBoxCount) &&
     typeof value.containsAllSavedBBoxes === 'boolean'

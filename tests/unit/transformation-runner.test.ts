@@ -54,6 +54,7 @@ const node = (
 
 const refinedFullPage: StructuralRefinedBorder = {
   rectNorm: rect(0, 0, 1, 1),
+  cvContentRectNorm: rect(0, 0, 1, 1),
   source: 'full-page-fallback',
   influencedByBBoxCount: 0,
   containsAllSavedBBoxes: true

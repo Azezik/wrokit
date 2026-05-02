@@ -52,6 +52,7 @@ const node = (
 
 const refinedFullPage: StructuralRefinedBorder = {
   rectNorm: rect(0, 0, 1, 1),
+  cvContentRectNorm: rect(0, 0, 1, 1),
   source: 'full-page-fallback',
   influencedByBBoxCount: 0,
   containsAllSavedBBoxes: true
@@ -563,12 +564,14 @@ describe('transformation-runner with hierarchical matcher', () => {
     // refined-border relation between sides also differs.
     const refinedConfig: StructuralRefinedBorder = {
       rectNorm: rect(0, 0, 0.5, 1),
+      cvContentRectNorm: rect(0, 0, 0.5, 1),
       source: 'cv-content',
       influencedByBBoxCount: 0,
       containsAllSavedBBoxes: true
     };
     const refinedRuntime: StructuralRefinedBorder = {
       rectNorm: rect(0.5, 0, 0.5, 1),
+      cvContentRectNorm: rect(0.5, 0, 0.5, 1),
       source: 'cv-content',
       influencedByBBoxCount: 0,
       containsAllSavedBBoxes: true
