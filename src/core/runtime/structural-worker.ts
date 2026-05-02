@@ -28,6 +28,12 @@ import {
   type StructuralEngineInput
 } from '../engines/structure';
 import { OPENCV_JS_ASSET_URL } from '../engines/structure/cv/opencv-js-asset';
+import {
+  awaitOpenCvRuntimeInitialization,
+  isOpenCvRuntimeFullyInitialized,
+  isOpenCvRuntimeObject,
+  type OpenCvRuntimeLike
+} from '../engines/structure/cv/opencv-js-runtime-readiness';
 import type { NormalizedPage } from '../contracts/normalized-page';
 import type { StructuralModel } from '../contracts/structural-model';
 import type { PageSurface } from '../page-surface/page-surface';
@@ -38,23 +44,6 @@ import type { PageSurface } from '../page-surface/page-surface';
 
 declare const self: DedicatedWorkerGlobalScope;
 
-interface OpenCvLikeReady {
-  ready?: boolean;
-  onRuntimeInitialized?: () => void;
-}
-
-const isOpenCvLike = (value: unknown): value is OpenCvLikeReady & Record<string, unknown> => {
-  if (typeof value !== 'object' || value === null) {
-    return false;
-  }
-  const cv = value as Record<string, unknown>;
-  return (
-    typeof cv.Mat === 'function' &&
-    typeof cv.MatVector === 'function' &&
-    typeof cv.matFromImageData === 'function'
-  );
-};
-
 let runtimePromise: Promise<OpenCvRuntimeLoadResult> | null = null;
 
 const ensureWorkerOpenCvRuntime = (): Promise<OpenCvRuntimeLoadResult> => {
@@ -63,7 +52,7 @@ const ensureWorkerOpenCvRuntime = (): Promise<OpenCvRuntimeLoadResult> => {
   }
   runtimePromise = (async (): Promise<OpenCvRuntimeLoadResult> => {
     const existing = (self as unknown as { cv?: unknown }).cv;
-    if (isOpenCvLike(existing)) {
+    if (isOpenCvRuntimeFullyInitialized(existing)) {
       return { status: 'already-available' };
     }
 
@@ -101,30 +90,26 @@ const ensureWorkerOpenCvRuntime = (): Promise<OpenCvRuntimeLoadResult> => {
       };
     }
 
+    // The UMD bundle's `factory()` returns the bare Emscripten Module
+    // synchronously. `Mat`, `MatVector`, `matFromImageData` only land on it
+    // after the WASM runtime finishes compiling and `onRuntimeInitialized`
+    // fires. Confirm `cv` is an object first, then await initialization,
+    // then validate the entry points the structural adapter consumes.
     const cv = (self as unknown as { cv?: unknown }).cv;
-    if (!isOpenCvLike(cv)) {
+    if (!isOpenCvRuntimeObject(cv)) {
       return {
         status: 'unavailable',
-        reason: 'OpenCV.js script evaluated in worker but globalThis.cv is missing.'
+        reason: `OpenCV.js script evaluated in worker but globalThis.cv is ${cv === null ? 'null' : typeof cv}.`
       };
     }
-    if (cv.ready === true) {
-      return { status: 'loaded' };
-    }
-    if (typeof cv.onRuntimeInitialized !== 'function') {
-      cv.ready = true;
-      return { status: 'loaded' };
-    }
-    await new Promise<void>((resolve) => {
-      const original = cv.onRuntimeInitialized;
-      cv.onRuntimeInitialized = () => {
-        if (typeof original === 'function') {
-          original();
-        }
-        cv.ready = true;
-        resolve();
+
+    const initResult = await awaitOpenCvRuntimeInitialization(cv as OpenCvRuntimeLike);
+    if (!initResult.ok) {
+      return {
+        status: 'unavailable',
+        reason: initResult.detail
       };
-    });
+    }
     return { status: 'loaded' };
   })();
   return runtimePromise;

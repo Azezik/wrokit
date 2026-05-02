@@ -1,9 +1,10 @@
 import { OPENCV_JS_ASSET_URL } from './opencv-js-asset';
-
-interface OpenCvReadyRuntime {
-  onRuntimeInitialized?: () => void;
-  [key: string]: unknown;
-}
+import {
+  awaitOpenCvRuntimeInitialization,
+  isOpenCvRuntimeFullyInitialized,
+  isOpenCvRuntimeObject,
+  type OpenCvRuntimeLike
+} from './opencv-js-runtime-readiness';
 
 export interface OpenCvRuntimeLoadResult {
   status: 'loaded' | 'already-available' | 'unavailable';
@@ -11,51 +12,13 @@ export interface OpenCvRuntimeLoadResult {
 }
 
 const SCRIPT_ATTR = 'data-wrokit-opencv-runtime';
-const LOAD_TIMEOUT_MS = 12_000;
+const SCRIPT_LOAD_TIMEOUT_MS = 12_000;
+const RUNTIME_INIT_TIMEOUT_MS = 15_000;
 
 const hasDocument = (): boolean =>
   typeof document !== 'undefined' && typeof window !== 'undefined';
 
-const isOpenCvLikeRuntime = (value: unknown): value is OpenCvReadyRuntime => {
-  if (typeof value !== 'object' || value === null) {
-    return false;
-  }
-  const cv = value as Partial<OpenCvReadyRuntime>;
-  return (
-    typeof cv.Mat === 'function' &&
-    typeof cv.MatVector === 'function' &&
-    typeof cv.matFromImageData === 'function'
-  );
-};
-
-const runtimeFromGlobal = (): OpenCvReadyRuntime | null => {
-  const cv = (globalThis as { cv?: unknown }).cv;
-  return isOpenCvLikeRuntime(cv) ? cv : null;
-};
-
-const waitForRuntimeInitialization = (
-  runtime: OpenCvReadyRuntime
-): Promise<void> => {
-  if ((runtime as { ready?: boolean }).ready === true) {
-    return Promise.resolve();
-  }
-
-  if (typeof runtime.onRuntimeInitialized !== 'function') {
-    (runtime as { ready?: boolean }).ready = true;
-    return Promise.resolve();
-  }
-
-  return new Promise((resolve) => {
-    const original = runtime.onRuntimeInitialized;
-    runtime.onRuntimeInitialized = () => {
-      if (typeof original === 'function') {
-        original();
-      }
-      (runtime as { ready?: boolean }).ready = true;
-      resolve();
-    };
-  });
-};
+const readGlobalCv = (): unknown => (globalThis as { cv?: unknown }).cv;
 
 let pendingLoad: Promise<OpenCvRuntimeLoadResult> | null = null;
 
@@ -67,13 +30,19 @@ let pendingLoad: Promise<OpenCvRuntimeLoadResult> | null = null;
  * app's base path. There is no CDN fallback — if the asset is missing or
  * fails to evaluate the result is `{ status: 'unavailable', reason: ... }`
  * and the caller surfaces it.
+ *
+ * Readiness sequence (shared with the structural worker via
+ * `opencv-js-runtime-readiness`):
+ *   1. Confirm `globalThis.cv` is a non-null object (the UMD bundle attaches
+ *      the bare Emscripten Module synchronously at eval time).
+ *   2. Await `onRuntimeInitialized` so the WASM runtime finishes booting.
+ *   3. Validate Mat/MatVector/matFromImageData are functions before
+ *      reporting `loaded`.
  */
 export const ensureOpenCvJsRuntime = async (): Promise<OpenCvRuntimeLoadResult> => {
-  const existing = runtimeFromGlobal();
-  if (existing) {
-    return {
-      status: 'already-available'
-    };
+  const existing = readGlobalCv();
+  if (isOpenCvRuntimeFullyInitialized(existing)) {
+    return { status: 'already-available' };
   }
 
   if (!hasDocument()) {
@@ -88,7 +57,9 @@ export const ensureOpenCvJsRuntime = async (): Promise<OpenCvRuntimeLoadResult> 
   }
 
   pendingLoad = new Promise<OpenCvRuntimeLoadResult>((resolve) => {
-    const existingScript = document.querySelector<HTMLScriptElement>(`script[${SCRIPT_ATTR}="true"]`);
+    const existingScript = document.querySelector<HTMLScriptElement>(
+      `script[${SCRIPT_ATTR}="true"]`
+    );
     const script =
       existingScript ??
       (() => {
@@ -104,9 +75,9 @@ export const ensureOpenCvJsRuntime = async (): Promise<OpenCvRuntimeLoadResult> 
       timeoutId = null;
       resolve({
         status: 'unavailable',
-        reason: `Timed out waiting for OpenCV.js runtime (${OPENCV_JS_ASSET_URL}).`
+        reason: `Timed out waiting for OpenCV.js script to load (${OPENCV_JS_ASSET_URL}).`
       });
-    }, LOAD_TIMEOUT_MS);
+    }, SCRIPT_LOAD_TIMEOUT_MS);
 
     const finalize = (result: OpenCvRuntimeLoadResult) => {
       if (timeoutId !== null) {
@@ -116,24 +87,31 @@ export const ensureOpenCvJsRuntime = async (): Promise<OpenCvRuntimeLoadResult> 
       resolve(result);
     };
 
-    const handleReady = () => {
-      const runtime = runtimeFromGlobal();
-      if (!runtime) {
+    const handleScriptReady = async () => {
+      const cv = readGlobalCv();
+      if (!isOpenCvRuntimeObject(cv)) {
         finalize({
           status: 'unavailable',
-          reason: 'OpenCV.js script loaded but runtime is not available on globalThis.cv.'
+          reason: `OpenCV.js script evaluated but globalThis.cv is ${cv === null ? 'null' : typeof cv}.`
         });
         return;
       }
 
-      void waitForRuntimeInitialization(runtime).then(() => {
-        finalize({
-          status: 'loaded'
-        });
+      const initResult = await awaitOpenCvRuntimeInitialization(cv as OpenCvRuntimeLike, {
+        timeoutMs: RUNTIME_INIT_TIMEOUT_MS
       });
+      if (!initResult.ok) {
+        finalize({
+          status: 'unavailable',
+          reason: initResult.detail
+        });
+        return;
+      }
+
+      finalize({ status: 'loaded' });
     };
 
-    script.addEventListener('load', handleReady, { once: true });
+    script.addEventListener('load', () => void handleScriptReady(), { once: true });
     script.addEventListener(
       'error',
       () =>
@@ -145,12 +123,12 @@ export const ensureOpenCvJsRuntime = async (): Promise<OpenCvRuntimeLoadResult> 
     );
 
     if ((script as { readyState?: string }).readyState === 'complete') {
-      handleReady();
+      void handleScriptReady();
       return;
     }
 
-    if (runtimeFromGlobal()) {
-      handleReady();
+    if (isOpenCvRuntimeObject(readGlobalCv())) {
+      void handleScriptReady();
     }
   }).finally(() => {
     pendingLoad = null;
