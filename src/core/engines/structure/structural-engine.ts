@@ -16,7 +16,12 @@ import {
   type PixelRect
 } from '../../page-surface/page-surface';
 
-import type { CvAdapter, CvSurfaceRaster } from './cv/cv-adapter';
+import type { CvAdapter, CvSurfaceObject, CvSurfaceRaster } from './cv/cv-adapter';
+import {
+  buildLineBoundedRects,
+  detectLineSegments,
+  type SizeRelativeThresholds
+} from './cv/line-grid-detector';
 import { loadPageSurfaceRaster, type PageRasterLoaderEnv } from './page-raster-loader';
 import { buildFieldRelationships, buildObjectHierarchy, buildPageAnchorRelations } from './object-hierarchy';
 import type { StructuralEngine, StructuralEngineInput } from './types';
@@ -206,6 +211,164 @@ const buildRefinedBorder = (input: BuildRefinedBorderInput): StructuralRefinedBo
   };
 };
 
+/**
+ * Re-run line/text-row detection scoped to each blob-shaped CV object that
+ * carries no contained child object and whose normalized footprint is large
+ * enough to plausibly contain interior structure (rows, cells).
+ *
+ * Blob detections (`obj_blob_*` from the heuristic path and non-cell contour
+ * rects `obj_cv_*` from the OpenCV path) fire on line-sparse regions like
+ * notes / signature panels — boxes whose interior is text rows separated by
+ * baselines but no full-width horizontal rules. The first-pass detector
+ * doesn't see line-bounded cells inside such boxes and emits a single flat
+ * blob with no children. This decomposition relaxes the first-pass thresholds
+ * (a row baseline doesn't need to span the full panel, just enough of a row
+ * boundary to define a cell) and emits any sub-rects it finds as additional
+ * objects, translated back into surface coordinates so the hierarchy pass
+ * picks them up as children of the original blob.
+ *
+ * The minimum-size gate keeps small blobs (icons, short labels, glyphs that
+ * survived the suppression floor) out of the decomposition; their interior
+ * cannot reasonably contain meaningful sub-objects.
+ */
+const BLOB_DECOMPOSITION_MIN_AREA_NORM = 0.01;
+const BLOB_DECOMPOSITION_THRESHOLD = 200;
+
+const isBlobShapedObject = (objectId: string): boolean => {
+  if (objectId.startsWith('obj_blob_')) {
+    return true;
+  }
+  // OpenCV runtime contour rects use the `obj_cv_` prefix; cell rects from the
+  // shared line-grid pipeline use `obj_cv_cell_` and do NOT need
+  // decomposition (the line-grid path already exposed their interior).
+  if (objectId.startsWith('obj_cv_') && !objectId.startsWith('obj_cv_cell_')) {
+    return true;
+  }
+  return false;
+};
+
+const surfaceRectContains = (
+  outer: PixelRect,
+  inner: PixelRect,
+  epsilon = 1
+): boolean => {
+  return (
+    inner.x + epsilon >= outer.x &&
+    inner.y + epsilon >= outer.y &&
+    inner.x + inner.width <= outer.x + outer.width + epsilon &&
+    inner.y + inner.height <= outer.y + outer.height + epsilon
+  );
+};
+
+const cropImageData = (src: ImageData, rect: PixelRect): ImageData => {
+  const w = Math.max(1, Math.floor(rect.width));
+  const h = Math.max(1, Math.floor(rect.height));
+  const x0 = Math.max(0, Math.floor(rect.x));
+  const y0 = Math.max(0, Math.floor(rect.y));
+  const dst = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y += 1) {
+    const srcY = y + y0;
+    if (srcY >= src.height) break;
+    const srcRowBase = srcY * src.width * 4;
+    const dstRowBase = y * w * 4;
+    for (let x = 0; x < w; x += 1) {
+      const srcX = x + x0;
+      if (srcX >= src.width) break;
+      const srcIdx = srcRowBase + srcX * 4;
+      const dstIdx = dstRowBase + x * 4;
+      dst[dstIdx] = src.data[srcIdx];
+      dst[dstIdx + 1] = src.data[srcIdx + 1];
+      dst[dstIdx + 2] = src.data[srcIdx + 2];
+      dst[dstIdx + 3] = src.data[srcIdx + 3];
+    }
+  }
+  return { width: w, height: h, data: dst, colorSpace: src.colorSpace ?? 'srgb' } as unknown as ImageData;
+};
+
+const decomposeBlobsSecondPass = (
+  pixels: ImageData,
+  surface: PageSurface,
+  objects: readonly CvSurfaceObject[]
+): CvSurfaceObject[] => {
+  if (objects.length === 0) {
+    return [];
+  }
+  const surfaceArea = Math.max(1, surface.surfaceWidth * surface.surfaceHeight);
+  const additions: CvSurfaceObject[] = [];
+
+  for (const blob of objects) {
+    if (!isBlobShapedObject(blob.objectId)) {
+      continue;
+    }
+    const w = blob.bboxSurface.width;
+    const h = blob.bboxSurface.height;
+    if (w <= 0 || h <= 0) {
+      continue;
+    }
+    const normArea = (w * h) / surfaceArea;
+    if (normArea < BLOB_DECOMPOSITION_MIN_AREA_NORM) {
+      continue;
+    }
+    // Skip blobs that already have at least one structurally contained child:
+    // the first-pass detector already represented their interior structure.
+    const hasChild = objects.some(
+      (other) => other !== blob && surfaceRectContains(blob.bboxSurface, other.bboxSurface)
+    );
+    if (hasChild) {
+      continue;
+    }
+
+    const cropped = cropImageData(pixels, blob.bboxSurface);
+    const minSide = Math.max(1, Math.min(cropped.width, cropped.height));
+    // Looser thresholds than the first pass: a row baseline inside a
+    // signature box doesn't reach the panel edges, so minLineLengthPx must
+    // shrink to ~20% of the panel side. The line-thickness ceiling stays
+    // proportional so anti-aliased baselines (~2 px) still classify as
+    // lines, not blobs.
+    const subThresholds: SizeRelativeThresholds = {
+      minObjectAreaPx: 16,
+      minLineLengthPx: Math.max(8, Math.round(minSide * 0.2)),
+      maxLineThicknessPx: Math.max(3, Math.round(minSide * 0.04))
+    };
+    const segments = detectLineSegments(cropped, BLOB_DECOMPOSITION_THRESHOLD, subThresholds);
+    const subRects = buildLineBoundedRects(segments, {
+      surfaceWidth: cropped.width,
+      surfaceHeight: cropped.height
+    });
+
+    let subIndex = 0;
+    for (const subRect of subRects) {
+      const subW = subRect.right - subRect.left;
+      const subH = subRect.bottom - subRect.top;
+      if (subW <= 4 || subH <= 4) {
+        continue;
+      }
+      // A sub-rect spanning the entire blob is just a re-emission of the
+      // blob itself — drop it so we don't introduce a near-duplicate that
+      // the trivial-containment dedup would have to clean up later.
+      if (subW >= cropped.width - 2 && subH >= cropped.height - 2) {
+        continue;
+      }
+      additions.push({
+        objectId: `${blob.objectId}_sub_${subIndex}`,
+        bboxSurface: {
+          x: blob.bboxSurface.x + subRect.left,
+          y: blob.bboxSurface.y + subRect.top,
+          width: subW,
+          height: subH
+        },
+        // Children inherit a slightly reduced confidence — they were derived
+        // by relaxing the detection threshold, so they are softer evidence
+        // than first-pass detections.
+        confidence: Math.max(0.5, blob.confidence * 0.85)
+      });
+      subIndex += 1;
+    }
+  }
+
+  return additions;
+};
+
 export interface CreateStructuralEngineOptions {
   cvAdapter: CvAdapter;
   rasterLoader?: typeof loadPageSurfaceRaster;
@@ -236,8 +399,18 @@ export const createStructuralEngine = (
       bboxes
     });
 
+    const decomposedSubObjects = decomposeBlobsSecondPass(
+      pixels,
+      surface,
+      cvResult.objectsSurface
+    );
+    const allSurfaceObjects: CvSurfaceObject[] = [
+      ...cvResult.objectsSurface,
+      ...decomposedSubObjects
+    ];
+
     const hierarchy = buildObjectHierarchy(
-      cvResult.objectsSurface.map((object) => ({
+      allSurfaceObjects.map((object) => ({
         objectId: object.objectId,
         bbox: surfaceRectToStructuralNorm(surface, object.bboxSurface),
         confidence: object.confidence
@@ -310,5 +483,6 @@ export const __testing = {
   unionNormalizedRects,
   containsRect,
   surfaceRectToStructuralNorm,
+  decomposeBlobsSecondPass,
   FULL_PAGE_RECT
 };

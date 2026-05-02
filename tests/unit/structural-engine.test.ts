@@ -4,7 +4,7 @@ import type { GeometryFile } from '../../src/core/contracts/geometry';
 import type { NormalizedPage } from '../../src/core/contracts/normalized-page';
 import { isStructuralModel } from '../../src/core/contracts/structural-model';
 import type { CvAdapter } from '../../src/core/engines/structure/cv';
-import { createStructuralEngine } from '../../src/core/engines/structure/structural-engine';
+import { __testing, createStructuralEngine } from '../../src/core/engines/structure/structural-engine';
 import type { PageSurface, PixelRect } from '../../src/core/page-surface/page-surface';
 
 const makePage = (overrides: Partial<NormalizedPage> = {}): NormalizedPage => ({
@@ -501,5 +501,153 @@ describe('createStructuralEngine', () => {
     expect(relationship.containedBy).toBe('obj_only_container');
     expect(anchors).toHaveLength(3);
     expect(new Set(anchors.map((a) => a.objectId)).size).toBe(3);
+  });
+});
+
+describe('decomposeBlobsSecondPass', () => {
+  // Helper to fabricate a small ImageData with a few row-baseline horizontals
+  // inside a panel so the relaxed line-grid pass can find sub-rects.
+  const makePixelsWithRows = (
+    surfaceWidth: number,
+    surfaceHeight: number,
+    panel: { left: number; top: number; right: number; bottom: number },
+    rowBaselines: number[]
+  ): ImageData => {
+    const data = new Uint8ClampedArray(surfaceWidth * surfaceHeight * 4);
+    for (let i = 0; i < data.length; i += 4) {
+      data[i] = 255;
+      data[i + 1] = 255;
+      data[i + 2] = 255;
+      data[i + 3] = 255;
+    }
+    const paint = (left: number, top: number, right: number, bottom: number) => {
+      for (let y = top; y < bottom; y += 1) {
+        for (let x = left; x < right; x += 1) {
+          const idx = (y * surfaceWidth + x) * 4;
+          data[idx] = 0;
+          data[idx + 1] = 0;
+          data[idx + 2] = 0;
+          data[idx + 3] = 255;
+        }
+      }
+    };
+    // Panel border (4 sides).
+    paint(panel.left, panel.top, panel.right, panel.top + 2);
+    paint(panel.left, panel.bottom - 2, panel.right, panel.bottom);
+    paint(panel.left, panel.top, panel.left + 2, panel.bottom);
+    paint(panel.right - 2, panel.top, panel.right, panel.bottom);
+    // Internal row baselines spanning ALMOST the panel width (a real
+    // signature box has row underlines that don't reach the panel edges).
+    for (const y of rowBaselines) {
+      paint(panel.left + 6, y, panel.right - 6, y + 2);
+    }
+    return { width: surfaceWidth, height: surfaceHeight, data, colorSpace: 'srgb' } as unknown as ImageData;
+  };
+
+  const surface: PageSurface = { pageIndex: 0, surfaceWidth: 800, surfaceHeight: 600 };
+
+  it('emits sub-objects when a leaf blob has internal row baselines', () => {
+    const panel = { left: 100, top: 100, right: 700, bottom: 500 };
+    const pixels = makePixelsWithRows(surface.surfaceWidth, surface.surfaceHeight, panel, [
+      // Four equally-spaced row baselines across the panel interior.
+      180,
+      260,
+      340,
+      420
+    ]);
+
+    const blob = {
+      objectId: 'obj_blob_0',
+      bboxSurface: {
+        x: panel.left,
+        y: panel.top,
+        width: panel.right - panel.left,
+        height: panel.bottom - panel.top
+      },
+      confidence: 0.78
+    };
+
+    const subObjects = __testing.decomposeBlobsSecondPass(pixels, surface, [blob]);
+
+    // The relaxed line-grid pass should find at least a couple of row-bounded
+    // sub-rects inside the panel.
+    expect(subObjects.length).toBeGreaterThan(0);
+    // Every sub-object's bbox is contained in the parent blob.
+    for (const sub of subObjects) {
+      expect(sub.bboxSurface.x).toBeGreaterThanOrEqual(blob.bboxSurface.x);
+      expect(sub.bboxSurface.y).toBeGreaterThanOrEqual(blob.bboxSurface.y);
+      expect(sub.bboxSurface.x + sub.bboxSurface.width).toBeLessThanOrEqual(
+        blob.bboxSurface.x + blob.bboxSurface.width + 1
+      );
+      expect(sub.bboxSurface.y + sub.bboxSurface.height).toBeLessThanOrEqual(
+        blob.bboxSurface.y + blob.bboxSurface.height + 1
+      );
+      // ID is namespaced under the parent blob so the hierarchy pass can
+      // attribute it back.
+      expect(sub.objectId).toMatch(/^obj_blob_0_sub_\d+$/);
+    }
+  });
+
+  it('skips blobs that already have a contained child object (first pass already represented structure)', () => {
+    const panel = { left: 100, top: 100, right: 700, bottom: 500 };
+    const pixels = makePixelsWithRows(surface.surfaceWidth, surface.surfaceHeight, panel, [180, 260, 340, 420]);
+
+    const blob = {
+      objectId: 'obj_blob_0',
+      bboxSurface: {
+        x: panel.left,
+        y: panel.top,
+        width: panel.right - panel.left,
+        height: panel.bottom - panel.top
+      },
+      confidence: 0.78
+    };
+    // A first-pass child rect inside the blob — decomposition must NOT fire.
+    const child = {
+      objectId: 'obj_cv_cell_0',
+      bboxSurface: { x: 200, y: 150, width: 200, height: 100 },
+      confidence: 0.85
+    };
+
+    const subObjects = __testing.decomposeBlobsSecondPass(pixels, surface, [blob, child]);
+    expect(subObjects).toEqual([]);
+  });
+
+  it('skips blobs whose normalized footprint is below the decomposition floor', () => {
+    const tinyPanel = { left: 10, top: 10, right: 50, bottom: 50 };
+    const pixels = makePixelsWithRows(surface.surfaceWidth, surface.surfaceHeight, tinyPanel, [25, 35]);
+
+    const blob = {
+      objectId: 'obj_blob_0',
+      bboxSurface: {
+        x: tinyPanel.left,
+        y: tinyPanel.top,
+        width: tinyPanel.right - tinyPanel.left,
+        height: tinyPanel.bottom - tinyPanel.top
+      },
+      confidence: 0.78
+    };
+
+    const subObjects = __testing.decomposeBlobsSecondPass(pixels, surface, [blob]);
+    expect(subObjects).toEqual([]);
+  });
+
+  it('does not decompose line-grid cells (obj_cv_cell_*)', () => {
+    const panel = { left: 100, top: 100, right: 700, bottom: 500 };
+    const pixels = makePixelsWithRows(surface.surfaceWidth, surface.surfaceHeight, panel, [180, 260, 340, 420]);
+
+    const cell = {
+      objectId: 'obj_cv_cell_0',
+      bboxSurface: {
+        x: panel.left,
+        y: panel.top,
+        width: panel.right - panel.left,
+        height: panel.bottom - panel.top
+      },
+      confidence: 0.78
+    };
+
+    const subObjects = __testing.decomposeBlobsSecondPass(pixels, surface, [cell]);
+    expect(subObjects).toEqual([]);
   });
 });

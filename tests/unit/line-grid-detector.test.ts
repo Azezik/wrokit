@@ -238,6 +238,115 @@ describe('buildLineBoundedRects', () => {
     }
   });
 
+  it('subset suppression: 4-row × 3-col table emits 4*3 cells + 1 outer = 13 rects (no chain interior)', () => {
+    // Without subset suppression the raw enumeration of a 4-row × 3-col
+    // shared-rule grid is C(5,2)·C(4,2) = 60 line-bounded rects: every
+    // cumulative-row strip and cumulative-column strip is line-bounded by
+    // construction and they fan out into a deep chain of nested rects all
+    // sharing 3 of 4 edges with one another. After the leaf-or-outermost
+    // filter and chain-endpoints subset suppression, only the 12 leaf cells
+    // and the 1 outer table frame survive.
+    const w = 700;
+    const h = 400;
+    const xs = [60, 220, 380, 540];
+    const ys = [40, 120, 200, 280, 360];
+    const pixels = makeImageData(w, h, (data) => {
+      for (const y of ys) {
+        paintRect(data, w, {
+          left: xs[0],
+          top: y,
+          right: xs[xs.length - 1] + 2,
+          bottom: y + 2
+        });
+      }
+      for (const x of xs) {
+        paintRect(data, w, {
+          left: x,
+          top: ys[0],
+          right: x + 2,
+          bottom: ys[ys.length - 1] + 2
+        });
+      }
+    });
+
+    const segments = detectLineSegments(pixels, 245, baselineThresholds(w, h));
+    const rects = buildLineBoundedRects(segments, { surfaceWidth: w, surfaceHeight: h });
+
+    expect(rects).toHaveLength(13);
+
+    const matches = (rect: { left: number; top: number; right: number; bottom: number }, [l, t, r, b]: number[]) =>
+      Math.abs(rect.left - l) <= 2 &&
+      Math.abs(rect.top - t) <= 2 &&
+      Math.abs(rect.right - r) <= 2 &&
+      Math.abs(rect.bottom - b) <= 2;
+
+    // 12 leaf cells.
+    for (let row = 0; row < 4; row += 1) {
+      for (let col = 0; col < 3; col += 1) {
+        const expected = [xs[col], ys[row], xs[col + 1] + 2, ys[row + 1] + 2];
+        expect(rects.some((rect) => matches(rect, expected))).toBe(true);
+      }
+    }
+    // Outer table frame survives — it is the largest composite of the tile
+    // decomposition and no larger composite contains it.
+    expect(
+      rects.some((rect) =>
+        matches(rect, [xs[0], ys[0], xs[xs.length - 1] + 2, ys[ys.length - 1] + 2])
+      )
+    ).toBe(true);
+  });
+
+  it('subset suppression: a partial leaf tiling collapses chain rects via chain-endpoints rule', () => {
+    // Targets the real-document pathology: when a few interior cell rules go
+    // missing on a dense table, the leaf-or-outermost filter cannot fully
+    // decompose the cumulative-row/column unions and the chain rects survive
+    // as "leaves" — driving 22+ deep parent chains in the hierarchy.
+    //
+    // We construct the failure mode synthetically by passing
+    // `skipLeafOrOutermostFilter: true` to surface every line-bounded
+    // quadruple (the case where no decomposition runs at all is a strict
+    // upper bound on what residual the partial-decomposition case can leave
+    // behind). On a 5-row × 3-col chain the raw enumeration emits
+    // C(6,2)·C(4,2) = 90 rects; the chain-endpoints rule must collapse this
+    // to far fewer than the O(rows²·cols²) explosion.
+    const w = 700;
+    const h = 400;
+    const xs = [60, 220, 380, 540];
+    const ys = [40, 100, 160, 220, 280, 360];
+    const pixels = makeImageData(w, h, (data) => {
+      for (const y of ys) {
+        paintRect(data, w, {
+          left: xs[0],
+          top: y,
+          right: xs[xs.length - 1] + 2,
+          bottom: y + 2
+        });
+      }
+      for (const x of xs) {
+        paintRect(data, w, {
+          left: x,
+          top: ys[0],
+          right: x + 2,
+          bottom: ys[ys.length - 1] + 2
+        });
+      }
+    });
+
+    const segments = detectLineSegments(pixels, 245, baselineThresholds(w, h));
+    const rawCount = buildLineBoundedRects(segments, {
+      surfaceWidth: w,
+      surfaceHeight: h,
+      skipLeafOrOutermostFilter: true
+    }).length;
+    const filtered = buildLineBoundedRects(segments, { surfaceWidth: w, surfaceHeight: h });
+
+    // Raw enumeration is the O(rows²·cols²) fan; after suppression + leaf
+    // filter the count must be a small multiple of the visually distinct
+    // objects (15 cells + 1 outer for this 5×3 grid).
+    expect(rawCount).toBeGreaterThanOrEqual(90);
+    expect(filtered.length).toBeLessThanOrEqual(20);
+  });
+
   it('keeps a HEADER + interior DATE pair as exactly 2 rects (no sub-block union)', () => {
     // HEADER and DATE drawn as independent boxes — DATE sits inside HEADER
     // but does not share any of HEADER's borders. The raw enumeration
@@ -291,7 +400,10 @@ describe('buildLineBoundedRects', () => {
       surfaceHeight: h,
       diagnostics
     });
-    // 2x2 ruled grid → C(3,2)² = 9 raw rects, filtered to 4 leaves + 1 outer = 5.
+    // 2x2 ruled grid → C(3,2)² = 9 raw rects. The chain-endpoints subset
+    // suppression doesn't fire on this 2-element-chain layout (there are no
+    // interior chain members to drop), so all 9 enter the leaf filter and
+    // reduce to 4 leaves + 1 outer = 5.
     expect(diagnostics.rectsBeforeFilter).toBe(9);
     expect(rects.length).toBe(5);
     expect(diagnostics.subblocksDropped).toBe(4);
