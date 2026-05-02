@@ -1,3 +1,5 @@
+import { OPENCV_JS_ASSET_URL } from './opencv-js-asset';
+
 interface OpenCvReadyRuntime {
   onRuntimeInitialized?: () => void;
   [key: string]: unknown;
@@ -7,13 +9,6 @@ export interface OpenCvRuntimeLoadResult {
   status: 'loaded' | 'already-available' | 'unavailable';
   reason?: string;
 }
-
-// Kept in sync with `src/core/runtime/structural-worker.ts`. The worker path
-// must use a CORS-enabled host because module workers load the script via
-// `fetch`; we use the same URL on the main thread so both paths exercise the
-// same OpenCV.js build.
-const DEFAULT_OPENCV_SCRIPT_URL =
-  'https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.10.0-release.1/dist/opencv.js';
 
 const SCRIPT_ATTR = 'data-wrokit-opencv-runtime';
 const LOAD_TIMEOUT_MS = 12_000;
@@ -64,9 +59,16 @@ const waitForRuntimeInitialization = (
 
 let pendingLoad: Promise<OpenCvRuntimeLoadResult> | null = null;
 
-export const ensureOpenCvJsRuntime = async (
-  scriptUrl = DEFAULT_OPENCV_SCRIPT_URL
-): Promise<OpenCvRuntimeLoadResult> => {
+/**
+ * Load the locally vendored OpenCV.js build into the main thread.
+ *
+ * The asset URL comes from `OPENCV_JS_ASSET_URL` (Vite `?url` import of
+ * `@techstark/opencv-js/dist/opencv.js`); it is served same-origin under the
+ * app's base path. There is no CDN fallback — if the asset is missing or
+ * fails to evaluate the result is `{ status: 'unavailable', reason: ... }`
+ * and the caller surfaces it.
+ */
+export const ensureOpenCvJsRuntime = async (): Promise<OpenCvRuntimeLoadResult> => {
   const existing = runtimeFromGlobal();
   if (existing) {
     return {
@@ -92,7 +94,7 @@ export const ensureOpenCvJsRuntime = async (
       (() => {
         const created = document.createElement('script');
         created.async = true;
-        created.src = scriptUrl;
+        created.src = OPENCV_JS_ASSET_URL;
         created.setAttribute(SCRIPT_ATTR, 'true');
         document.head.appendChild(created);
         return created;
@@ -102,7 +104,7 @@ export const ensureOpenCvJsRuntime = async (
       timeoutId = null;
       resolve({
         status: 'unavailable',
-        reason: 'Timed out waiting for OpenCV.js runtime.'
+        reason: `Timed out waiting for OpenCV.js runtime (${OPENCV_JS_ASSET_URL}).`
       });
     }, LOAD_TIMEOUT_MS);
 
@@ -137,7 +139,7 @@ export const ensureOpenCvJsRuntime = async (
       () =>
         finalize({
           status: 'unavailable',
-          reason: 'OpenCV.js script failed to load.'
+          reason: `OpenCV.js script failed to load from ${OPENCV_JS_ASSET_URL}.`
         }),
       { once: true }
     );
