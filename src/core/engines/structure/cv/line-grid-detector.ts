@@ -478,9 +478,12 @@ export const buildLineBoundedRects = (
    * `maxRects` (default 800) bounds emitted rects. A real form has fewer than
    * 200 visually distinct rectangles; the previous 20k cap was protecting a
    * pathological combinatorial expansion that pre-clustering shouldn't have
-   * been allowed to happen. Combined with per-axis clustering and the
-   * `maxAxisSegments` cap below, 800 leaves comfortable headroom while
-   * preventing a frozen overlay on noisy captures.
+   * been allowed to happen. Combined with per-axis clustering, the
+   * `maxAxisSegments` cap below, and the subset-suppression pass that
+   * collapses chain-of-nested-rects fans (a 13-row table produces O(rows²)
+   * raw rects per column-pair which suppression collapses to single cells),
+   * the 800 cap should almost never fire — it is retained purely as a safety
+   * net against unforeseen pathological inputs.
    */
   const maxRects = options.maxRects ?? DEFAULT_MAX_RECTS;
   const maxQuadrupleEvaluations =
@@ -609,10 +612,33 @@ export const buildLineBoundedRects = (
     }
   }
 
+  const rectsBeforeAnyFilter = rects.length;
+  // Order: leaf-or-outermost FIRST, then chain-endpoints subset suppression.
+  //
+  // Leaf-tile decomposition is the high-recall pass: when every interior cell
+  // is detected (clean synthetic grids, well-imaged forms) it reduces a 1365-
+  // rect 13-row × 5-col raw enumeration to 65 cells + 1 outer with no chain
+  // residue, and chain-endpoints suppression has nothing left to do.
+  //
+  // The pathology subset suppression targets is the case where SOME interior
+  // cell rules go missing on real documents (glyph noise erasing a stretch of
+  // a horizontal rule, anti-aliasing fragmenting a vertical), leaving a
+  // partial tiling that the leaf filter cannot fully decompose. The
+  // intermediate chain rects then survive as "leaves" and stack into 22+
+  // deep parent chains. Suppression on the leaf-filtered residue collapses
+  // the chain interior while preserving both endpoints (smallest tightest
+  // rect AND largest outer container) in every shared-3-edge group.
+  //
+  // Running suppression after the filter (rather than before) avoids
+  // starving the filter's `canCover` traversal of the boundary positions it
+  // needs to bridge near-coincident edges across cells.
   const rectsBeforeFilter = rects.length;
   const filtered = options.skipLeafOrOutermostFilter
     ? rects
-    : filterToLeavesAndOutermost(rects, positionTolerance);
+    : applySubsetSuppression(
+        filterToLeavesAndOutermost(rects, positionTolerance),
+        positionTolerance
+      );
 
   if (options.diagnostics) {
     options.diagnostics.rectsBeforeFilter = rectsBeforeFilter;
@@ -629,6 +655,133 @@ export const buildLineBoundedRects = (
   );
 
   return filtered;
+};
+
+/**
+ * Drop interior chain members from groups of rects that share three of four
+ * edges. For every (3 fixed edges, 1 varying edge) grouping we keep the chain
+ * endpoints — the tightest rect AND the loosest rect — and drop only the
+ * intermediate variants.
+ *
+ * Worked examples
+ *  - 13-row × 5-col table: per (column-pair, top) the raw enumeration emits
+ *    a fan of 13 rects with bottoms at every horizontal rule. Endpoints rule
+ *    keeps the row-1 strip (smallest) and the table-outer strip (largest);
+ *    the 11 cumulative row strips in between are dropped.
+ *  - HEADER + 1 internal full-width divider: chain length 2 (HEADER, sub-row).
+ *    Both endpoints. No interior, no drop.
+ *  - OUTER PAGE with HEADER and FOOTER full-width borders: chain length ≥ 3
+ *    (page top→header bottom; page top→footer top; page top→footer bottom;
+ *    page top→page bottom). Endpoints keeps the smallest strip and the page
+ *    outer; the intermediate strips are dropped, but the page outer is
+ *    preserved.
+ *
+ * Why endpoints, not just smallest:
+ *  The simpler "keep smallest" variant (drop R if any smaller R' shares 3
+ *  edges) destroys any container that happens to have a full-width internal
+ *  rule, because the upper sub-strip becomes a smaller 3-edge-shared sibling
+ *  and the container is collapsed to that strip. Endpoints preserves the
+ *  container while still collapsing the chain interior, which is the
+ *  pathology that drives 22+ deep parent chains on dense tables.
+ *
+ * The existing `filterToLeavesAndOutermost` pass handles sub-block unions
+ * when the underlying leaf tiling is fully detected. Real documents routinely
+ * lose a handful of interior cell rules to glyph noise, which lets the leaf
+ * filter's tile-decomposition fail and the chain rects survive as leaves.
+ * Subset suppression catches the chain directly without depending on a
+ * complete tiling.
+ */
+const applySubsetSuppression = (
+  rects: PixelBounds[],
+  positionTolerance: number
+): PixelBounds[] => {
+  if (rects.length <= 1) {
+    return rects.slice();
+  }
+  // Chain edge equality must be exact: rect coordinates derive from
+  // axis-clustered line segment axisPos values, so two rects whose 3 fixed
+  // edges came from the same physical segments will have identical values.
+  // A loose (positionTolerance) equality here would group rects that share
+  // a NEAR edge (e.g. an outer page rule and an inner container rule
+  // separated by a 10 px inset) as a chain, falsely marking the inner
+  // container as chain interior. Using exact equality keeps the rule
+  // restricted to real cumulative-union chains.
+  const eq = (a: number, b: number): boolean => a === b;
+  const strictlyLess = (a: number, b: number): boolean => a < b;
+
+  const drop = new Uint8Array(rects.length);
+  for (let i = 0; i < rects.length; i += 1) {
+    const R = rects[i];
+    let lrt_smaller = 0; // same (left, right, top); count with R'.bottom < R.bottom
+    let lrt_larger = 0; //                            count with R'.bottom > R.bottom
+    let lrb_smaller = 0; // same (left, right, bottom); count with R'.top > R.top
+    let lrb_larger = 0; //                              count with R'.top < R.top
+    let tbl_smaller = 0; // same (top, bottom, left); count with R'.right < R.right
+    let tbl_larger = 0; //                            count with R'.right > R.right
+    let tbr_smaller = 0; // same (top, bottom, right); count with R'.left > R.left
+    let tbr_larger = 0; //                             count with R'.left < R.left
+    for (let j = 0; j < rects.length; j += 1) {
+      if (i === j) {
+        continue;
+      }
+      const Rp = rects[j];
+      if (eq(R.left, Rp.left) && eq(R.right, Rp.right) && eq(R.top, Rp.top)) {
+        if (strictlyLess(Rp.bottom, R.bottom)) {
+          lrt_smaller += 1;
+        } else if (strictlyLess(R.bottom, Rp.bottom)) {
+          lrt_larger += 1;
+        }
+      }
+      if (eq(R.left, Rp.left) && eq(R.right, Rp.right) && eq(R.bottom, Rp.bottom)) {
+        if (strictlyLess(R.top, Rp.top)) {
+          lrb_smaller += 1;
+        } else if (strictlyLess(Rp.top, R.top)) {
+          lrb_larger += 1;
+        }
+      }
+      if (eq(R.top, Rp.top) && eq(R.bottom, Rp.bottom) && eq(R.left, Rp.left)) {
+        if (strictlyLess(Rp.right, R.right)) {
+          tbl_smaller += 1;
+        } else if (strictlyLess(R.right, Rp.right)) {
+          tbl_larger += 1;
+        }
+      }
+      if (eq(R.top, Rp.top) && eq(R.bottom, Rp.bottom) && eq(R.right, Rp.right)) {
+        if (strictlyLess(R.left, Rp.left)) {
+          tbr_smaller += 1;
+        } else if (strictlyLess(Rp.left, R.left)) {
+          tbr_larger += 1;
+        }
+      }
+    }
+    // Chain-interior predicate: at least one neighbor on EACH side AND a
+    // total chain length ≥ 5 (i.e. R has ≥ 4 other shared-3-edges siblings).
+    // The leaf-or-outermost filter (run before this pass) handles synthetic
+    // complete grids; this floor leaves modest-size chains (4-element
+    // coincidences from outer/container/inner-label edge alignment) alone
+    // while still catching real-document chain pathologies. The user's
+    // 13-row × 5-col items table column-fan has chain length 13 — well
+    // above the floor — and 22+ deep parent chains in the structural
+    // model collapse to two endpoints per group.
+    const chainInterior = (smaller: number, larger: number): boolean =>
+      smaller >= 1 && larger >= 1 && smaller + larger >= 4;
+    if (
+      chainInterior(lrt_smaller, lrt_larger) ||
+      chainInterior(lrb_smaller, lrb_larger) ||
+      chainInterior(tbl_smaller, tbl_larger) ||
+      chainInterior(tbr_smaller, tbr_larger)
+    ) {
+      drop[i] = 1;
+    }
+  }
+
+  const out: PixelBounds[] = [];
+  for (let i = 0; i < rects.length; i += 1) {
+    if (!drop[i]) {
+      out.push(rects[i]);
+    }
+  }
+  return out;
 };
 
 /**
