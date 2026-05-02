@@ -31,7 +31,14 @@ import type { NormalizedPage } from '../contracts/normalized-page';
 import type { StructuralModel } from '../contracts/structural-model';
 import type { PageSurface } from '../page-surface/page-surface';
 
-const OPENCV_SCRIPT_URL = 'https://docs.opencv.org/4.x/opencv.js';
+// jsDelivr serves npm package files with permissive CORS headers, which is
+// required because the worker loads the script via `fetch` (module workers
+// cannot use `importScripts`). The official `docs.opencv.org/4.x/opencv.js`
+// host does not send `Access-Control-Allow-Origin`, so cross-origin reads
+// fail with a generic "Failed to fetch". `@techstark/opencv-js` is the
+// canonical npm publication of the OpenCV.js build.
+const OPENCV_SCRIPT_URL =
+  'https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.10.0-release.1/dist/opencv.js';
 
 declare const self: DedicatedWorkerGlobalScope;
 

@@ -8,8 +8,12 @@ export interface OpenCvRuntimeLoadResult {
   reason?: string;
 }
 
+// Kept in sync with `src/core/runtime/structural-worker.ts`. The worker path
+// must use a CORS-enabled host because module workers load the script via
+// `fetch`; we use the same URL on the main thread so both paths exercise the
+// same OpenCV.js build.
 const DEFAULT_OPENCV_SCRIPT_URL =
-  'https://docs.opencv.org/4.x/opencv.js';
+  'https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.10.0-release.1/dist/opencv.js';
 
 const SCRIPT_ATTR = 'data-wrokit-opencv-runtime';
 const LOAD_TIMEOUT_MS = 12_000;
