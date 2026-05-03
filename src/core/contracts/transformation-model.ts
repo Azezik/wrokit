@@ -33,7 +33,8 @@ export type TransformationMatchBasis =
   | 'refined-border-relation'
   | 'border-relation'
   | 'overlap-iou'
-  | 'sibling-consistency';
+  | 'sibling-consistency'
+  | 'field-recovery';
 
 export type TransformationMatchLevel =
   | 'border'
@@ -229,7 +230,8 @@ const isTransformationMatchBasis = (value: unknown): value is TransformationMatc
   value === 'refined-border-relation' ||
   value === 'border-relation' ||
   value === 'overlap-iou' ||
-  value === 'sibling-consistency';
+  value === 'sibling-consistency' ||
+  value === 'field-recovery';
 
 const isTransformationMatchLevel = (value: unknown): value is TransformationMatchLevel =>
   value === 'border' ||

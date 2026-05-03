@@ -2013,6 +2013,9 @@ describe('localization-runner', () => {
       // backed by 5 matches at 0.95 confidence, the override fires and
       // consensus wins — exactly the cross-document case where a single
       // primary anchor disagrees with the page-level movement trend.
+      // Primary confidence is held just below
+      // CONSENSUS_OVERRIDE_LOCAL_EVIDENCE_MIN_CONFIDENCE so the strong-local-
+      // evidence guard does not suppress the override.
       const transformationModel = buildTransformationModelWithConsensus(
         [
           {
@@ -2022,7 +2025,7 @@ describe('localization-runner', () => {
             runtimeObjectId: 'rt_box',
             transform: { scaleX: 1, scaleY: 1, translateX: 0.2, translateY: 0.3 },
             relativeFieldRect: { xRatio: 0.125, yRatio: 0, wRatio: 0.5, hRatio: 0.25 },
-            confidence: 0.95,
+            confidence: 0.7,
             notes: []
           }
         ],
@@ -2054,6 +2057,133 @@ describe('localization-runner', () => {
       // (0.75, 0.70, 0.20, 0.10).
       expect(predicted.bbox.xNorm).toBeCloseTo(0.75, 6);
       expect(predicted.bbox.yNorm).toBeCloseTo(0.7, 6);
+      expect(predicted.warnings ?? []).toEqual(
+        expect.arrayContaining([expect.stringContaining('consensus override')])
+      );
+    });
+
+    it('retains the primary anchor projection when the config object contains the field and confidence is near-perfect', async () => {
+      const runner = createLocalizationRunner();
+      // cfg_box at (0.2, 0.2, 0.4, 0.4) contains the field bbox
+      // (0.25, 0.20, 0.20, 0.10). Primary projects to (0.45, 0.50);
+      // consensus projects to (0.75, 0.70) — IoU ≈ 0, below
+      // CONSENSUS_OVERRIDE_MAX_IOU. With primary confidence 0.9 (≥
+      // CONSENSUS_OVERRIDE_LOCAL_EVIDENCE_MIN_CONFIDENCE) and the source
+      // config object actually containing the field, the strong-local-
+      // evidence guard fires and the override is suppressed.
+      const transformationModel = buildTransformationModelWithConsensus(
+        [
+          {
+            source: 'matched-object',
+            fallbackOrder: 0,
+            configObjectId: 'cfg_box',
+            runtimeObjectId: 'rt_box',
+            transform: { scaleX: 1, scaleY: 1, translateX: 0.2, translateY: 0.3 },
+            relativeFieldRect: { xRatio: 0.125, yRatio: 0, wRatio: 0.5, hRatio: 0.25 },
+            confidence: 0.9,
+            notes: []
+          }
+        ],
+        {
+          transform: { scaleX: 1, scaleY: 1, translateX: 0.5, translateY: 0.5 },
+          confidence: 0.95,
+          contributingMatchCount: 5,
+          outliers: [],
+          notes: [],
+          warnings: []
+        }
+      );
+
+      const result = await runner.run({
+        wizardId: 'Invoice Wizard',
+        configGeometry,
+        configStructuralModel: baseConfigModel,
+        runtimeStructuralModel: baseRuntimeModel,
+        runtimePages: [runtimePage],
+        transformationModel,
+        predictedId: 'pred_tm_strong_local',
+        nowIso: '2026-04-27T00:00:00Z'
+      });
+
+      const predicted = result.fields[0];
+      expect(predicted.anchorTierUsed).not.toBe('page-consensus');
+      expect(predicted.transform.basis).not.toBe('page-consensus');
+      // Field projected by primary affine (1, 1, 0.2, 0.3): (0.45, 0.50).
+      expect(predicted.bbox.xNorm).toBeCloseTo(0.45, 6);
+      expect(predicted.bbox.yNorm).toBeCloseTo(0.5, 6);
+      expect(predicted.warnings ?? []).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('local anchor projection retained over consensus')
+        ])
+      );
+    });
+
+    it('still overrides when the config object does NOT contain the field, even at near-perfect confidence', async () => {
+      const runner = createLocalizationRunner();
+      // Same disagreement setup as the override-fires test, but here the
+      // config object's rect is constructed so it does NOT contain the
+      // field bbox. The strong-local-evidence guard should be skipped (one
+      // of its two conditions fails) and the existing override behavior is
+      // preserved.
+      const noContainConfig: StructuralModel = {
+        ...baseConfigModel,
+        pages: [
+          {
+            ...baseConfigModel.pages[0],
+            objectHierarchy: {
+              objects: [
+                {
+                  // Sits well outside the field bbox at (0.25, 0.2, 0.2, 0.1).
+                  objectId: 'cfg_box',
+                  objectRectNorm: { xNorm: 0.7, yNorm: 0.7, wNorm: 0.2, hNorm: 0.2 },
+                  bbox: { xNorm: 0.7, yNorm: 0.7, wNorm: 0.2, hNorm: 0.2 },
+                  parentObjectId: null,
+                  childObjectIds: [],
+                  confidence: 0.9,
+                  depth: 0
+                }
+              ]
+            }
+          }
+        ]
+      };
+      const transformationModel = buildTransformationModelWithConsensus(
+        [
+          {
+            source: 'matched-object',
+            fallbackOrder: 0,
+            configObjectId: 'cfg_box',
+            runtimeObjectId: 'rt_box',
+            transform: { scaleX: 1, scaleY: 1, translateX: 0.2, translateY: 0.3 },
+            relativeFieldRect: { xRatio: 0.125, yRatio: 0, wRatio: 0.5, hRatio: 0.25 },
+            confidence: 0.95,
+            notes: []
+          }
+        ],
+        {
+          transform: { scaleX: 1, scaleY: 1, translateX: 0.5, translateY: 0.5 },
+          confidence: 0.95,
+          contributingMatchCount: 5,
+          outliers: [],
+          notes: [],
+          warnings: []
+        }
+      );
+
+      const result = await runner.run({
+        wizardId: 'Invoice Wizard',
+        configGeometry,
+        configStructuralModel: noContainConfig,
+        runtimeStructuralModel: baseRuntimeModel,
+        runtimePages: [runtimePage],
+        transformationModel,
+        predictedId: 'pred_tm_no_contain',
+        nowIso: '2026-04-27T00:00:00Z'
+      });
+
+      const predicted = result.fields[0];
+      expect(predicted.anchorTierUsed).toBe('page-consensus');
+      expect(predicted.transform.basis).toBe('page-consensus');
       expect(predicted.warnings ?? []).toEqual(
         expect.arrayContaining([expect.stringContaining('consensus override')])
       );
