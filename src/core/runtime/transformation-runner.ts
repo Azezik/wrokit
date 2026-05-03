@@ -1,8 +1,14 @@
-import type { StructuralModel, StructuralPage } from '../contracts/structural-model';
+import type {
+  StructuralModel,
+  StructuralObjectNode,
+  StructuralPage
+} from '../contracts/structural-model';
 import {
   createEmptyTransformationModel,
+  type TransformationConsensus,
   type TransformationLevelSummary,
   type TransformationModel,
+  type TransformationObjectMatch,
   type TransformationPage
 } from '../contracts/transformation-model';
 import {
@@ -15,6 +21,11 @@ import {
 } from './transformation/consensus';
 import { computeFieldAlignments } from './transformation/field-candidates';
 import { matchPage, type MatcherOptions } from './transformation/hierarchical-matcher';
+import {
+  affineFromRects,
+  applyAffineToRect,
+  iouOfRects
+} from './transformation/transform-math';
 
 /**
  * Collect every config object ID named as a primary or secondary anchor of
@@ -76,6 +87,119 @@ const findRuntimePage = (
   runtime: StructuralModel,
   pageIndex: number
 ): StructuralPage | undefined => runtime.pages.find((p) => p.pageIndex === pageIndex);
+
+/**
+ * Minimum IoU between a config field anchor's consensus-projected rect and a
+ * candidate unmatched runtime object's rect before we recover the pair as a
+ * field-anchor match. Set conservatively: a recovery is only honest when the
+ * projected location actually overlaps the runtime object meaningfully.
+ */
+const FIELD_RECOVERY_MIN_IOU = 0.5;
+
+/**
+ * Confidence assigned to recovered matches. Deliberately set to the same
+ * floor field-candidates.ts requires of object-anchor candidates
+ * (`MIN_OBJECT_ANCHOR_MATCH_CONFIDENCE` = 0.7) so that a recovery is just
+ * trusted enough to be picked up as a matched-object candidate, but never
+ * elevated above a real matcher result.
+ */
+const FIELD_RECOVERY_CONFIDENCE = 0.7;
+
+interface FieldAnchorRecoveryInput {
+  configPage: StructuralPage;
+  runtimePage: StructuralPage;
+  matches: ReadonlyArray<TransformationObjectMatch>;
+  unmatchedRuntimeObjectIds: ReadonlyArray<string>;
+  consensus: TransformationConsensus;
+}
+
+const indexObjectsById = (
+  page: StructuralPage
+): Map<string, StructuralObjectNode> =>
+  new Map(page.objectHierarchy.objects.map((o) => [o.objectId, o]));
+
+/**
+ * Field-aware anchor recovery: when a field's declared anchor (primary,
+ * secondary or tertiary) has no match from the main matcher pass but the page
+ * has a usable consensus affine, project the anchor's config rect through
+ * consensus and look for an unmatched runtime object near the projected
+ * location. Emit a low-confidence `field-recovery` match so downstream
+ * field-candidate generation can treat the anchor as resolved with a fresh
+ * local affine derived from the rect pair.
+ */
+const recoverFieldAnchorMatches = (
+  input: FieldAnchorRecoveryInput
+): TransformationObjectMatch[] => {
+  if (!input.consensus.transform) {
+    return [];
+  }
+  if (input.configPage.fieldRelationships.length === 0) {
+    return [];
+  }
+
+  const matchedConfigIds = new Set(input.matches.map((m) => m.configObjectId));
+  const consumedRuntimeIds = new Set<string>();
+  const consumedConfigIds = new Set<string>();
+  const configObjects = indexObjectsById(input.configPage);
+  const unmatchedRuntimeObjects = input.runtimePage.objectHierarchy.objects.filter((o) =>
+    input.unmatchedRuntimeObjectIds.includes(o.objectId)
+  );
+
+  const recovered: TransformationObjectMatch[] = [];
+
+  for (const field of input.configPage.fieldRelationships) {
+    for (const anchor of field.fieldAnchors.objectAnchors) {
+      if (matchedConfigIds.has(anchor.objectId) || consumedConfigIds.has(anchor.objectId)) {
+        continue;
+      }
+      const configObj = configObjects.get(anchor.objectId);
+      if (!configObj) {
+        continue;
+      }
+      const projected = applyAffineToRect(
+        configObj.objectRectNorm,
+        input.consensus.transform
+      );
+
+      let bestRuntime: StructuralObjectNode | undefined;
+      let bestIou = 0;
+      for (const runtimeObj of unmatchedRuntimeObjects) {
+        if (consumedRuntimeIds.has(runtimeObj.objectId)) {
+          continue;
+        }
+        const iou = iouOfRects(projected, runtimeObj.objectRectNorm);
+        if (iou > bestIou) {
+          bestIou = iou;
+          bestRuntime = runtimeObj;
+        }
+      }
+
+      if (!bestRuntime || bestIou < FIELD_RECOVERY_MIN_IOU) {
+        continue;
+      }
+
+      const transform = affineFromRects(
+        configObj.objectRectNorm,
+        bestRuntime.objectRectNorm
+      );
+      recovered.push({
+        configObjectId: anchor.objectId,
+        runtimeObjectId: bestRuntime.objectId,
+        confidence: FIELD_RECOVERY_CONFIDENCE,
+        basis: ['field-recovery'],
+        transform,
+        notes: [
+          `recovered via consensus-projected location; IoU ${bestIou.toFixed(2)}`
+        ],
+        warnings: []
+      });
+      consumedRuntimeIds.add(bestRuntime.objectId);
+      consumedConfigIds.add(anchor.objectId);
+    }
+  }
+
+  return recovered;
+};
 
 const buildLevelSummaries = (
   configPage: StructuralPage,
@@ -166,21 +290,50 @@ export const createTransformationRunner = (
           runtimePage,
           consensusOptions ?? {}
         );
+
+        const recovered = recoverFieldAnchorMatches({
+          configPage,
+          runtimePage,
+          matches: result.matches,
+          unmatchedRuntimeObjectIds: result.unmatchedRuntimeObjectIds,
+          consensus
+        });
+
+        const matches = recovered.length > 0 ? [...result.matches, ...recovered] : result.matches;
+        let unmatchedConfigObjectIds = result.unmatchedConfigObjectIds;
+        let unmatchedRuntimeObjectIds = result.unmatchedRuntimeObjectIds;
+        if (recovered.length > 0) {
+          const recoveredConfigIds = new Set(recovered.map((r) => r.configObjectId));
+          const recoveredRuntimeIds = new Set(recovered.map((r) => r.runtimeObjectId));
+          unmatchedConfigObjectIds = unmatchedConfigObjectIds.filter(
+            (id) => !recoveredConfigIds.has(id)
+          );
+          unmatchedRuntimeObjectIds = unmatchedRuntimeObjectIds.filter(
+            (id) => !recoveredRuntimeIds.has(id)
+          );
+        }
+
         const fieldAlignments = computeFieldAlignments(
           configPage,
-          result.matches,
+          matches,
           levelSummaries
+        );
+
+        const recoveryNotes = recovered.map(
+          (r) =>
+            `field-recovery: ${r.configObjectId} ↔ ${r.runtimeObjectId} ` +
+            `(${r.notes[0] ?? ''})`
         );
 
         return {
           ...emptyPage,
-          objectMatches: result.matches,
-          unmatchedConfigObjectIds: result.unmatchedConfigObjectIds,
-          unmatchedRuntimeObjectIds: result.unmatchedRuntimeObjectIds,
+          objectMatches: matches,
+          unmatchedConfigObjectIds,
+          unmatchedRuntimeObjectIds,
           levelSummaries,
           consensus,
           fieldAlignments,
-          notes: [...emptyPage.notes, ...result.notes],
+          notes: [...emptyPage.notes, ...result.notes, ...recoveryNotes],
           warnings: [...emptyPage.warnings, ...result.warnings]
         };
       });

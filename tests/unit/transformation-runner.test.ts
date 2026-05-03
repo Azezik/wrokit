@@ -352,6 +352,57 @@ describe('transformation-runner — end-to-end', () => {
     expect(page.unmatchedRuntimeObjectIds).toContain('runtimeOnly');
   });
 
+  it('recovers a field anchor via consensus projection when the matcher misses it', () => {
+    // Three coherent cfg/rt pairs anchor a confident page consensus
+    // (identity). The thin orphan on each side is intentionally shaped so
+    // the matcher fails the aspect floor (cfg aspect 2.5 vs rt aspect ~1.67
+    // → smaller/larger ≈ 0.67, below the 0.7 floor) — but their IoU under
+    // identity consensus is high enough (~0.67) to clear the recovery
+    // threshold of 0.5. The field declares the orphan as its primary anchor;
+    // recovery should pair them and a matched-object candidate should be
+    // emitted using a fresh local affine derived from the rect pair.
+    const configObjects = [
+      node('c1', rect(0.5, 0.1, 0.1, 0.1)),
+      node('c2', rect(0.5, 0.5, 0.1, 0.1)),
+      node('c3', rect(0.5, 0.7, 0.1, 0.1)),
+      node('cfg_orphan', rect(0.1, 0.1, 0.05, 0.02))
+    ];
+    const runtimeObjects = [
+      node('c1', rect(0.5, 0.1, 0.1, 0.1)),
+      node('c2', rect(0.5, 0.5, 0.1, 0.1)),
+      node('c3', rect(0.5, 0.7, 0.1, 0.1)),
+      node('rt_orphan', rect(0.1, 0.1, 0.05, 0.03))
+    ];
+    const fields = [buildField('f1', 'cfg_orphan')];
+    const configModel = buildModel('cfg', 'cfg-fp', buildPage(configObjects, fields));
+    const runtimeModel = buildModel('rt', 'rt-fp', buildPage(runtimeObjects));
+
+    const runner = createTransformationRunner();
+    const model = runner.compute({ config: configModel, runtime: runtimeModel });
+
+    const page = model.pages[0];
+    const recoveryMatch = page.objectMatches.find((m) => m.basis.includes('field-recovery'));
+    expect(recoveryMatch).toBeDefined();
+    expect(recoveryMatch!.configObjectId).toBe('cfg_orphan');
+    expect(recoveryMatch!.runtimeObjectId).toBe('rt_orphan');
+    expect(recoveryMatch!.confidence).toBeCloseTo(0.7, 6);
+
+    // The recovery match's transform must be derived from the rect pair, not
+    // reused from consensus. cfg_orphan (h=0.02) → rt_orphan (h=0.03) is a
+    // 1.5x scaleY, distinct from the consensus identity.
+    expect(recoveryMatch!.transform.scaleY).toBeCloseTo(1.5, 5);
+
+    expect(page.unmatchedConfigObjectIds).not.toContain('cfg_orphan');
+    expect(page.unmatchedRuntimeObjectIds).not.toContain('rt_orphan');
+
+    const alignment = page.fieldAlignments.find((a) => a.fieldId === 'f1');
+    expect(alignment).toBeDefined();
+    const matchedCandidate = alignment!.candidates.find((c) => c.source === 'matched-object');
+    expect(matchedCandidate).toBeDefined();
+    expect(matchedCandidate!.configObjectId).toBe('cfg_orphan');
+    expect(matchedCandidate!.runtimeObjectId).toBe('rt_orphan');
+  });
+
   it('produces no field alignments when the config page declares no fields', () => {
     const configModel = buildModel(
       'cfg',

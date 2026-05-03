@@ -925,6 +925,17 @@ const CONSENSUS_OVERRIDE_MIN_CONTRIBUTORS = 2;
 const CONSENSUS_OVERRIDE_MAX_IOU = 0.6;
 
 /**
+ * Confidence floor at which a primary candidate's local affine carries enough
+ * weight to suppress the consensus override even when the projected boxes
+ * disagree by IoU. Pairs with a containment check on the source config
+ * object: if the config object truly contains the field bbox AND the match
+ * confidence is near-perfect, the local projection is treated as honest local
+ * evidence and IoU disagreement on a thin field is not by itself a reason to
+ * discard it in favour of the page consensus.
+ */
+const CONSENSUS_OVERRIDE_LOCAL_EVIDENCE_MIN_CONFIDENCE = 0.85;
+
+/**
  * Stricter floor used when a consensus has only a SINGLE contributing match.
  * A 1-match consensus is structurally degenerate: it is just that one match's
  * own affine elevated to "page-level" status, with no second match available
@@ -946,6 +957,27 @@ const isObjectAnchorCandidate = (
   candidate: TransformationFieldCandidate
 ): boolean =>
   candidate.source === 'matched-object' || candidate.source === 'parent-object';
+
+const configObjectContainsField = (
+  configObjectId: string | null,
+  fieldBbox: NormalizedBoundingBox,
+  configPage: StructuralPage
+): boolean => {
+  if (!configObjectId) {
+    return false;
+  }
+  const configObject = getObjectById(configPage, configObjectId);
+  if (!configObject) {
+    return false;
+  }
+  const r = configObject.objectRectNorm;
+  return (
+    fieldBbox.xNorm >= r.xNorm &&
+    fieldBbox.yNorm >= r.yNorm &&
+    fieldBbox.xNorm + fieldBbox.wNorm <= r.xNorm + r.wNorm &&
+    fieldBbox.yNorm + fieldBbox.hNorm <= r.yNorm + r.hNorm
+  );
+};
 
 const resolveFromConsensusRescue = (
   source: FieldGeometry,
@@ -1681,8 +1713,31 @@ export const createLocalizationRunner = (): LocalizationRunner => ({
               transformationPage.consensus.contributingMatchCount >=
                 CONSENSUS_OVERRIDE_MIN_CONTRIBUTORS
             ) {
+              // Suppress the override when the chosen local anchor has both
+              // near-perfect match confidence AND its source config object
+              // actually contains the field bbox. The IoU disagreement check
+              // is brutal on thin fields (a small vertical shift wipes IoU
+              // even when both projections sit inside the right cell), so
+              // when the local affine is honestly local we keep it.
+              const primaryHasStrongLocalEvidence =
+                primaryCandidate.confidence >=
+                  CONSENSUS_OVERRIDE_LOCAL_EVIDENCE_MIN_CONFIDENCE &&
+                configObjectContainsField(
+                  primaryCandidate.configObjectId,
+                  field.bbox,
+                  configStructuralPage
+                );
               const primaryConsensusIou = iouOfRects(resolution.predictedBox, consensusBox);
-              if (primaryConsensusIou < CONSENSUS_OVERRIDE_MAX_IOU) {
+              if (primaryHasStrongLocalEvidence) {
+                resolution = {
+                  ...resolution,
+                  warnings: [
+                    ...(resolution.warnings ?? []),
+                    'local anchor projection retained over consensus ' +
+                      '(containment + high confidence)'
+                  ]
+                };
+              } else if (primaryConsensusIou < CONSENSUS_OVERRIDE_MAX_IOU) {
                 const overrideResolution = resolveFromConsensusRescue(
                   field,
                   transformationPage.consensus,
@@ -1812,6 +1867,8 @@ export const __testing = {
   CONSENSUS_OVERRIDE_MIN_CONFIDENCE,
   CONSENSUS_OVERRIDE_MIN_CONTRIBUTORS,
   CONSENSUS_OVERRIDE_MAX_IOU,
+  CONSENSUS_OVERRIDE_LOCAL_EVIDENCE_MIN_CONFIDENCE,
+  configObjectContainsField,
   SINGLE_MATCH_CONSENSUS_MIN_CONFIDENCE,
   ANCHOR_AGREEMENT_IOU_MIN,
   WEAK_OBJECT_MATCH_CONFIDENCE,
