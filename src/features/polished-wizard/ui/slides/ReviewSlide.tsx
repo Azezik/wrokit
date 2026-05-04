@@ -110,6 +110,14 @@ export function ReviewSlide({ orchestrator }: ReviewSlideProps) {
     return { touched, total: cleaned.audits.length };
   }, [cleaned]);
 
+  const declaredTypes = cleaned
+    ? cleaned.cleanedTable.fieldOrder.map((fieldId) => ({
+        fieldId,
+        label: fieldLabels.get(fieldId) ?? fieldId,
+        declaredType: cleaned.profiles[fieldId]?.declaredType ?? 'any'
+      }))
+    : [];
+
   const canClean = Boolean(wizard && table && table.rows.length > 0);
 
   return (
@@ -166,6 +174,15 @@ export function ReviewSlide({ orchestrator }: ReviewSlideProps) {
           <p className="polished-wizard__hint">
             OCRMagic touched {cleanSummary.touched} of {cleanSummary.total} cell(s) using
             field-type and column-pattern rules. The raw MasterDB is unchanged.
+          </p>
+        ) : null}
+
+        {declaredTypes.length > 0 ? (
+          <p className="polished-wizard__hint">
+            Field types read from your WizardFile:{' '}
+            {declaredTypes
+              .map((entry) => `${entry.label} = ${entry.declaredType}`)
+              .join(' · ')}
           </p>
         ) : null}
       </div>
