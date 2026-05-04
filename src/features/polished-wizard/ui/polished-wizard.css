@@ -329,3 +329,15 @@
   border-color: var(--color-primary);
   background: var(--color-surface);
 }
+
+.polished-wizard__inline-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: var(--space-2);
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  animation: polished-wizard-spin 0.7s linear infinite;
+  vertical-align: -2px;
+}

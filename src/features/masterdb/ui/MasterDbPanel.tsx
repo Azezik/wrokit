@@ -2,10 +2,15 @@ import { useCallback, useMemo, useState, type ChangeEvent } from 'react';
 
 import type { MasterDbTable } from '../../../core/contracts/masterdb-table';
 import type { OcrBoxResult } from '../../../core/contracts/ocrbox-result';
+import type { OcrMagicResult } from '../../../core/contracts/ocrmagic-result';
 import type { WizardFile } from '../../../core/contracts/wizard';
 import { MasterDbCsvParseError, parseMasterDbCsv } from '../../../core/engines/masterdb';
-import { downloadMasterDbCsv } from '../../../core/io/masterdb-csv-io';
+import {
+  downloadCleanedMasterDbCsv,
+  downloadMasterDbCsv
+} from '../../../core/io/masterdb-csv-io';
 import { createMasterDbRunner } from '../../../core/runtime/masterdb-runner';
+import { createOcrMagicRunner } from '../../../core/runtime/ocrmagic-runner';
 import { Button } from '../../../core/ui/components/Button';
 import { Panel } from '../../../core/ui/components/Panel';
 
@@ -26,12 +31,15 @@ export function MasterDbPanel({
   const [table, setTable] = useState<MasterDbTable | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [cleaning, setCleaning] = useState(false);
+  const [cleaned, setCleaned] = useState<OcrMagicResult | null>(null);
   const [lastApplied, setLastApplied] = useState<{
     appended: string[];
     replaced: string[];
   } | null>(null);
 
   const runnerRef = useMemo(() => createMasterDbRunner(), []);
+  const ocrMagicRunnerRef = useMemo(() => createOcrMagicRunner(), []);
 
   const appendDisabled = !wizard || !pendingResult || busy;
 
@@ -49,6 +57,7 @@ export function MasterDbPanel({
       });
       setTable(next.table);
       setLastApplied({ appended: next.appendedRowIds, replaced: next.replacedRowIds });
+      setCleaned(null);
     } catch (applyError) {
       setError(applyError instanceof Error ? applyError.message : 'MasterDB apply failed.');
     } finally {
@@ -71,6 +80,7 @@ export function MasterDbPanel({
       const parsed = parseMasterDbCsv(text, wizard.wizardName);
       setTable(parsed);
       setLastApplied(null);
+      setCleaned(null);
       setError(null);
     } catch (importError) {
       setError(
@@ -87,15 +97,45 @@ export function MasterDbPanel({
     }
   };
 
+  const handleCleanData = useCallback(async () => {
+    if (!wizard || !table || cleaning) {
+      return;
+    }
+    setCleaning(true);
+    setError(null);
+    try {
+      const out = await ocrMagicRunnerRef.clean({ wizard, masterDb: table });
+      setCleaned(out.result);
+    } catch (cleanError) {
+      setError(cleanError instanceof Error ? cleanError.message : 'OCRMagic cleanup failed.');
+    } finally {
+      setCleaning(false);
+    }
+  }, [wizard, table, cleaning, ocrMagicRunnerRef]);
+
+  const handleDownloadCleaned = () => {
+    if (cleaned) {
+      downloadCleanedMasterDbCsv(cleaned.cleanedTable);
+    }
+  };
+
   const handleClear = () => {
     setTable(null);
     setLastApplied(null);
+    setCleaned(null);
     setError(null);
   };
 
   const headerColumns = table
     ? ['document_id', 'source_name', 'extracted_at_iso', ...table.fieldOrder]
     : [];
+
+  const cleanedTouched = cleaned
+    ? cleaned.changeCounts['edge-cleaned'] +
+      cleaned.changeCounts['whitespace-normalized'] +
+      cleaned.changeCounts['type-substituted'] +
+      cleaned.changeCounts['pattern-corrected']
+    : 0;
 
   return (
     <Panel className="masterdb-panel">
@@ -121,6 +161,16 @@ export function MasterDbPanel({
         <Button type="button" onClick={handleDownload} disabled={!table || table.rows.length === 0}>
           Download MasterDB CSV
         </Button>
+        <Button
+          type="button"
+          onClick={handleCleanData}
+          disabled={!wizard || !table || table.rows.length === 0 || cleaning}
+        >
+          {cleaning ? 'Cleaning…' : 'Clean Data (OCRMagic)'}
+        </Button>
+        <Button type="button" onClick={handleDownloadCleaned} disabled={!cleaned}>
+          Download cleaned CSV
+        </Button>
         <label className="masterdb-panel__import">
           <span>Upload existing MasterDB CSV</span>
           <input type="file" accept=".csv,text/csv" onChange={handleImport} />
@@ -134,6 +184,15 @@ export function MasterDbPanel({
         <p className="masterdb-panel__meta">
           Last apply — appended: {lastApplied.appended.length || 'none'} · replaced:{' '}
           {lastApplied.replaced.length || 'none'}
+        </p>
+      ) : null}
+      {cleaned ? (
+        <p className="masterdb-panel__meta">
+          OCRMagic touched {cleanedTouched} of {cleaned.audits.length} cell(s) — raw is unchanged.
+          Counts: edge-cleaned {cleaned.changeCounts['edge-cleaned']}, whitespace{' '}
+          {cleaned.changeCounts['whitespace-normalized']}, type-substituted{' '}
+          {cleaned.changeCounts['type-substituted']}, pattern-corrected{' '}
+          {cleaned.changeCounts['pattern-corrected']}.
         </p>
       ) : null}
       {table && table.rows.length > 0 ? (

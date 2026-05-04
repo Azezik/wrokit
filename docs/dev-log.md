@@ -1,3 +1,31 @@
+## 2026-05-04 — Add: OCRMagic post-processing engine (field-aware, column-aware MasterDB cleanup)
+
+### Why this step
+- The MasterDB CSV that comes out of OCRBOX is faithful to the OCR readout but visibly "dirty": leading apostrophes/quotes from punctuation that bled into the crop, trailing pipes from table separators, copyright glyphs, NBSPs, multi-spaces, and the occasional digit/letter swap (`O`↔`0`, `l`↔`1`). A second pass that knows the WizardFile's declared field types and the column shape can fix most of that without re-running OCR.
+- The post-processing pass needs to remain **isolated**: it must never touch NormalizedPage pixels, OCR adapters, geometry, structure, transformation, or predicted-geometry artifacts. It only sees the WizardFile field-type metadata and the in-memory `MasterDbTable`, and it emits a parallel cleaned `MasterDbTable` plus an audit trail. The user picks raw or cleaned at download time.
+
+### What changed
+- New contract `src/core/contracts/ocrmagic-result.ts` (`OcrMagicResult`, `version: '1.0'`, guard `isOcrMagicResult`). Carries the cleaned `MasterDbTable`, per-field `OcrMagicFieldProfile` (length stats, position-aware char-class majority, common prefixes/suffixes, separators, repeated values, declared vs inferred kind), a flat per-cell audit list (`raw_value`, `clean_value`, `change_type`, `confidence_before`, `confidence_after`, `reason_codes`), and aggregate `changeCounts`.
+- New OCRMagic engine under `src/core/engines/ocrmagic/`:
+  - `cleanup.ts` — conservative edge-junk strip: NBSP→space, zero-width strip, multi-space collapse, leading apostrophe/quote/copyright/separator removal, trailing pipe/separator removal, plus reason codes.
+  - `substitutions.ts` — gated by `WizardFieldType`. `text` flips `0→O`, `1→I`, etc. `numeric` flips `O/o/Q/D→0`, `l/I/|→1`, `S/s→5`. `any` opts out (no context). Also exposes `generateLocalCandidates` for one-character ambiguity flips.
+  - `pattern-profile.ts` — deterministic, lightweight column profile builder + `scoreAgainstProfile` candidate scorer (length-distance + per-position char-class match). Not ML.
+  - `ocrmagic-engine.ts` — pure `Engine<OcrMagicCleanInput, OcrMagicCleanOutput>` running the documented 8-stage pipeline (preserve raw → safe cleanup → type substitutions → learn profile → generate candidates → score → apply when margin clears `0.08` → emit audit). Never mutates inputs.
+  - `index.ts` — re-exports.
+- New runner `src/core/runtime/ocrmagic-runner.ts` exposes a single `clean({wizard, masterDb})` boundary; it is the only place the engine is composed.
+- New CSV download helper in `src/core/io/masterdb-csv-io.ts`: `downloadCleanedMasterDbCsv(table)` ships the cleaned table with a `*.masterdb.cleaned.csv` filename so it does not collide with the raw download.
+- UI wiring:
+  - `src/features/polished-wizard/ui/slides/ReviewSlide.tsx` now renders three footer actions: `Clean Data` (turns into an inline-spinner loading state, then morphs into `Download cleaned CSV`), `Process more files`, and `Download raw CSV`. User cell edits invalidate the cleaned snapshot so they have to re-run OCRMagic to capture their hand-corrections in the cleaned copy.
+  - `src/features/masterdb/ui/MasterDbPanel.tsx` (debug surface used by Config Capture + Run Mode) gained `Clean Data (OCRMagic)` and `Download cleaned CSV` toolbar buttons plus an aggregate change-count summary line.
+- Tests: `tests/unit/ocrmagic-engine.test.ts` covers cleanup, substitutions, candidate generation, profile learning + scoring, end-to-end engine output (raw preservation, cleaned table, audit rectangularity), `any`-typed opt-out, and immutability of the input MasterDbTable. `tests/unit/contracts.test.ts` adds the `isOcrMagicResult` guard suite.
+
+### Engine isolation invariant for OCRMagic
+- OCRMagic consumes only `WizardFile.fields[].type` (read-only) and the source `MasterDbTable`. It does not import or call NormalizedPage, geometry, structural, transformation, localization, OCR, or OCRBOX engines.
+- OCRMagic does not write back into any other engine's contracts. Its only output is the versioned, type-guarded `OcrMagicResult` artifact.
+- The raw `MasterDbTable` is preserved verbatim. The cleaned `MasterDbTable` is a parallel artifact and the user explicitly chooses which one to download.
+
+---
+
 ## 2026-05-04 — Add: OCRBOX engine (localized BBOX OCR) + MasterDB engine (CSV ledger), both isolated
 
 ### Why this step

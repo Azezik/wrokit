@@ -5,6 +5,7 @@ import { isGeometryFile } from '../../src/core/contracts/geometry';
 import { isMasterDbTable } from '../../src/core/contracts/masterdb-table';
 import { isNormalizedPage } from '../../src/core/contracts/normalized-page';
 import { isOcrBoxResult } from '../../src/core/contracts/ocrbox-result';
+import { isOcrMagicResult } from '../../src/core/contracts/ocrmagic-result';
 import { isPredictedGeometryFile } from '../../src/core/contracts/predicted-geometry-file';
 import { isStructuralModel } from '../../src/core/contracts/structural-model';
 import { isWizardFile } from '../../src/core/contracts/wizard';
@@ -713,6 +714,85 @@ describe('isMasterDbTable', () => {
         rows: [{ documentId: 'd', sourceName: 's', extractedAtIso: 't', values: { f1: 1 } }]
       })
     ).toBe(false);
+  });
+});
+
+describe('isOcrMagicResult', () => {
+  const baseTable = {
+    schema: 'wrokit/masterdb-table',
+    version: '1.0',
+    wizardId: 'Invoice Wizard',
+    fieldOrder: ['invoice_number'],
+    rows: [
+      {
+        documentId: 'INV-1',
+        sourceName: 'inv1.pdf',
+        extractedAtIso: '2026-04-29T00:00:00Z',
+        values: { invoice_number: '104882' }
+      }
+    ]
+  };
+
+  const validResult = {
+    schema: 'wrokit/ocrmagic-result',
+    version: '1.0',
+    wizardId: 'Invoice Wizard',
+    generatedAtIso: '2026-04-29T00:00:00Z',
+    cleanedTable: baseTable,
+    profiles: {
+      invoice_number: {
+        fieldId: 'invoice_number',
+        declaredType: 'numeric',
+        inferredKind: 'numeric',
+        sampleCount: 1,
+        nonEmptySampleCount: 1,
+        length: { min: 6, max: 6, mode: 6, mean: 6 },
+        charClassByPosition: ['digit', 'digit', 'digit', 'digit', 'digit', 'digit'],
+        commonPrefixes: [],
+        commonSuffixes: [],
+        separators: [],
+        repeatedValues: []
+      }
+    },
+    audits: [
+      {
+        documentId: 'INV-1',
+        fieldId: 'invoice_number',
+        rawValue: '104882',
+        cleanValue: '104882',
+        changeType: 'unchanged',
+        confidenceBefore: 0.6,
+        confidenceAfter: 0.6,
+        reasonCodes: []
+      }
+    ],
+    changeCounts: {
+      unchanged: 1,
+      'edge-cleaned': 0,
+      'whitespace-normalized': 0,
+      'type-substituted': 0,
+      'pattern-corrected': 0,
+      flagged: 0
+    }
+  };
+
+  it('accepts a valid OCRMagic result', () => {
+    expect(isOcrMagicResult(validResult)).toBe(true);
+  });
+
+  it('rejects wrong schema or unknown char class in profile', () => {
+    expect(isOcrMagicResult(null)).toBe(false);
+    expect(isOcrMagicResult({ ...validResult, schema: 'other' })).toBe(false);
+    const badProfile = {
+      ...validResult,
+      profiles: {
+        invoice_number: {
+          ...validResult.profiles.invoice_number,
+          charClassByPosition: ['digit', 'unknown']
+        }
+      }
+    };
+    expect(isOcrMagicResult(badProfile)).toBe(false);
   });
 });
 
