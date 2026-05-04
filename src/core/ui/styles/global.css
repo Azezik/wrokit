@@ -117,3 +117,32 @@ a {
   margin: 0;
   color: var(--color-text-muted);
 }
+
+.ui-tabs {
+  display: flex;
+  gap: var(--space-2);
+  border-bottom: var(--border-default);
+  margin-bottom: var(--space-3);
+}
+
+.ui-tabs__tab {
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  padding: var(--space-3) var(--space-4);
+  cursor: pointer;
+  font-size: var(--font-size-md);
+  font-weight: 500;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.ui-tabs__tab:hover {
+  color: var(--color-text);
+}
+
+.ui-tabs__tab--active {
+  color: var(--color-primary);
+  border-bottom-color: var(--color-primary);
+}
