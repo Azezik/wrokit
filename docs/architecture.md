@@ -55,6 +55,8 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
   - `TransformationModel`: `1.0` (also carries `transformVersion: 'wrokit/transformation/v1'`)
   - `PredictedGeometryFile`: `1.0` (also carries `geometryFileVersion: 'wrokit/geometry/v1'` and `structureVersion: 'wrokit/structure/v2'` so re-ingest can verify compatibility with the loaded GeometryFile + StructuralModel)
   - `ExtractionResult`: `1.0`
+  - `OcrBoxResult`: `1.0`
+  - `MasterDbTable`: `1.0`
 
 ## Store Pattern
 - Stores are observable. Public surface: async mutators returning `Promise<void>`, `getSnapshot(): TSnapshot`, `subscribe(listener): () => void`.
@@ -78,6 +80,8 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
 - `TransformationModel` (`src/core/contracts/transformation-model.ts`): `schema: 'wrokit/transformation-model'`, `version: '1.0'`, `transformVersion: 'wrokit/transformation/v1'`. Read-only Config↔Runtime alignment report. Persisted separately. Guard: `isTransformationModel`.
 - `PredictedGeometryFile` (`src/core/contracts/predicted-geometry-file.ts`): `schema: 'wrokit/predicted-geometry-file'`, `version: '1.0'`, `geometryFileVersion: 'wrokit/geometry/v1'`, `structureVersion: 'wrokit/structure/v2'`. Runtime localization output: per-field predicted normalized + pixel bboxes on the runtime page surface, plus the `RuntimeStructuralTransform` (anchor tier, source rects, scale/translate, optional matched object IDs). Never overwrites the source `GeometryFile`. Guard: `isPredictedGeometryFile`.
 - `ExtractionResult` (`src/core/contracts/extraction-result.ts`): `schema: 'wrokit/extraction-result'`, `version: '1.0'`. Guard: `isExtractionResult`.
+- `OcrBoxResult` (`src/core/contracts/ocrbox-result.ts`): `schema: 'wrokit/ocrbox-result'`, `version: '1.0'`. Per-field localized OCR readout produced by the OCRBOX engine. Records the bbox actually used (post-padding) and the bbox source (`geometry-file` or `predicted-geometry-file`) so consumers can verify provenance without re-running. Guard: `isOcrBoxResult`.
+- `MasterDbTable` (`src/core/contracts/masterdb-table.ts`): `schema: 'wrokit/masterdb-table'`, `version: '1.0'`. Append-only ledger of one row per processed document. Header order is locked by the WizardFile (`document_id, source_name, extracted_at_iso, <wizard fields…>`). Guard: `isMasterDbTable`.
 
 ## App Shell and Static Hosting
 - The app mounts into a visible `AppShell` with explicit header/content regions.
@@ -133,6 +137,32 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
 - Per-object-type colors are applied via `data-object-type` attributes so a `container`, `rectangle`, `table-like`, `header`, `footer`, and `line-*` are visually distinguishable. Hovering an object highlights it in place (white inset ring) and reveals its label/chain even when those toggles are off, so dense pages can be inspected without flipping every switch.
 - StructuralModel does not carry: OCR, runtime extraction, semantic understanding, automatic field relocation, or global confidence systems. The new object hierarchy adds structural measurement context only.
 
+## OCRBOX Engine (Localized BBOX OCR)
+- The OCRBOX engine is an **isolated** extraction layer that reads only the pixels strictly inside each saved Field BBOX (with an optional small symmetric padding capped at `0.02` normalized). It NEVER modifies a Field BBOX, the GeometryFile, the StructuralModel, the TransformationModel, or the PredictedGeometryFile.
+- Module layout under `src/core/engines/ocrbox/`:
+  - `bbox-cropper.ts` — pure NormalizedPage→canvas crop helper. Renders at canonical surface pixel scale, applies the padding clamp, and returns the exact `bboxUsed` so the result artifact records what was actually read.
+  - `tesseract-ocr-adapter.ts` — the **only** Tesseract.js consumer in Wrokit. Lazy-imports the library on first use, holds a single worker per session, and exposes `dispose()`. Replacing the OCR backend is a single-file change.
+  - `ocrbox-engine.ts` — pure transform implementing `Engine<OcrBoxEngineInput, OcrBoxResult>`. Iterates field requests, crops, calls the OCR adapter, normalizes whitespace, and emits per-field `{text, confidence, status, bboxUsed, bboxPaddingNorm}`. Per-field errors are reported as `status: 'error'`; the engine never throws on a single bad crop.
+  - `index.ts` re-exports the engine, adapter factory, and crop helpers.
+- Composition: `src/core/runtime/ocrbox-runner.ts` is the only place the engine is composed. It exposes `extractFromGeometry(GeometryFile, pages)` for Config preview and `extractFromPredicted(PredictedGeometryFile, pages)` for Run-mode extraction. Both paths feed identical `OcrBoxResult` artifacts.
+- IO: `src/core/io/ocrbox-result-io.ts` provides serialize/parse/download for the result artifact so it can be downloaded for inspection or re-uploaded for replay.
+- UI: `src/features/ocrbox-preview/ui/OcrBoxPreview.tsx` renders the per-field text readout below the viewport in both Config Capture and Run Mode. The component is fed either the live in-progress GeometryFile (Config) or the just-computed PredictedGeometryFile (Run); it never reaches into the geometry/structural/transformation engines.
+
+## MasterDB Engine (CSV Ledger)
+- The MasterDB engine is an **isolated** storage layer that compiles per-document `OcrBoxResult`s into one row of a fixed-schema CSV. It NEVER reads NormalizedPage pixels, never runs OCR, and never modifies the WizardFile, GeometryFile, StructuralModel, TransformationModel, PredictedGeometryFile, or OcrBoxResult.
+- Module layout under `src/core/engines/masterdb/`:
+  - `csv-codec.ts` — pure RFC-4180-style serialize/parse. Quotes cells containing `,`, `"`, or newlines; round-trips multi-line values; rejects CSVs whose leading columns are not the canonical `document_id, source_name, extracted_at_iso`.
+  - `masterdb-engine.ts` — pure transform implementing `Engine<MasterDbApplyInput, MasterDbApplyOutput>`. Seeds a fresh table from a WizardFile, or merges new OCRBOX results into an existing table. Rows are upserted by `document_id` (idempotency key); appended rows are listed in `appendedRowIds`, replaced rows in `replacedRowIds`. Wizard fields not yet in the existing table are appended to `fieldOrder` without reordering, so historical CSVs remain compatible.
+  - `index.ts` re-exports the engine, codec, and seed helper.
+- Composition: `src/core/runtime/masterdb-runner.ts` is the only place the engine is composed. It exposes a single `apply({wizard, existing, results})` that delegates to the engine.
+- IO: `src/core/io/masterdb-csv-io.ts` provides the CSV download. Upload uses `parseMasterDbCsv` from the engine's codec; the wizardId is provided by the caller because the CSV itself does not embed it.
+- UI: `src/features/masterdb/ui/MasterDbPanel.tsx` mounts beneath the OCRBOX preview in both Config Capture and Run Mode. It supports `Append latest OCRBOX result`, `Upload existing MasterDB CSV`, `Download MasterDB CSV`, and `Clear in-memory MasterDB`. The append flow assumes the uploaded CSV originated from the same WizardFile and re-uses its locked header order.
+
+## Engine Isolation Invariant for OCRBOX + MasterDB
+- OCRBOX consumes only `NormalizedPage[]` plus a `(fieldId, pageIndex, bbox)` triple. It does not import or call the geometry, structural, transformation, or localization engines.
+- MasterDB consumes only `WizardFile` + `OcrBoxResult[]` (and an optional prior `MasterDbTable`). It does not import or call OCRBOX, geometry, structural, transformation, or localization engines.
+- Neither OCRBOX nor MasterDB writes back into any other engine's contracts. They only emit their own versioned, type-guarded artifacts.
+
 ## Ground Truth Rule
 - Human-confirmed BBOX geometry remains the highest authority. The Structural Engine never overrides, shrinks, moves, or reinterprets a saved BBOX as truth. If structural detection disagrees with saved geometry, geometry wins and the refined border expands to include the disagreement.
 
@@ -166,6 +196,8 @@ Implemented:
 - Canonical `Engine<I, O>` interface.
 - Runtime localization baseline (Run Mode): config artifact load + runtime normalization + runtime structural build + transform-based predicted box redraw + predicted geometry JSON export.
 - Runtime stubs for extraction, OCR, confidence.
+- OCRBOX engine (localized BBOX OCR) wired through `src/core/engines/ocrbox/` + `src/core/runtime/ocrbox-runner.ts`. Tesseract.js is lazy-loaded on first run. Per-field readout previews are mounted below the viewport in both Config Capture and Run Mode via `OcrBoxPreview`.
+- MasterDB engine (CSV ledger) wired through `src/core/engines/masterdb/` + `src/core/runtime/masterdb-runner.ts`. UI panel supports append, upload-existing, download, and clear in both Config Capture and Run Mode.
 
 Not yet implemented:
 - Real OCR.

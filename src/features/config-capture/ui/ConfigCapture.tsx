@@ -52,6 +52,9 @@ import { Button } from '../../../core/ui/components/Button';
 import { Input } from '../../../core/ui/components/Input';
 import { Panel } from '../../../core/ui/components/Panel';
 import { Section } from '../../../core/ui/components/Section';
+import { MasterDbPanel } from '../../masterdb/ui/MasterDbPanel';
+import { OcrBoxPreview } from '../../ocrbox-preview/ui/OcrBoxPreview';
+import type { OcrBoxResult } from '../../../core/contracts/ocrbox-result';
 
 import './config-capture.css';
 
@@ -96,6 +99,8 @@ export function ConfigCapture() {
   const [structuralError, setStructuralError] = useState<string | null>(null);
   const [isComputingStructure, setIsComputingStructure] = useState<boolean>(false);
   const [activeStructuralModelId, setActiveStructuralModelId] = useState<string | null>(null);
+
+  const [latestOcrResult, setLatestOcrResult] = useState<OcrBoxResult | null>(null);
 
   const viewportRef = useRef<NormalizedPageViewportHandle | null>(null);
   const [surfaceTransform, setSurfaceTransform] = useState<SurfaceTransform | null>(null);
@@ -682,6 +687,21 @@ export function ConfigCapture() {
             </pre>
           </div>
         </Panel>
+      </div>
+
+      <div className="config-capture__below-viewport">
+        <OcrBoxPreview
+          wizard={wizard}
+          pages={pageSession.pages}
+          source={{ kind: 'geometry', geometry: geometryFileSnapshot }}
+          onResult={setLatestOcrResult}
+          panelTitle="OCRBOX Extraction Preview (Config bboxes)"
+        />
+        <MasterDbPanel
+          wizard={wizard}
+          pendingResult={latestOcrResult}
+          panelTitle="MasterDB (Config preview)"
+        />
       </div>
     </Section>
   );
