@@ -47,6 +47,9 @@ import { Button } from '../../../core/ui/components/Button';
 import { Input } from '../../../core/ui/components/Input';
 import { Panel } from '../../../core/ui/components/Panel';
 import { Section } from '../../../core/ui/components/Section';
+import { MasterDbPanel } from '../../masterdb/ui/MasterDbPanel';
+import { OcrBoxPreview } from '../../ocrbox-preview/ui/OcrBoxPreview';
+import type { OcrBoxResult } from '../../../core/contracts/ocrbox-result';
 
 import './run-mode.css';
 
@@ -82,6 +85,7 @@ export function RunMode() {
   );
 
   const [surfaceTransform, setSurfaceTransform] = useState<SurfaceTransform | null>(null);
+  const [latestOcrResult, setLatestOcrResult] = useState<OcrBoxResult | null>(null);
   const structuralRuntimeLoadStatus = structuralRunnerRef.current.runtimeLoadStatus;
 
   const selectedPage = useMemo(
@@ -583,6 +587,21 @@ export function RunMode() {
             {transformationPreview || 'Run matching to preview the Config↔Runtime alignment report.'}
           </pre>
         </Panel>
+      </div>
+
+      <div className="run-mode__below-viewport">
+        <OcrBoxPreview
+          wizard={wizard}
+          pages={runtimePages}
+          source={{ kind: 'predicted', predicted: predicted }}
+          onResult={setLatestOcrResult}
+          panelTitle="OCRBOX Extraction Preview (Run-mode predicted bboxes)"
+        />
+        <MasterDbPanel
+          wizard={wizard}
+          pendingResult={latestOcrResult}
+          panelTitle="MasterDB (append extracted records)"
+        />
       </div>
     </Section>
   );

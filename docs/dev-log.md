@@ -1,3 +1,72 @@
+## 2026-05-04 — Add: OCRBOX engine (localized BBOX OCR) + MasterDB engine (CSV ledger), both isolated
+
+### Why this step
+- The geometry/structural/transformation/localization stack was producing high-quality per-field BBOXes (saved in Config, predicted in Run) but nothing downstream was actually reading the pixels inside those boxes. The product goal is data extraction: once a user has drawn the boxes for the fields they care about, we need to OCR exactly what is inside each box and compile those values into a structured table the user can download.
+- The user also wants to be able to upload a previously-downloaded MasterDB CSV (originating from the same WizardFile) and continue appending new rows to it across sessions, so the ledger needs an idempotency key per document and a locked header order that does not rewrite when a wizard is later extended.
+
+### What changed
+- New contracts:
+  - `src/core/contracts/ocrbox-result.ts` (`OcrBoxResult`, `version: '1.0'`, guard `isOcrBoxResult`). Records per-field `text`, `confidence`, `status` (`ok | empty | error`), and the `bboxUsed` (post-padding) so consumers can verify what was actually read. Carries `bboxSource` (`geometry-file | predicted-geometry-file`) and `sourceArtifactId` so OCRBOX results stay traceable to the bbox layer that produced them.
+  - `src/core/contracts/masterdb-table.ts` (`MasterDbTable`, `version: '1.0'`, guard `isMasterDbTable`). Locked header order is `document_id, source_name, extracted_at_iso, <wizard fields…>` (constant `MASTERDB_FIXED_LEADING_COLUMNS`).
+- New OCRBOX engine under `src/core/engines/ocrbox/`:
+  - `bbox-cropper.ts` — pure NormalizedPage→canvas crop helper; padding clamped to `0.02` normalized.
+  - `tesseract-ocr-adapter.ts` — the only Tesseract.js consumer in Wrokit; lazy-imports the library on first use.
+  - `ocrbox-engine.ts` — pure `Engine<OcrBoxEngineInput, OcrBoxResult>`; per-field errors are reported, never thrown.
+  - `index.ts` — re-exports.
+- New MasterDB engine under `src/core/engines/masterdb/`:
+  - `csv-codec.ts` — RFC-4180-style CSV serialize + parse with a strict leading-column check.
+  - `masterdb-engine.ts` — pure `Engine<MasterDbApplyInput, MasterDbApplyOutput>`; upserts rows by `document_id` (idempotency key), preserves existing field column order, and appends newly-introduced wizard fields to `fieldOrder` without reordering historical columns.
+  - `index.ts` — re-exports.
+- New runners (composition boundary, no engine reaches into another):
+  - `src/core/runtime/ocrbox-runner.ts` — `extractFromGeometry(...)` for Config, `extractFromPredicted(...)` for Run.
+  - `src/core/runtime/masterdb-runner.ts` — `apply({wizard, existing, results})`.
+- New IO:
+  - `src/core/io/ocrbox-result-io.ts` (serialize/parse/download for the OCRBOX artifact).
+  - `src/core/io/masterdb-csv-io.ts` (download for the CSV; upload reuses the engine's codec).
+- New UI features:
+  - `src/features/ocrbox-preview/ui/OcrBoxPreview.tsx` (+ CSS) — per-field readout table with status/confidence/text. Mounted below the viewport in both Config Capture and Run Mode.
+  - `src/features/masterdb/ui/MasterDbPanel.tsx` (+ CSS) — Append latest OCRBOX result, Upload existing MasterDB CSV, Download MasterDB CSV, Clear in-memory MasterDB. Renders the live in-memory table.
+- Wiring in existing pages:
+  - `src/features/config-capture/ui/ConfigCapture.tsx` mounts `OcrBoxPreview` (source = live in-progress GeometryFile) and `MasterDbPanel` directly below the viewport. No change to its capture/structural pipelines.
+  - `src/features/run-mode/ui/RunMode.tsx` mounts `OcrBoxPreview` (source = computed PredictedGeometryFile) and `MasterDbPanel` directly below the viewport. No change to its localization/transformation pipelines.
+- Dashboard now lists OCRBOX and MasterDB as active modules.
+
+### Tests
+- `tests/unit/ocrbox-engine.test.ts` — padding clamp / runaway-growth cap; engine emits per-field error (not throws) when the requested page is missing; engine refuses to run when no adapter is wired.
+- `tests/unit/masterdb-engine.test.ts` — fresh seed from wizard, upsert by `document_id`, `fieldOrder` preserved when wizard is extended, CSV round trip including embedded commas/quotes/newlines, leading-column rejection.
+- `tests/unit/contracts.test.ts` — guard tests for `isOcrBoxResult` and `isMasterDbTable`.
+- All 292 tests pass; `tsc --noEmit` clean; `vite build` clean (no new warnings).
+
+### Boundaries preserved (engine isolation invariant)
+- OCRBOX consumes only `NormalizedPage[]` plus `(fieldId, pageIndex, bbox)` triples. It does not import or call the geometry, structural, transformation, or localization engines.
+- MasterDB consumes only `WizardFile` + `OcrBoxResult[]` (and an optional prior `MasterDbTable`). It does not import or call OCRBOX, geometry, structural, transformation, or localization engines.
+- No existing engine, runner, contract, store, or IO module was modified to accommodate OCRBOX or MasterDB.
+- Per-field BBOX is never adjusted; OCRBOX only records the (optionally padded) `bboxUsed` it actually read.
+
+### Files added
+- `src/core/contracts/ocrbox-result.ts`
+- `src/core/contracts/masterdb-table.ts`
+- `src/core/engines/ocrbox/{bbox-cropper,tesseract-ocr-adapter,ocrbox-engine,types,index}.ts`
+- `src/core/engines/masterdb/{csv-codec,masterdb-engine,types,index}.ts`
+- `src/core/io/ocrbox-result-io.ts`
+- `src/core/io/masterdb-csv-io.ts`
+- `src/core/runtime/ocrbox-runner.ts`
+- `src/core/runtime/masterdb-runner.ts`
+- `src/features/ocrbox-preview/ui/{OcrBoxPreview.tsx,ocrbox-preview.css}`
+- `src/features/masterdb/ui/{MasterDbPanel.tsx,masterdb-panel.css}`
+- `tests/unit/ocrbox-engine.test.ts`
+- `tests/unit/masterdb-engine.test.ts`
+
+### Files modified
+- `src/features/config-capture/ui/ConfigCapture.tsx` (+ CSS) — mount OcrBoxPreview + MasterDbPanel below the viewport.
+- `src/features/run-mode/ui/RunMode.tsx` (+ CSS) — mount OcrBoxPreview + MasterDbPanel below the viewport.
+- `src/app/pages/HomeDashboardPage.tsx` — add OCRBOX and MasterDB to the module status list.
+- `tests/unit/contracts.test.ts` — add `isOcrBoxResult` and `isMasterDbTable` guard tests.
+- `docs/architecture.md` — add OCRBOX and MasterDB sections, contract entries, isolation invariant.
+- `package.json` — add `tesseract.js` dependency (lazy-imported by the OCRBOX adapter only).
+
+---
+
 ## 2026-04-29 — Fix: Cross-document anchor selection (highest-confidence wins, not first-by-order)
 
 ### Why this step

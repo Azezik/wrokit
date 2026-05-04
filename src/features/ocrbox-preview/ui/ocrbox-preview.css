@@ -1,0 +1,71 @@
+.ocrbox-preview {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.ocrbox-preview__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.ocrbox-preview__meta {
+  color: var(--color-text-muted, #777);
+  font-size: 0.9rem;
+}
+
+.ocrbox-preview__toolbar {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.ocrbox-preview__import {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.ocrbox-preview__error {
+  color: var(--color-error, #c0392b);
+  margin: 0;
+}
+
+.ocrbox-preview__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.ocrbox-preview__table th,
+.ocrbox-preview__table td {
+  border: 1px solid var(--color-border, #ddd);
+  padding: 0.4rem 0.6rem;
+  vertical-align: top;
+  text-align: left;
+}
+
+.ocrbox-preview__table tr[data-status='error'] td {
+  background: rgba(192, 57, 43, 0.06);
+}
+
+.ocrbox-preview__table tr[data-status='empty'] td {
+  background: rgba(241, 196, 15, 0.08);
+}
+
+.ocrbox-preview__field-id {
+  display: block;
+  color: var(--color-text-muted, #777);
+  font-size: 0.75rem;
+}
+
+.ocrbox-preview__text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+}

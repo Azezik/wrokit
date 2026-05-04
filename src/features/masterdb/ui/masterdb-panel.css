@@ -1,0 +1,75 @@
+.masterdb-panel {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.masterdb-panel__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.masterdb-panel__intro {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--color-text-muted, #777);
+}
+
+.masterdb-panel__intro code {
+  background: rgba(0, 0, 0, 0.05);
+  padding: 0 0.25rem;
+  border-radius: 3px;
+}
+
+.masterdb-panel__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.masterdb-panel__import {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.masterdb-panel__meta {
+  color: var(--color-text-muted, #777);
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.masterdb-panel__error {
+  color: var(--color-error, #c0392b);
+  margin: 0;
+}
+
+.masterdb-panel__table-wrap {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.masterdb-panel__table {
+  border-collapse: collapse;
+  font-size: 0.8rem;
+  min-width: 100%;
+}
+
+.masterdb-panel__table th,
+.masterdb-panel__table td {
+  border: 1px solid var(--color-border, #ddd);
+  padding: 0.3rem 0.5rem;
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+.masterdb-panel__table tbody td {
+  max-width: 24ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

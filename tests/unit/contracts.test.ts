@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import { isExtractionResult } from '../../src/core/contracts/extraction-result';
 import { isGeometryFile } from '../../src/core/contracts/geometry';
+import { isMasterDbTable } from '../../src/core/contracts/masterdb-table';
 import { isNormalizedPage } from '../../src/core/contracts/normalized-page';
+import { isOcrBoxResult } from '../../src/core/contracts/ocrbox-result';
 import { isPredictedGeometryFile } from '../../src/core/contracts/predicted-geometry-file';
 import { isStructuralModel } from '../../src/core/contracts/structural-model';
 import { isWizardFile } from '../../src/core/contracts/wizard';
@@ -630,6 +632,87 @@ describe('isPredictedGeometryFile', () => {
       ]
     };
     expect(isPredictedGeometryFile(badScale)).toBe(false);
+  });
+});
+
+describe('isOcrBoxResult', () => {
+  it('accepts a valid OCRBOX result', () => {
+    expect(
+      isOcrBoxResult({
+        schema: 'wrokit/ocrbox-result',
+        version: '1.0',
+        id: 'ocrbox_1',
+        wizardId: 'Invoice Wizard',
+        documentFingerprint: 'sha256:abc',
+        bboxSource: 'predicted-geometry-file',
+        sourceArtifactId: 'pred_1',
+        engineName: 'ocrbox/tesseract-js',
+        engineVersion: '1.0',
+        generatedAtIso: '2026-04-29T00:00:00Z',
+        fields: [
+          {
+            fieldId: 'invoice_number',
+            pageIndex: 0,
+            text: '104882',
+            confidence: 0.93,
+            status: 'ok',
+            bboxUsed: { xNorm: 0.1, yNorm: 0.1, wNorm: 0.2, hNorm: 0.05 },
+            bboxPaddingNorm: 0.004
+          }
+        ]
+      })
+    ).toBe(true);
+  });
+
+  it('rejects unknown bbox source or status', () => {
+    const base = {
+      schema: 'wrokit/ocrbox-result',
+      version: '1.0',
+      id: 'x',
+      wizardId: 'w',
+      documentFingerprint: 'fp',
+      bboxSource: 'guessing',
+      sourceArtifactId: 'src',
+      engineName: 'e',
+      engineVersion: '1',
+      generatedAtIso: 't',
+      fields: []
+    };
+    expect(isOcrBoxResult(base)).toBe(false);
+  });
+});
+
+describe('isMasterDbTable', () => {
+  it('accepts a valid MasterDB table', () => {
+    expect(
+      isMasterDbTable({
+        schema: 'wrokit/masterdb-table',
+        version: '1.0',
+        wizardId: 'Invoice Wizard',
+        fieldOrder: ['invoice_number', 'total'],
+        rows: [
+          {
+            documentId: 'INV-1',
+            sourceName: 'inv1.pdf',
+            extractedAtIso: '2026-04-29T00:00:00Z',
+            values: { invoice_number: '104882', total: '135.60' }
+          }
+        ]
+      })
+    ).toBe(true);
+  });
+
+  it('rejects malformed rows or wrong schema', () => {
+    expect(isMasterDbTable(null)).toBe(false);
+    expect(
+      isMasterDbTable({
+        schema: 'wrokit/masterdb-table',
+        version: '1.0',
+        wizardId: 'w',
+        fieldOrder: ['f1'],
+        rows: [{ documentId: 'd', sourceName: 's', extractedAtIso: 't', values: { f1: 1 } }]
+      })
+    ).toBe(false);
   });
 });
 

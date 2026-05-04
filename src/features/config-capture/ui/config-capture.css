@@ -105,3 +105,9 @@
   color: var(--color-danger);
   margin: 0;
 }
+
+.config-capture__below-viewport {
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
