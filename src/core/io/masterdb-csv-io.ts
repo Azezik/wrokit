@@ -6,6 +6,11 @@ export const masterDbCsvDownloadName = (table: MasterDbTable): string => {
   return `${safeWizard}.masterdb.csv`;
 };
 
+export const cleanedMasterDbCsvDownloadName = (table: MasterDbTable): string => {
+  const safeWizard = (table.wizardId || 'wizard').replace(/\s+/g, '-').toLowerCase();
+  return `${safeWizard}.masterdb.cleaned.csv`;
+};
+
 export interface MasterDbCsvDownloadEnv {
   createObjectUrl: (blob: Blob) => string;
   revokeObjectUrl: (url: string) => void;
@@ -25,13 +30,21 @@ const browserDownloadEnv = (): MasterDbCsvDownloadEnv => ({
 
 export const downloadMasterDbCsv = (
   table: MasterDbTable,
-  env: MasterDbCsvDownloadEnv = browserDownloadEnv()
+  env: MasterDbCsvDownloadEnv = browserDownloadEnv(),
+  fileName: string = masterDbCsvDownloadName(table)
 ): void => {
   const blob = new Blob([serializeMasterDbCsv(table)], { type: 'text/csv;charset=utf-8' });
   const url = env.createObjectUrl(blob);
   try {
-    env.triggerAnchor(url, masterDbCsvDownloadName(table));
+    env.triggerAnchor(url, fileName);
   } finally {
     env.revokeObjectUrl(url);
   }
+};
+
+export const downloadCleanedMasterDbCsv = (
+  table: MasterDbTable,
+  env: MasterDbCsvDownloadEnv = browserDownloadEnv()
+): void => {
+  downloadMasterDbCsv(table, env, cleanedMasterDbCsvDownloadName(table));
 };

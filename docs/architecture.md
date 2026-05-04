@@ -57,6 +57,7 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
   - `ExtractionResult`: `1.0`
   - `OcrBoxResult`: `1.0`
   - `MasterDbTable`: `1.0`
+  - `OcrMagicResult`: `1.0`
 
 ## Store Pattern
 - Stores are observable. Public surface: async mutators returning `Promise<void>`, `getSnapshot(): TSnapshot`, `subscribe(listener): () => void`.
@@ -162,6 +163,24 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
 - OCRBOX consumes only `NormalizedPage[]` plus a `(fieldId, pageIndex, bbox)` triple. It does not import or call the geometry, structural, transformation, or localization engines.
 - MasterDB consumes only `WizardFile` + `OcrBoxResult[]` (and an optional prior `MasterDbTable`). It does not import or call OCRBOX, geometry, structural, transformation, or localization engines.
 - Neither OCRBOX nor MasterDB writes back into any other engine's contracts. They only emit their own versioned, type-guarded artifacts.
+
+## OCRMagic Engine (Optional Field-Aware MasterDB Cleanup)
+- The OCRMagic engine is an **isolated**, optional post-processing layer that runs over a finalized `MasterDbTable` and emits a parallel cleaned `MasterDbTable` plus per-cell audit metadata. It NEVER reads NormalizedPage pixels, runs OCR, or modifies the WizardFile, GeometryFile, StructuralModel, TransformationModel, PredictedGeometryFile, OcrBoxResult, or the source MasterDbTable.
+- Module layout under `src/core/engines/ocrmagic/`:
+  - `cleanup.ts` — pure, conservative edge-junk strip (NBSP, zero-width characters, multi-space, leading/trailing apostrophes, copyright glyphs, separator characters). Reports the reason codes that explain each removal.
+  - `substitutions.ts` — pure, type-gated character substitutions. `text` flips digits→letters, `numeric` flips letters→digits, `any` opts out entirely. Also exposes `generateLocalCandidates` for one-character ambiguity flips.
+  - `pattern-profile.ts` — pure, deterministic column PatternProfile builder (length stats, per-position char-class majority, common prefixes/suffixes, separators, repeated values, declared vs inferred kind) plus a `scoreAgainstProfile` candidate scorer. Not ML.
+  - `ocrmagic-engine.ts` — pure `Engine<OcrMagicCleanInput, OcrMagicCleanOutput>` implementing the 8-stage pipeline: preserve raw → safe cleanup → type substitutions → learn profile → generate candidates → score → apply when margin clears `0.08` → emit audit metadata.
+  - `index.ts` re-exports the engine, helpers, and types.
+- Composition: `src/core/runtime/ocrmagic-runner.ts` is the only place the engine is composed. It exposes a single `clean({wizard, masterDb})` boundary that returns an `OcrMagicResult`.
+- Contract: `src/core/contracts/ocrmagic-result.ts` (`schema: 'wrokit/ocrmagic-result'`, `version: '1.0'`, guard `isOcrMagicResult`). Carries the cleaned `MasterDbTable`, learned `OcrMagicFieldProfile` per field, a flat per-cell audit list, and aggregate `changeCounts`.
+- IO: `src/core/io/masterdb-csv-io.ts` exposes `downloadCleanedMasterDbCsv(table)` so the cleaned table downloads with a `*.masterdb.cleaned.csv` filename and does not collide with the raw download.
+- UI: `src/features/polished-wizard/ui/slides/ReviewSlide.tsx` exposes `Clean Data` → loading → `Download cleaned CSV` alongside `Download raw CSV`. `src/features/masterdb/ui/MasterDbPanel.tsx` exposes the same actions in the debug surface used by Config Capture and Run Mode.
+
+## Engine Isolation Invariant for OCRMagic
+- OCRMagic consumes only `WizardFile.fields[].type` (read-only) plus the source `MasterDbTable`. It does not import or call NormalizedPage, geometry, structural, transformation, localization, OCR, or OCRBOX engines.
+- OCRMagic does not write back into any other engine's contracts. Its only output is the versioned, type-guarded `OcrMagicResult` artifact.
+- The raw `MasterDbTable` is preserved verbatim; the cleaned `MasterDbTable` is a parallel artifact and the user explicitly chooses which to download.
 
 ## Ground Truth Rule
 - Human-confirmed BBOX geometry remains the highest authority. The Structural Engine never overrides, shrinks, moves, or reinterprets a saved BBOX as truth. If structural detection disagrees with saved geometry, geometry wins and the refined border expands to include the disagreement.
