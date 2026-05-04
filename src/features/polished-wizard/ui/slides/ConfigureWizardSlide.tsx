@@ -1,6 +1,7 @@
 import { useRef, useState, useSyncExternalStore, type ChangeEvent } from 'react';
 
 import {
+  downloadWizardFile,
   parseWizardFile,
   WizardFileParseError
 } from '../../../../core/io/wizard-file-io';
@@ -32,6 +33,11 @@ export function ConfigureWizardSlide({ orchestrator }: ConfigureWizardSlideProps
       return;
     }
     orchestrator.saveWizard(file);
+  };
+
+  const handleDownload = () => {
+    setOptionsOpen(false);
+    downloadWizardFile(store.toWizardFile());
   };
 
   const handleImport = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -129,6 +135,13 @@ export function ConfigureWizardSlide({ orchestrator }: ConfigureWizardSlideProps
           </Button>
           {optionsOpen ? (
             <div className="polished-wizard__options-menu" role="menu">
+              <button
+                type="button"
+                onClick={handleDownload}
+                disabled={state.fields.length === 0 || state.wizardName.trim() === ''}
+              >
+                Download wizard file
+              </button>
               <label>
                 Upload wizard file
                 <input

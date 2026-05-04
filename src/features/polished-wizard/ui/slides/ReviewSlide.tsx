@@ -30,6 +30,9 @@ export function ReviewSlide({ orchestrator }: ReviewSlideProps) {
     }
   }
 
+  const columnCount = table?.fieldOrder.length ?? 0;
+  const density = columnCount >= 10 ? 'dense' : columnCount >= 6 ? 'compact' : 'default';
+
   const updateCell = (rowIndex: number, fieldId: string, value: string) => {
     if (!table) {
       return;
@@ -71,10 +74,13 @@ export function ReviewSlide({ orchestrator }: ReviewSlideProps) {
 
         {table && table.rows.length > 0 ? (
           <div className="polished-wizard__review-table-wrap">
-            <table className="polished-wizard__review-table" aria-label="MasterDB rows">
+            <table
+              className="polished-wizard__review-table"
+              data-density={density}
+              aria-label="MasterDB rows"
+            >
               <thead>
                 <tr>
-                  <th>Document</th>
                   {table.fieldOrder.map((fieldId) => (
                     <th key={fieldId}>{fieldLabels.get(fieldId) ?? fieldId}</th>
                   ))}
@@ -82,8 +88,7 @@ export function ReviewSlide({ orchestrator }: ReviewSlideProps) {
               </thead>
               <tbody>
                 {table.rows.map((row: MasterDbRow, rowIndex: number) => (
-                  <tr key={row.documentId}>
-                    <td>{row.sourceName}</td>
+                  <tr key={row.documentId} title={row.sourceName}>
                     {table.fieldOrder.map((fieldId) => (
                       <td key={fieldId}>
                         <input
