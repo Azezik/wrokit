@@ -1,5 +1,6 @@
 import { useRef, useState, useSyncExternalStore, type ChangeEvent } from 'react';
 
+import type { WizardFieldType } from '../../../../core/contracts/wizard';
 import {
   downloadWizardFile,
   parseWizardFile,
@@ -95,6 +96,20 @@ export function ConfigureWizardSlide({ orchestrator }: ConfigureWizardSlideProps
                     void store.updateField(index, { label: event.target.value });
                   }}
                 />
+                <select
+                  className="polished-wizard__field-type"
+                  value={field.type}
+                  aria-label={`Data type for field ${index + 1}`}
+                  onChange={(event) => {
+                    void store.updateField(index, {
+                      type: event.target.value as WizardFieldType
+                    });
+                  }}
+                >
+                  <option value="any">Any</option>
+                  <option value="text">Text</option>
+                  <option value="numeric">Numeric</option>
+                </select>
                 <Button
                   type="button"
                   variant="danger"
