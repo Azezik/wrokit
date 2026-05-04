@@ -289,6 +289,25 @@
   vertical-align: top;
 }
 
+.polished-wizard__review-table[data-density='compact'] {
+  font-size: var(--font-size-xs);
+}
+
+.polished-wizard__review-table[data-density='compact'] th,
+.polished-wizard__review-table[data-density='compact'] td {
+  padding: var(--space-1) var(--space-2);
+}
+
+.polished-wizard__review-table[data-density='dense'] {
+  font-size: var(--font-size-xs);
+}
+
+.polished-wizard__review-table[data-density='dense'] th,
+.polished-wizard__review-table[data-density='dense'] td {
+  padding: var(--space-1) var(--space-2);
+  white-space: nowrap;
+}
+
 .polished-wizard__review-table th {
   background: var(--color-surface-muted);
   position: sticky;
