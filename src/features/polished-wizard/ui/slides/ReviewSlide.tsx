@@ -102,20 +102,19 @@ export function ReviewSlide({ orchestrator }: ReviewSlideProps) {
       return null;
     }
     const counts = cleaned.changeCounts;
-    const touched =
-      counts['edge-cleaned'] +
-      counts['whitespace-normalized'] +
-      counts['type-substituted'] +
-      counts['pattern-corrected'];
+    const touched = counts['stage-1'] + counts['stage-1b'] + counts['stage-1-and-1b'];
     return { touched, total: cleaned.audits.length };
   }, [cleaned]);
 
-  const declaredTypes = cleaned
-    ? cleaned.cleanedTable.fieldOrder.map((fieldId) => ({
-        fieldId,
-        label: fieldLabels.get(fieldId) ?? fieldId,
-        declaredType: cleaned.profiles[fieldId]?.declaredType ?? 'any'
-      }))
+  const declaredTypes = cleaned && wizard
+    ? cleaned.cleanedTable.fieldOrder.map((fieldId) => {
+        const field = wizard.fields.find((entry) => entry.fieldId === fieldId);
+        return {
+          fieldId,
+          label: fieldLabels.get(fieldId) ?? fieldId,
+          declaredType: field?.type ?? 'any'
+        };
+      })
     : [];
 
   const canClean = Boolean(wizard && table && table.rows.length > 0);
@@ -173,7 +172,7 @@ export function ReviewSlide({ orchestrator }: ReviewSlideProps) {
         {cleanSummary ? (
           <p className="polished-wizard__hint">
             OCRMagic touched {cleanSummary.touched} of {cleanSummary.total} cell(s) using
-            field-type and column-pattern rules. The raw MasterDB is unchanged.
+            Stage 1 substitutions and Stage 1B edge cleanup. The raw MasterDB is unchanged.
           </p>
         ) : null}
 

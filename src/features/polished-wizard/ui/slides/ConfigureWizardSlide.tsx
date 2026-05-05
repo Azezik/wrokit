@@ -88,14 +88,6 @@ export function ConfigureWizardSlide({ orchestrator }: ConfigureWizardSlideProps
             state.fields.map((field, index) => (
               <div key={field.internalId} className="polished-wizard__field-row">
                 <span className="polished-wizard__field-tag">Field {index + 1}</span>
-                <Input
-                  type="text"
-                  value={field.label}
-                  placeholder={`Label for field ${index + 1}`}
-                  onChange={(event) => {
-                    void store.updateField(index, { label: event.target.value });
-                  }}
-                />
                 <select
                   className="polished-wizard__field-type"
                   value={field.type}
@@ -110,6 +102,14 @@ export function ConfigureWizardSlide({ orchestrator }: ConfigureWizardSlideProps
                   <option value="text">Text</option>
                   <option value="numeric">Numeric</option>
                 </select>
+                <Input
+                  type="text"
+                  value={field.label}
+                  placeholder={`Label for field ${index + 1}`}
+                  onChange={(event) => {
+                    void store.updateField(index, { label: event.target.value });
+                  }}
+                />
                 <Button
                   type="button"
                   variant="danger"

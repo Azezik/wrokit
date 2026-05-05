@@ -131,10 +131,9 @@ export function MasterDbPanel({
     : [];
 
   const cleanedTouched = cleaned
-    ? cleaned.changeCounts['edge-cleaned'] +
-      cleaned.changeCounts['whitespace-normalized'] +
-      cleaned.changeCounts['type-substituted'] +
-      cleaned.changeCounts['pattern-corrected']
+    ? cleaned.changeCounts['stage-1'] +
+      cleaned.changeCounts['stage-1b'] +
+      cleaned.changeCounts['stage-1-and-1b']
     : 0;
 
   return (
@@ -189,10 +188,9 @@ export function MasterDbPanel({
       {cleaned ? (
         <p className="masterdb-panel__meta">
           OCRMagic touched {cleanedTouched} of {cleaned.audits.length} cell(s) — raw is unchanged.
-          Counts: edge-cleaned {cleaned.changeCounts['edge-cleaned']}, whitespace{' '}
-          {cleaned.changeCounts['whitespace-normalized']}, type-substituted{' '}
-          {cleaned.changeCounts['type-substituted']}, pattern-corrected{' '}
-          {cleaned.changeCounts['pattern-corrected']}.
+          Counts: stage-1 {cleaned.changeCounts['stage-1']}, stage-1b{' '}
+          {cleaned.changeCounts['stage-1b']}, stage-1-and-1b{' '}
+          {cleaned.changeCounts['stage-1-and-1b']}.
         </p>
       ) : null}
       {table && table.rows.length > 0 ? (

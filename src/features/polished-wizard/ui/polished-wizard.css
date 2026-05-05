@@ -75,7 +75,7 @@
 
 .polished-wizard__field-row {
   display: grid;
-  grid-template-columns: minmax(60px, auto) 1fr auto auto;
+  grid-template-columns: minmax(60px, auto) auto 1fr auto;
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-2) var(--space-3);
