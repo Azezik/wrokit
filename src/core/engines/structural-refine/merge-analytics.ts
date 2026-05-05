@@ -149,15 +149,16 @@ const consensusConfidenceMeanFromGlobals = (acc: WelfordScalar): number => {
  * objects from the file is safe — the refined model still has every object
  * slot it needs, just with the config rect when no useful drift was learned.
  *
- * Object pairs are recorded but not consumed by compose-model. Configs with
- * many CV-detected objects produce O(N²) pairs per page, which is the actual
- * source of the analytics-file size explosion. Restricting pairs to those
- * whose endpoints both survived the object filter and which co-occurred in a
- * meaningful fraction of documents keeps the file roughly proportional to
- * "objects that repeat reliably" rather than "all CV-detected blobs squared".
+ * Object pairs are NOT emitted at all. Compose-model never reads `objectPairs`
+ * (verified by `grep "objectPairs" src/`), and configs with many CV-detected
+ * objects produce O(N²) pairs per page that quickly dominate file size — the
+ * 40MB-after-pruning case showed pairs are still the bulk of the bytes even
+ * with reliability and co-occurrence filters in place. The schema retains an
+ * empty `objectPairs: []` slot for forward compatibility; if a future phase
+ * wires pair-based reasoning into compose, emission can be revived with a
+ * stability-aware filter (very high co-occurrence + low Welford m2).
  */
 const MIN_OBJECT_RELIABILITY_TO_EMIT = 0.3;
-const MIN_PAIR_COOCCURRENCE_FRACTION = 0.5;
 
 const isObjectStructurallyUseful = (
   object: { appearanceCount: number; reliability: number }
@@ -166,13 +167,6 @@ const isObjectStructurallyUseful = (
     return false;
   }
   return object.reliability >= MIN_OBJECT_RELIABILITY_TO_EMIT;
-};
-
-const minPairCoOccurrenceForEmit = (documentCount: number): number => {
-  if (documentCount <= 0) {
-    return 1;
-  }
-  return Math.max(1, Math.ceil(documentCount * MIN_PAIR_COOCCURRENCE_FRACTION));
 };
 
 export const aggregatorStateToAnalytics = (
@@ -185,11 +179,8 @@ export const aggregatorStateToAnalytics = (
     (a, b) => a.pageIndex - b.pageIndex
   );
 
-  const minPairCoOccur = minPairCoOccurrenceForEmit(documentCount);
-
   for (const pageState of sortedPages) {
     const objects: StructuralRefineAnalyticsObject[] = [];
-    const survivingObjectIds = new Set<string>();
     const sortedObjects = Array.from(pageState.objects.values()).sort((a, b) =>
       a.configObjectId.localeCompare(b.configObjectId)
     );
@@ -211,32 +202,9 @@ export const aggregatorStateToAnalytics = (
         continue;
       }
       objects.push(candidate);
-      survivingObjectIds.add(candidate.configObjectId);
     }
 
     const objectPairs: StructuralRefineAnalyticsObjectPair[] = [];
-    const sortedPairs = Array.from(pageState.objectPairs.values()).sort((a, b) => {
-      const fromCmp = a.fromObjectId.localeCompare(b.fromObjectId);
-      if (fromCmp !== 0) return fromCmp;
-      return a.toObjectId.localeCompare(b.toObjectId);
-    });
-    for (const pair of sortedPairs) {
-      if (
-        !survivingObjectIds.has(pair.fromObjectId) ||
-        !survivingObjectIds.has(pair.toObjectId)
-      ) {
-        continue;
-      }
-      if (pair.coOccurrenceCount < minPairCoOccur) {
-        continue;
-      }
-      objectPairs.push({
-        fromObjectId: pair.fromObjectId,
-        toObjectId: pair.toObjectId,
-        coOccurrenceCount: pair.coOccurrenceCount,
-        relativeGeometry: cloneWelfordRelative(pair.relativeGeometry)
-      });
-    }
 
     const fields: StructuralRefineAnalyticsField[] = [];
     const sortedFields = Array.from(pageState.fields.values()).sort((a, b) =>
@@ -476,37 +444,19 @@ const clonePageWithReliability = (
 
 /**
  * Apply the storage-efficiency filter to an already-merged page. Operates on a
- * fully-populated page so the reliability and co-occurrence thresholds are
- * evaluated against the post-merge documentCount, which is the only correct
- * frame of reference for "is this object useful across the whole batch?".
+ * fully-populated page so the reliability threshold is evaluated against the
+ * post-merge documentCount, which is the only correct frame of reference for
+ * "is this object useful across the whole batch?".
  */
 const filterEmittedPage = (
-  page: StructuralRefineAnalyticsPage,
-  documentCount: number
+  page: StructuralRefineAnalyticsPage
 ): StructuralRefineAnalyticsPage => {
-  const survivingObjectIds = new Set<string>();
   const objects: StructuralRefineAnalyticsObject[] = [];
   for (const object of page.objects) {
     if (!isObjectStructurallyUseful(object)) {
       continue;
     }
     objects.push(object);
-    survivingObjectIds.add(object.configObjectId);
-  }
-
-  const minPairCoOccur = minPairCoOccurrenceForEmit(documentCount);
-  const objectPairs: StructuralRefineAnalyticsObjectPair[] = [];
-  for (const pair of page.objectPairs) {
-    if (
-      !survivingObjectIds.has(pair.fromObjectId) ||
-      !survivingObjectIds.has(pair.toObjectId)
-    ) {
-      continue;
-    }
-    if (pair.coOccurrenceCount < minPairCoOccur) {
-      continue;
-    }
-    objectPairs.push(pair);
   }
 
   return {
@@ -516,7 +466,7 @@ const filterEmittedPage = (
     refinedBorderDelta: page.refinedBorderDelta,
     shiftDirection: page.shiftDirection,
     objects,
-    objectPairs,
+    objectPairs: [],
     fields: page.fields
   };
 };
@@ -565,7 +515,7 @@ export const mergeAnalytics = (
   }
   const pages = Array.from(pagesByIndex.values())
     .sort((a, b) => a.pageIndex - b.pageIndex)
-    .map((page) => filterEmittedPage(page, documentCount));
+    .map((page) => filterEmittedPage(page));
 
   const globals: StructuralRefineAnalyticsGlobals = {
     anchorTierGlobal: sumFieldHistogram(
