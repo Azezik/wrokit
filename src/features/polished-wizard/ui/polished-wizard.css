@@ -75,13 +75,29 @@
 
 .polished-wizard__field-row {
   display: grid;
-  grid-template-columns: minmax(60px, auto) 1fr auto;
+  grid-template-columns: minmax(60px, auto) 1fr auto auto;
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-2) var(--space-3);
   border: var(--border-default);
   border-radius: var(--radius-sm);
   background: var(--color-surface-muted);
+}
+
+.polished-wizard__field-type {
+  font: inherit;
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+  cursor: pointer;
+  min-width: 96px;
+}
+
+.polished-wizard__field-type:focus {
+  outline: none;
+  border-color: var(--color-primary);
 }
 
 .polished-wizard__field-tag {
