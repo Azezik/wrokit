@@ -8,6 +8,7 @@ import {
 } from '../../../../core/io/masterdb-csv-io';
 import { createOcrMagicRunner } from '../../../../core/runtime/ocrmagic-runner';
 import { Button } from '../../../../core/ui/components/Button';
+import { StructuralRefineDownloads } from '../../../structural-refine/ui/StructuralRefineDownloads';
 import type { OrchestratorApi } from '../../orchestrator/useOrchestrator';
 
 interface ReviewSlideProps {
@@ -218,6 +219,7 @@ export function ReviewSlide({ orchestrator }: ReviewSlideProps) {
           >
             Download raw CSV
           </Button>
+          <StructuralRefineDownloads orchestrator={orchestrator} />
         </div>
       </footer>
     </>

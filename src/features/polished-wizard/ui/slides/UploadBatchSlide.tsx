@@ -1,6 +1,7 @@
 import { useState, type ChangeEvent, type DragEvent } from 'react';
 
 import { Button } from '../../../../core/ui/components/Button';
+import { StructuralRefineToggle } from '../../../structural-refine/ui/StructuralRefineToggle';
 import type { OrchestratorApi } from '../../orchestrator/useOrchestrator';
 
 interface UploadBatchSlideProps {
@@ -94,6 +95,8 @@ export function UploadBatchSlide({ orchestrator }: UploadBatchSlideProps) {
             ))}
           </ul>
         ) : null}
+
+        <StructuralRefineToggle orchestrator={orchestrator} />
 
         {orchestrator.state.error ? (
           <p className="polished-wizard__error">{orchestrator.state.error}</p>
