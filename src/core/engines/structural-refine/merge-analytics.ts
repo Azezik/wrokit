@@ -139,6 +139,42 @@ const consensusConfidenceMeanFromGlobals = (acc: WelfordScalar): number => {
   return acc.totalWeight > 0 ? acc.mean : 0;
 };
 
+/**
+ * Storage-efficiency thresholds applied at the analytics emission boundary.
+ *
+ * The aggregator keeps O(config-objects + config-fields + object-pairs) state
+ * in memory regardless of these values; we only filter what is *serialized*.
+ * Compose-model treats a missing object entry as "no evidence" and falls back
+ * to the config rect (see `compose-model.ts:172-181`), so dropping low-signal
+ * objects from the file is safe — the refined model still has every object
+ * slot it needs, just with the config rect when no useful drift was learned.
+ *
+ * Object pairs are recorded but not consumed by compose-model. Configs with
+ * many CV-detected objects produce O(N²) pairs per page, which is the actual
+ * source of the analytics-file size explosion. Restricting pairs to those
+ * whose endpoints both survived the object filter and which co-occurred in a
+ * meaningful fraction of documents keeps the file roughly proportional to
+ * "objects that repeat reliably" rather than "all CV-detected blobs squared".
+ */
+const MIN_OBJECT_RELIABILITY_TO_EMIT = 0.3;
+const MIN_PAIR_COOCCURRENCE_FRACTION = 0.5;
+
+const isObjectStructurallyUseful = (
+  object: { appearanceCount: number; reliability: number }
+): boolean => {
+  if (object.appearanceCount <= 0) {
+    return false;
+  }
+  return object.reliability >= MIN_OBJECT_RELIABILITY_TO_EMIT;
+};
+
+const minPairCoOccurrenceForEmit = (documentCount: number): number => {
+  if (documentCount <= 0) {
+    return 1;
+  }
+  return Math.max(1, Math.ceil(documentCount * MIN_PAIR_COOCCURRENCE_FRACTION));
+};
+
 export const aggregatorStateToAnalytics = (
   input: AggregatorStateToAnalyticsInput
 ): StructuralRefineAnalytics => {
@@ -149,14 +185,17 @@ export const aggregatorStateToAnalytics = (
     (a, b) => a.pageIndex - b.pageIndex
   );
 
+  const minPairCoOccur = minPairCoOccurrenceForEmit(documentCount);
+
   for (const pageState of sortedPages) {
     const objects: StructuralRefineAnalyticsObject[] = [];
+    const survivingObjectIds = new Set<string>();
     const sortedObjects = Array.from(pageState.objects.values()).sort((a, b) =>
       a.configObjectId.localeCompare(b.configObjectId)
     );
     for (const object of sortedObjects) {
       const reliability = computeObjectReliability(object, documentCount);
-      objects.push({
+      const candidate = {
         configObjectId: object.configObjectId,
         appearanceCount: object.appearanceCount,
         matchConfidence: cloneWelfordScalar(object.matchConfidence),
@@ -167,7 +206,12 @@ export const aggregatorStateToAnalytics = (
         anchorTierUsage: { ...object.anchorTierUsage },
         anchorProjectionIou: cloneAnchorWelfordTriple(object.anchorProjectionIou),
         reliability
-      });
+      };
+      if (!isObjectStructurallyUseful(candidate)) {
+        continue;
+      }
+      objects.push(candidate);
+      survivingObjectIds.add(candidate.configObjectId);
     }
 
     const objectPairs: StructuralRefineAnalyticsObjectPair[] = [];
@@ -177,6 +221,15 @@ export const aggregatorStateToAnalytics = (
       return a.toObjectId.localeCompare(b.toObjectId);
     });
     for (const pair of sortedPairs) {
+      if (
+        !survivingObjectIds.has(pair.fromObjectId) ||
+        !survivingObjectIds.has(pair.toObjectId)
+      ) {
+        continue;
+      }
+      if (pair.coOccurrenceCount < minPairCoOccur) {
+        continue;
+      }
       objectPairs.push({
         fromObjectId: pair.fromObjectId,
         toObjectId: pair.toObjectId,
@@ -421,6 +474,53 @@ const clonePageWithReliability = (
   fields: page.fields.map((field) => cloneFieldShallow(field))
 });
 
+/**
+ * Apply the storage-efficiency filter to an already-merged page. Operates on a
+ * fully-populated page so the reliability and co-occurrence thresholds are
+ * evaluated against the post-merge documentCount, which is the only correct
+ * frame of reference for "is this object useful across the whole batch?".
+ */
+const filterEmittedPage = (
+  page: StructuralRefineAnalyticsPage,
+  documentCount: number
+): StructuralRefineAnalyticsPage => {
+  const survivingObjectIds = new Set<string>();
+  const objects: StructuralRefineAnalyticsObject[] = [];
+  for (const object of page.objects) {
+    if (!isObjectStructurallyUseful(object)) {
+      continue;
+    }
+    objects.push(object);
+    survivingObjectIds.add(object.configObjectId);
+  }
+
+  const minPairCoOccur = minPairCoOccurrenceForEmit(documentCount);
+  const objectPairs: StructuralRefineAnalyticsObjectPair[] = [];
+  for (const pair of page.objectPairs) {
+    if (
+      !survivingObjectIds.has(pair.fromObjectId) ||
+      !survivingObjectIds.has(pair.toObjectId)
+    ) {
+      continue;
+    }
+    if (pair.coOccurrenceCount < minPairCoOccur) {
+      continue;
+    }
+    objectPairs.push(pair);
+  }
+
+  return {
+    pageIndex: page.pageIndex,
+    pageSurface: page.pageSurface,
+    consensusAffine: page.consensusAffine,
+    refinedBorderDelta: page.refinedBorderDelta,
+    shiftDirection: page.shiftDirection,
+    objects,
+    objectPairs,
+    fields: page.fields
+  };
+};
+
 const mergeGlobalConsensusConfidenceMean = (
   a: { mean: number; documentCount: number },
   b: { mean: number; documentCount: number }
@@ -463,7 +563,9 @@ export const mergeAnalytics = (
       pagesByIndex.set(page.pageIndex, clonePageWithReliability(page, documentCount));
     }
   }
-  const pages = Array.from(pagesByIndex.values()).sort((a, b) => a.pageIndex - b.pageIndex);
+  const pages = Array.from(pagesByIndex.values())
+    .sort((a, b) => a.pageIndex - b.pageIndex)
+    .map((page) => filterEmittedPage(page, documentCount));
 
   const globals: StructuralRefineAnalyticsGlobals = {
     anchorTierGlobal: sumFieldHistogram(
