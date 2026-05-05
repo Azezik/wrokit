@@ -33,6 +33,8 @@ export interface OrchestratorState {
   structuralRefineEnabled: boolean;
   /** Optional prior analytics file to fold into this batch's output. */
   priorRefineAnalytics: StructuralRefineAnalytics | null;
+  /** Optional refined structural model from a previous batch, used in place of the config model. */
+  priorRefineModel: StructuralModel | null;
   /** Outputs produced by the most recent refine step (null when toggle was off). */
   lastRefineOutputs: { analytics: StructuralRefineAnalytics; refinedModel: StructuralModel } | null;
 }

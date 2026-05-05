@@ -23,6 +23,7 @@ const initialState = (): OrchestratorState => ({
   error: null,
   structuralRefineEnabled: false,
   priorRefineAnalytics: null,
+  priorRefineModel: null,
   lastRefineOutputs: null
 });
 
@@ -35,6 +36,7 @@ export interface OrchestratorApi {
   setMasterDb(table: MasterDbTable): void;
   setStructuralRefineEnabled(enabled: boolean): void;
   setPriorRefineAnalytics(analytics: StructuralRefineAnalytics | null): void;
+  setPriorRefineModel(model: StructuralModel | null): void;
   runBatch(files: File[]): Promise<void>;
   reset(): void;
 }
@@ -102,6 +104,10 @@ export const useOrchestrator = (): OrchestratorApi => {
     setState((prev) => ({ ...prev, priorRefineAnalytics: analytics }));
   }, []);
 
+  const setPriorRefineModel = useCallback((model: StructuralModel | null) => {
+    setState((prev) => ({ ...prev, priorRefineModel: model }));
+  }, []);
+
   const runBatch = useCallback(async (files: File[]) => {
     const snapshot = stateRef.current;
     if (!snapshot.wizard || !snapshot.geometry || !snapshot.configStructuralModel) {
@@ -128,7 +134,7 @@ export const useOrchestrator = (): OrchestratorApi => {
       const result = await batchCoordinatorRef.current.run({
         wizard: snapshot.wizard,
         configGeometry: snapshot.geometry,
-        configStructuralModel: snapshot.configStructuralModel,
+        configStructuralModel: snapshot.priorRefineModel ?? snapshot.configStructuralModel,
         files,
         startingTable: snapshot.masterDb,
         refineEnabled: snapshot.structuralRefineEnabled,
@@ -174,6 +180,7 @@ export const useOrchestrator = (): OrchestratorApi => {
     setMasterDb,
     setStructuralRefineEnabled,
     setPriorRefineAnalytics,
+    setPriorRefineModel,
     runBatch,
     reset
   };
