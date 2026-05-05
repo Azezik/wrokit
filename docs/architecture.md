@@ -264,3 +264,50 @@ Not yet implemented:
 - When the exact anchor `objectId` cannot be matched on the runtime page, `localization-runner` matches structurally by object type **plus full ancestor-type chain** (then by `(childPresence, depthDelta, parentTypeMatch)` as tiebreakers, with geometric distance only as the final tiebreaker). Distance is never the primary signal.
 - `pageAnchorRelations.refinedBorderToBorder` and `pageAnchorRelations.objectToRefinedBorder` keep the chain rooted: every object retains its relative geometry to the Refined Border, and Refined Border keeps its relative geometry to Border, so any anchor in the chain can be re-grounded to page authority without recomputation.
 - All chain math is in canonical normalized coordinates over the `NormalizedPage` surface; no CSS, viewport, or pixel-only space participates in anchor authority.
+
+## Structural Refine (Optional Additive Layer)
+
+Structural Refine is a new, isolated subsystem that sits beside the existing pipeline. It plugs in at one place only: the batch coordinator emits per-document evidence into a Structural Refine runner after each successful document; nothing else upstream changes. When the toggle is off (the default), zero new work runs and the coordinator output is byte-identical to its pre-Structural-Refine baseline.
+
+```
+Existing (unchanged):
+  Wizard → Geometry → ConfigStructural
+                          │
+   per-document  ──► Normalize ──► RuntimeStructural ──► Transformation ──► Localization ──► OCRBOX ──► MasterDB
+
+New (additive):                       │ (read-only fan-out, only when toggle ON)
+                                      ▼
+                        Structural Refine Runner (observe per doc)
+                                      │
+                                      ▼
+                        Structural Refine Aggregator
+                                      │
+                                      ├─► Structural Refine Analytics (.json)
+                                      └─► Structural Refine Model      (StructuralModel-shaped .json)
+```
+
+### Module layout
+- `src/core/contracts/structural-refine-analytics.ts` — `StructuralRefineAnalytics` contract (`schema: 'wrokit/structural-refine-analytics'`, `version: '1.0'`). Carries per-page Welford accumulators keyed by config object id and config field id, a `RefineCompatibilitySignature` for merge-safety, and a `mergeHistory` list. Guard: `isStructuralRefineAnalytics`.
+- `src/core/engines/structural-refine/` — pure engine directory (no IO, no stores, no UI):
+  - `signature.ts` — `buildRefineCompatibilitySignature` + `areRefineSignaturesCompatible` using `crypto.subtle.digest('SHA-256', ...)`.
+  - `evidence.ts` — `extractEvidence(...)` collapses a single document's runtime artifacts into a bounded, mergeable per-document record. No raw model references are retained after the call returns.
+  - `aggregator.ts` — `createAggregator(configStructural)` returning `{ observe(evidence), snapshot() }`. Memory is `O(config-objects + config-fields)`, independent of batch size.
+  - `merge-analytics.ts` — `aggregatorStateToAnalytics(...)` and `mergeAnalytics(prior, incoming)` with parallel-Welford merge. Throws `StructuralRefineAnalyticsCompatibilityError` on signature mismatch.
+  - `compose-model.ts` — `composeRefinedStructuralModel(analytics, configStructural)`. Reuses the pure `buildPageAnchorRelations` / `buildFieldRelationships` helpers from `src/core/engines/structure/object-hierarchy.ts`.
+  - `welford.ts` — shared Welford scalar/affine/rect/relative helpers.
+  - `index.ts` — public surface re-exports.
+- `src/core/io/structural-refine-analytics-io.ts` — `serializeStructuralRefineAnalytics`, `parseStructuralRefineAnalytics`, `downloadStructuralRefineAnalytics`. Mirrors `transformation-model-io.ts`.
+- `src/core/runtime/structural-refine-runner.ts` — `createStructuralRefineRunner({wizard, geometry, configStructural, priorAnalytics})` returning `{ observe(...), finalize({batchId}) }`. The only boundary the coordinator calls into.
+- `src/core/storage/structural-refine-store.ts` — observable store holding `enabled`, `priorAnalytics`, `lastOutputs`. Implements the `observable-store.ts` pattern.
+- `src/features/structural-refine/ui/` — feature-local UI: `StructuralRefineToggle.tsx` (toggle + prior-analytics upload), `StructuralRefineBuildingState.tsx` (inline "building…" indicator), `StructuralRefineDownloads.tsx` (analytics + refined model download buttons), `structural-refine.css` (feature-local styles only).
+
+### Refined StructuralModel (plug-and-play)
+The artifact produced by `composeRefinedStructuralModel` **is** a plain `StructuralModel` — same `schema: 'wrokit/structural-model'`, same `version: '4.0'`, same guard. Any module that today accepts a `StructuralModel` (Run Mode load, Transformation runner config side, `structural-model-io`) accepts the refined model without change. There is no new contract, no new upload path, and no special re-uploader.
+
+### Invariants (enforced by tests and code review)
+- **Additive-only**: Structural Refine modules must not import from any existing engine internals beyond `structural-model.ts` types and the pure `object-hierarchy.ts` helper. Structural Refine must not call any setter on `geometry-store`, `structural-store`, `wizard-store`, `geometry-builder-store`, or any normalized-page session store.
+- **Geometry truth is sacred**: field BBOX coordinates inside the refined model's `fieldRelationships` and inside the source `GeometryFile` must be unchanged. The compose step copies field BBOXes byte-for-byte from the config; it never derives them from runtime observations.
+- **No hidden runtime state**: `StructuralRefineAnalytics` and the refined `StructuralModel` must be fully-described JSON artifacts that survive serialize → parse → guard round-trips with no closure references or in-memory-only handles.
+- **Storage discipline**: the aggregator never retains raw `StructuralModel`, `TransformationModel`, or `PredictedGeometryFile` instances. Per-document evidence is extracted then immediately dropped once it has been folded into running statistics.
+- **Toggle discipline**: every new code path is behind `refineEnabled`. With the toggle off, the batch coordinator and orchestrator outputs are byte-identical to the pre-Structural-Refine baseline. `structural-refine-toggle-off.test.ts` is the canary for this invariant.
+- **Associativity**: `mergeAnalytics(A, mergeAnalytics(B, C)) ≡ mergeAnalytics(mergeAnalytics(A, B), C)` — accumulation order does not change results. Proven in `tests/unit/structural-refine-merge.test.ts`.

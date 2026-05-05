@@ -1,0 +1,130 @@
+.sr-toggle {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-muted);
+}
+
+.sr-toggle__label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.sr-toggle__checkbox {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  flex-shrink: 0;
+  accent-color: var(--color-primary);
+}
+
+.sr-toggle__badge {
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  color: var(--color-primary);
+  background: rgba(42, 95, 255, 0.1);
+  padding: 1px var(--space-1);
+  border-radius: var(--radius-sm);
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.sr-toggle__prior {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-left: calc(16px + var(--space-2));
+}
+
+.sr-toggle__hint {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  margin: 0;
+}
+
+.sr-toggle__upload {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.sr-toggle__upload-btn,
+.sr-toggle__clear-btn {
+  font: inherit;
+  font-size: var(--font-size-xs);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+  background: var(--color-surface);
+  border: var(--border-default);
+  color: var(--color-text);
+  transition: border-color 0.15s ease;
+}
+
+.sr-toggle__upload-btn:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.sr-toggle__clear-btn {
+  color: var(--color-text-muted);
+}
+
+.sr-toggle__clear-btn:hover {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}
+
+.sr-toggle__error {
+  font-size: var(--font-size-xs);
+  color: var(--color-danger);
+  margin: 0;
+}
+
+/* Building state — shown on ProcessingSlide when phase === 'refining' */
+.sr-building {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+  margin-top: var(--space-2);
+}
+
+.sr-building__spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--color-border);
+  border-top-color: var(--color-primary);
+  animation: sr-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes sr-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Download section — shown on ReviewSlide when refine outputs are available */
+.sr-downloads {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.sr-downloads__divider {
+  width: 1px;
+  height: 20px;
+  background: var(--color-border);
+  flex-shrink: 0;
+}

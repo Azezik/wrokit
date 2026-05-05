@@ -1,3 +1,4 @@
+import { StructuralRefineBuildingState } from '../../../structural-refine/ui/StructuralRefineBuildingState';
 import type { OrchestratorApi } from '../../orchestrator/useOrchestrator';
 
 interface ProcessingSlideProps {
@@ -10,6 +11,7 @@ const phaseLabel: Record<string, string> = {
   localizing: 'Locating fields',
   extracting: 'Reading text',
   appending: 'Saving to MasterDB',
+  refining: 'Refining structural model',
   done: 'Finishing up'
 };
 
@@ -39,6 +41,7 @@ export function ProcessingSlide({ orchestrator }: ProcessingSlideProps) {
           Document {Math.min(completed + (progress?.phase === 'done' ? 0 : 1), total) || 0} of {total}
         </p>
       </div>
+      {progress?.phase === 'refining' ? <StructuralRefineBuildingState /> : null}
     </div>
   );
 }
