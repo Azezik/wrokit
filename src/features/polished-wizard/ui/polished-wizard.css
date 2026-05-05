@@ -18,6 +18,20 @@
   position: relative;
 }
 
+/*
+ * On the bbox-draw slide only, allow the card to expand so the document image
+ * has more room. This is a pure layout change: NormalizedPageViewport measures
+ * the rendered <img> bounding rect via ResizeObserver and derives its
+ * SurfaceTransform from that measurement, so a larger display rect produces
+ * proportionally larger scaleX/scaleY values and the saved normalized bbox is
+ * unchanged. The overlay plane is absolutely positioned to displayRect.width ×
+ * displayRect.height at (0,0) inside the inline-block viewport frame, so the
+ * image-plane = overlay-plane invariant is preserved at any width.
+ */
+.polished-wizard__card:has(.polished-wizard__draw-stage) {
+  max-width: min(1200px, 96vw);
+}
+
 .polished-wizard__progress {
   display: flex;
   gap: var(--space-1);
