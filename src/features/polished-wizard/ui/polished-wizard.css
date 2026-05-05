@@ -179,12 +179,34 @@
 
 .polished-wizard__viewport-frame {
   position: relative;
-  flex: 1;
+  flex: 0 0 auto;
   border: var(--border-default);
   border-radius: var(--radius-md);
-  overflow: hidden;
+  overflow: visible;
   background: var(--color-surface-muted);
   min-height: 320px;
+}
+
+/*
+ * Scale the rendered page to fill the viewport-frame's full width so the user
+ * can draw bboxes accurately. The shared NormalizedPageViewport renders the
+ * <img> at its intrinsic raster size (width: auto), which is often smaller
+ * than the wizard card. We override only inside the wizard's frame so the
+ * shared component (also used by Run Mode) is untouched.
+ *
+ * Coordinate math is invariant to display size: ResizeObserver remeasures the
+ * <img> rect, scaleX = surfaceWidth / displayWidth, so screen * scale = surface
+ * regardless of how big the image renders. The overlay plane is sized from the
+ * measured image rect, so image-plane = overlay-plane still holds.
+ */
+.polished-wizard__viewport-frame .normalized-page-viewport {
+  display: block;
+}
+
+.polished-wizard__viewport-frame .normalized-page-viewport__image {
+  width: 100%;
+  height: auto;
+  max-height: none;
 }
 
 .polished-wizard__draft {
