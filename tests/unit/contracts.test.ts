@@ -735,44 +735,26 @@ describe('isOcrMagicResult', () => {
 
   const validResult = {
     schema: 'wrokit/ocrmagic-result',
-    version: '1.0',
+    version: '1.1',
     wizardId: 'Invoice Wizard',
     generatedAtIso: '2026-04-29T00:00:00Z',
     cleanedTable: baseTable,
-    profiles: {
-      invoice_number: {
-        fieldId: 'invoice_number',
-        declaredType: 'numeric',
-        inferredKind: 'numeric',
-        sampleCount: 1,
-        nonEmptySampleCount: 1,
-        length: { min: 6, max: 6, mode: 6, mean: 6 },
-        charClassByPosition: ['digit', 'digit', 'digit', 'digit', 'digit', 'digit'],
-        commonPrefixes: [],
-        commonSuffixes: [],
-        separators: [],
-        repeatedValues: []
-      }
-    },
     audits: [
       {
         documentId: 'INV-1',
         fieldId: 'invoice_number',
+        fieldType: 'numeric',
         rawValue: '104882',
         cleanValue: '104882',
         changeType: 'unchanged',
-        confidenceBefore: 0.6,
-        confidenceAfter: 0.6,
         reasonCodes: []
       }
     ],
     changeCounts: {
       unchanged: 1,
-      'edge-cleaned': 0,
-      'whitespace-normalized': 0,
-      'type-substituted': 0,
-      'pattern-corrected': 0,
-      flagged: 0
+      'stage-1': 0,
+      'stage-1b': 0,
+      'stage-1-and-1b': 0
     }
   };
 
@@ -780,19 +762,20 @@ describe('isOcrMagicResult', () => {
     expect(isOcrMagicResult(validResult)).toBe(true);
   });
 
-  it('rejects wrong schema or unknown char class in profile', () => {
+  it('rejects wrong schema or unknown change type', () => {
     expect(isOcrMagicResult(null)).toBe(false);
     expect(isOcrMagicResult({ ...validResult, schema: 'other' })).toBe(false);
-    const badProfile = {
+    expect(isOcrMagicResult({ ...validResult, version: '1.0' })).toBe(false);
+    const badAudit = {
       ...validResult,
-      profiles: {
-        invoice_number: {
-          ...validResult.profiles.invoice_number,
-          charClassByPosition: ['digit', 'unknown']
+      audits: [
+        {
+          ...validResult.audits[0],
+          changeType: 'pattern-corrected'
         }
-      }
+      ]
     };
-    expect(isOcrMagicResult(badProfile)).toBe(false);
+    expect(isOcrMagicResult(badAudit)).toBe(false);
   });
 });
 

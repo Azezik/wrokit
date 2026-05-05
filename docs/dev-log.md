@@ -1,3 +1,23 @@
+## 2026-05-05 — Refactor: OCRMagic limited to Stage 1 + Stage 1B (drop pattern profile / scoring)
+
+### Why this step
+- OCRMagic had grown beyond its purpose. It was running an 8-stage pipeline (preserve raw → safe cleanup → type substitutions → learn column profile → generate one-character candidates → score against profile → apply when score margin clears `0.08` → emit audit). The pattern-profile / candidate-scoring layer was never part of the intent; it was making OCRMagic do guess-work decisions about what each cell should look like based on its column neighbours. Limiting OCRMagic to Stage 1 (substitutions) and Stage 1B (edge cleanup) keeps the engine specific, modular, and predictable.
+
+### What changed
+- Contract `src/core/contracts/ocrmagic-result.ts` bumped to `version: '1.1'`. Removed `OcrMagicFieldProfile`, `OcrMagicCharClass`, `profiles`, and the `confidenceBefore` / `confidenceAfter` fields from cell audits. `OcrMagicChangeType` is now `'unchanged' | 'stage-1' | 'stage-1b' | 'stage-1-and-1b'`. Each audit now also carries `fieldType` so the audit alone explains what was attempted.
+- New module layout under `src/core/engines/ocrmagic/`:
+  - `stage-1.ts` — per-field-type substitution maps and dedicated `runStage1Any` / `runStage1Numeric` / `runStage1Text` entry points (plus a `runStage1(value, type)` dispatcher). `any` is a strict no-op; numeric flips obvious letter-OCR mistakes into digits; text flips obvious digit-OCR mistakes into letters. Stray pipes / bracket noise are NOT in the substitution maps anymore — those belong to Stage 1B.
+  - `stage-1b.ts` — per-field-type edge cleanup entry points `runStage1bAny` / `runStage1bNumeric` / `runStage1bText` (plus a dispatcher). All three currently delegate to a shared edge-cleanup core, but each branch is isolated so e.g. disabling Stage 1B for `any` later will not affect `numeric` or `text`.
+  - `ocrmagic-engine.ts` rewritten to do exactly Stage 1 → Stage 1B per cell. No profile learning, no candidate scoring, no margin gating, no decision-making logic.
+- Deleted `cleanup.ts`, `substitutions.ts`, and `pattern-profile.ts` from the engine module.
+- UI: `src/features/polished-wizard/ui/slides/ConfigureWizardSlide.tsx` — the `any` / `text` / `numeric` field-type dropdown now appears immediately before the field-label input (per request). The grid template in `polished-wizard.css` was reordered so the type select is the second column and the label input flexes as the third. `MasterDbPanel.tsx` and `ReviewSlide.tsx` updated to read the new `changeCounts` keys and to derive declared types from the WizardFile (no longer from the dropped `profiles` map).
+- Tests: `tests/unit/ocrmagic-engine.test.ts` rewritten for the new entry points (`runStage1*`, `runStage1b*`, engine end-to-end with the new audit shape including a `stage-1-and-1b` case). `tests/unit/contracts.test.ts` `isOcrMagicResult` fixture updated to the `1.1` shape (and now negative-tests rejection of legacy `pattern-corrected` change types).
+
+### What did not change
+- OCRMagic is still an isolated engine. It still consumes only `WizardFile.fields[].type` plus the source `MasterDbTable`, never reads NormalizedPage pixels, and never writes back into any other engine's contracts.
+- The runner boundary (`src/core/runtime/ocrmagic-runner.ts`) is unchanged: callers still invoke `clean({wizard, masterDb})` and receive an `OcrMagicResult`.
+- The raw `MasterDbTable` is still preserved verbatim; the cleaned table is still a parallel artifact and the user still picks raw or cleaned at download time.
+
 ## 2026-05-04 — Add: OCRMagic post-processing engine (field-aware, column-aware MasterDB cleanup)
 
 ### Why this step

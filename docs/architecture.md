@@ -57,7 +57,7 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
   - `ExtractionResult`: `1.0`
   - `OcrBoxResult`: `1.0`
   - `MasterDbTable`: `1.0`
-  - `OcrMagicResult`: `1.0`
+  - `OcrMagicResult`: `1.1`
 
 ## Store Pattern
 - Stores are observable. Public surface: async mutators returning `Promise<void>`, `getSnapshot(): TSnapshot`, `subscribe(listener): () => void`.
@@ -166,14 +166,16 @@ Wrokit is a modular, human-in-the-loop file ingestion engine where developers de
 
 ## OCRMagic Engine (Optional Field-Aware MasterDB Cleanup)
 - The OCRMagic engine is an **isolated**, optional post-processing layer that runs over a finalized `MasterDbTable` and emits a parallel cleaned `MasterDbTable` plus per-cell audit metadata. It NEVER reads NormalizedPage pixels, runs OCR, or modifies the WizardFile, GeometryFile, StructuralModel, TransformationModel, PredictedGeometryFile, OcrBoxResult, or the source MasterDbTable.
+- OCRMagic does exactly two stages, in order, per cell, and nothing else:
+  - **Stage 1 — Pure common substitution pass.** Applies obvious character-for-character OCR substitutions, gated by the user-declared field type. `any` is a strict no-op. `numeric` flips letter-OCR mistakes (`O/o/Q→0`, `I/l/L→1`, `Z/z→2`, `S/s→5`, `G→6`, `B→8`) into digits. `text` flips digit-OCR mistakes (`0→O`, `1→I`, `5→S`, `8→B`) into letters.
+  - **Stage 1B — Small per-field-type cleanup pass.** Applies to `any`, `numeric`, and `text` (each through its own dedicated function so any branch can be tuned independently). Replaces NBSP/zero-width whitespace, collapses multi-space, trims leading/trailing whitespace, strips leading apostrophes/quotes/copyright/symbol+space, and strips trailing isolated junk separated from the value (e.g., `Bob@gmail.com (` → `Bob@gmail.com`). Stage 1B never aggressively rewrites the main value.
 - Module layout under `src/core/engines/ocrmagic/`:
-  - `cleanup.ts` — pure, conservative edge-junk strip (NBSP, zero-width characters, multi-space, leading/trailing apostrophes, copyright glyphs, separator characters). Reports the reason codes that explain each removal.
-  - `substitutions.ts` — pure, type-gated character substitutions. `text` flips digits→letters, `numeric` flips letters→digits, `any` opts out entirely. Also exposes `generateLocalCandidates` for one-character ambiguity flips.
-  - `pattern-profile.ts` — pure, deterministic column PatternProfile builder (length stats, per-position char-class majority, common prefixes/suffixes, separators, repeated values, declared vs inferred kind) plus a `scoreAgainstProfile` candidate scorer. Not ML.
-  - `ocrmagic-engine.ts` — pure `Engine<OcrMagicCleanInput, OcrMagicCleanOutput>` implementing the 8-stage pipeline: preserve raw → safe cleanup → type substitutions → learn profile → generate candidates → score → apply when margin clears `0.08` → emit audit metadata.
-  - `index.ts` re-exports the engine, helpers, and types.
+  - `stage-1.ts` — per-field-type substitution maps and `runStage1Any` / `runStage1Numeric` / `runStage1Text` entry points (plus a `runStage1(value, type)` dispatcher).
+  - `stage-1b.ts` — per-field-type edge cleanup entry points `runStage1bAny` / `runStage1bNumeric` / `runStage1bText` (plus a `runStage1b(value, type)` dispatcher) that all delegate to a shared edge-cleanup core today but can diverge per type later.
+  - `ocrmagic-engine.ts` — pure `Engine<OcrMagicCleanInput, OcrMagicCleanOutput>` that runs Stage 1 then Stage 1B per cell and emits audit metadata. No pattern learning, no scoring, no other decision-making logic.
+  - `index.ts` re-exports the engine, both stage entry points, and types.
 - Composition: `src/core/runtime/ocrmagic-runner.ts` is the only place the engine is composed. It exposes a single `clean({wizard, masterDb})` boundary that returns an `OcrMagicResult`.
-- Contract: `src/core/contracts/ocrmagic-result.ts` (`schema: 'wrokit/ocrmagic-result'`, `version: '1.0'`, guard `isOcrMagicResult`). Carries the cleaned `MasterDbTable`, learned `OcrMagicFieldProfile` per field, a flat per-cell audit list, and aggregate `changeCounts`.
+- Contract: `src/core/contracts/ocrmagic-result.ts` (`schema: 'wrokit/ocrmagic-result'`, `version: '1.1'`, guard `isOcrMagicResult`). Carries the cleaned `MasterDbTable`, a flat per-cell audit list (`fieldType`, `rawValue`, `cleanValue`, `changeType ∈ {unchanged, stage-1, stage-1b, stage-1-and-1b}`, `reasonCodes`), and aggregate `changeCounts` keyed by the same change types.
 - IO: `src/core/io/masterdb-csv-io.ts` exposes `downloadCleanedMasterDbCsv(table)` so the cleaned table downloads with a `*.masterdb.cleaned.csv` filename and does not collide with the raw download.
 - UI: `src/features/polished-wizard/ui/slides/ReviewSlide.tsx` exposes `Clean Data` → loading → `Download cleaned CSV` alongside `Download raw CSV`. `src/features/masterdb/ui/MasterDbPanel.tsx` exposes the same actions in the debug surface used by Config Capture and Run Mode.
 
