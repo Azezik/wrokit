@@ -1,12 +1,16 @@
 import type { GeometryFile } from '../../../core/contracts/geometry';
 import type { MasterDbTable } from '../../../core/contracts/masterdb-table';
 import type { StructuralModel } from '../../../core/contracts/structural-model';
+import type { StructuralRefineAnalytics } from '../../../core/contracts/structural-refine-analytics';
 import type { WizardFile } from '../../../core/contracts/wizard';
 import { createNormalizationEngine } from '../../../core/engines/normalization';
 import { buildDocumentFingerprint } from '../../../core/page-surface/page-surface-fingerprint';
 import { createLocalizationRunner } from '../../../core/runtime/localization-runner';
 import { createMasterDbRunner } from '../../../core/runtime/masterdb-runner';
 import { createOcrBoxRunner } from '../../../core/runtime/ocrbox-runner';
+import {
+  createStructuralRefineRunner
+} from '../../../core/runtime/structural-refine-runner';
 import { createStructuralRunner } from '../../../core/runtime/structural-runner';
 import { createTransformationRunner } from '../../../core/runtime/transformation-runner';
 import type { BatchProgress } from '../orchestrator/types';
@@ -17,6 +21,10 @@ export interface BatchCoordinatorRunInput {
   configStructuralModel: StructuralModel;
   files: File[];
   startingTable?: MasterDbTable | null;
+  /** When true, runs the Structural Refine observer after each document and composes a refined model after the loop. */
+  refineEnabled?: boolean;
+  /** Optional prior analytics to fold into this batch's refine output via mergeAnalytics. */
+  priorAnalytics?: StructuralRefineAnalytics | null;
   onProgress?: (progress: BatchProgress) => void;
 }
 
@@ -25,6 +33,8 @@ export interface BatchCoordinatorRunResult {
   successCount: number;
   failureCount: number;
   failures: Array<{ name: string; reason: string }>;
+  /** Present only when refineEnabled was true and finalize succeeded. */
+  refineOutputs?: { analytics: StructuralRefineAnalytics; refinedModel: StructuralModel };
 }
 
 export interface BatchCoordinator {
@@ -45,12 +55,23 @@ export const createBatchCoordinator = (): BatchCoordinator => {
       configStructuralModel,
       files,
       startingTable = null,
+      refineEnabled = false,
+      priorAnalytics = null,
       onProgress
     }) => {
       const total = files.length;
       let table: MasterDbTable | null = startingTable;
       const failures: Array<{ name: string; reason: string }> = [];
       let successCount = 0;
+
+      const refineRunner = refineEnabled
+        ? createStructuralRefineRunner({
+            wizard,
+            geometry: configGeometry,
+            configStructural: configStructuralModel,
+            priorAnalytics: priorAnalytics ?? null
+          })
+        : null;
 
       for (let i = 0; i < total; i += 1) {
         const file = files[i];
@@ -109,6 +130,16 @@ export const createBatchCoordinator = (): BatchCoordinator => {
           });
           table = applied.table;
           successCount += 1;
+
+          // Structural Refine observer — isolated, never throws into the main batch loop.
+          if (refineRunner) {
+            try {
+              refineRunner.observe({ runtimeStructure, transformationModel, predicted });
+            } catch {
+              // Refine observe failures are silently swallowed — they must
+              // never interrupt the existing batch or corrupt the MasterDB.
+            }
+          }
         } catch (error) {
           failures.push({
             name: file.name,
@@ -137,11 +168,28 @@ export const createBatchCoordinator = (): BatchCoordinator => {
         table = empty.table;
       }
 
+      // Structural Refine finalize — runs after the loop, isolated from main result.
+      let refineOutputs:
+        | { analytics: StructuralRefineAnalytics; refinedModel: StructuralModel }
+        | undefined;
+
+      if (refineRunner) {
+        onProgress?.({ currentIndex: total, total, currentName: '', phase: 'refining' });
+        try {
+          const batchId = `batch-${Date.now()}`;
+          refineOutputs = await refineRunner.finalize({ batchId });
+        } catch {
+          // Refine finalize failures are silently swallowed — analytics is
+          // optional and must never break an otherwise-successful batch.
+        }
+      }
+
       return {
         table,
         successCount,
         failureCount: failures.length,
-        failures
+        failures,
+        ...(refineOutputs !== undefined ? { refineOutputs } : {})
       };
     }
   };
