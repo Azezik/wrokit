@@ -24,6 +24,7 @@
 import {
   createOpenCvJsAdapter,
   createStructuralEngine,
+  type CvSensitivityProfile,
   type OpenCvRuntimeLoadResult,
   type StructuralEngineInput
 } from '../engines/structure';
@@ -142,6 +143,12 @@ export interface StructuralWorkerRequest {
   type: 'compute';
   id: number;
   input: StructuralEngineInput;
+  /**
+   * Optional per-message sensitivity profile applied to the adapter created
+   * inside the worker. When omitted, the worker uses the adapter default
+   * (`NORMAL_CV_SENSITIVITY_PROFILE`).
+   */
+  sensitivityProfile?: CvSensitivityProfile;
 }
 
 export interface StructuralWorkerSuccess {
@@ -163,11 +170,11 @@ export interface StructuralWorkerFailure {
 export type StructuralWorkerResponse = StructuralWorkerSuccess | StructuralWorkerFailure;
 
 self.onmessage = async (event: MessageEvent<StructuralWorkerRequest>) => {
-  const { id, input } = event.data;
+  const { id, input, sensitivityProfile } = event.data;
   let runtimeLoadStatus: OpenCvRuntimeLoadResult | null = null;
   try {
     runtimeLoadStatus = await ensureWorkerOpenCvRuntime();
-    const cvAdapter = createOpenCvJsAdapter();
+    const cvAdapter = createOpenCvJsAdapter({ sensitivityProfile });
     const engine = createStructuralEngine({
       cvAdapter,
       rasterLoader: (page, surface) => loadPageRasterInWorker(page, surface)

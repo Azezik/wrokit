@@ -27,6 +27,39 @@ import {
  *   Engine can map results into normalized [0, 1] coordinates without the
  *   adapter ever touching the normalization layer.
  */
+/**
+ * Sensitivity profile that controls the three pre-contour-detection knobs the
+ * adapter exposes for low-contrast UI surfaces (dark Reddit/dashboard cards on
+ * slightly-darker page backgrounds, etc.).
+ *
+ * Lowering `adaptiveThresholdC` makes the adaptive threshold pick up fainter
+ * borders. Raising `cannyAutoSigma` widens the Canny hysteresis band so weaker
+ * gradients survive. Lowering `darkPageNormalizedThresholdFloor` releases the
+ * dark-page background-threshold clamp so very-low-contrast foreground is not
+ * forced into background by the safety floor.
+ *
+ * The profile is intentionally narrow: it does NOT change object area floors,
+ * line-length floors, or the relationship resolver. It only controls how
+ * sensitive edge / threshold detection is before contours are extracted.
+ */
+export interface CvSensitivityProfile {
+  adaptiveThresholdC: number;
+  cannyAutoSigma: number;
+  darkPageNormalizedThresholdFloor: number;
+}
+
+export const NORMAL_CV_SENSITIVITY_PROFILE: CvSensitivityProfile = {
+  adaptiveThresholdC: 8,
+  cannyAutoSigma: 0.33,
+  darkPageNormalizedThresholdFloor: 180
+};
+
+export const HIGH_RES_CV_SENSITIVITY_PROFILE: CvSensitivityProfile = {
+  adaptiveThresholdC: 3,
+  cannyAutoSigma: 0.5,
+  darkPageNormalizedThresholdFloor: 140
+};
+
 export interface OpenCvJsAdapterOptions {
   /**
    * Pixel value (0..255) at or above which a channel is treated as "background"
@@ -43,6 +76,14 @@ export interface OpenCvJsAdapterOptions {
    * looks up `globalThis.cv` lazily.
    */
   opencvRuntime?: unknown;
+  /**
+   * Sensitivity profile for the three pre-contour-detection knobs (adaptive
+   * threshold C, Canny auto-sigma, dark-page threshold floor). Defaults to
+   * `NORMAL_CV_SENSITIVITY_PROFILE` so existing callers retain current
+   * behavior. Set to `HIGH_RES_CV_SENSITIVITY_PROFILE` (or a custom profile)
+   * when a config has been flagged for hi-res detection.
+   */
+  sensitivityProfile?: CvSensitivityProfile;
 }
 
 interface OpenCvMat {
@@ -305,7 +346,8 @@ const luminanceAt = (data: Uint8ClampedArray, i: number): number =>
 
 const detectBackgroundProfile = (
   pixels: ImageData,
-  baseThreshold: number
+  baseThreshold: number,
+  darkPageNormalizedThresholdFloor: number
 ): BackgroundProfile => {
   const { width, height, data } = pixels;
   const samples: number[] = [];
@@ -353,11 +395,15 @@ const detectBackgroundProfile = (
   // threshold a small distance below the inverted background luminance so
   // all dark-page panels still register as background while their content
   // (grey panels, near-white text, light grid rules) registers as
-  // foreground. Floor at 180 so heavy dark themes (perimeter ≈ 0) still
-  // admit reasonable foreground variation.
+  // foreground. The profile floor caps how aggressive this can get; hi-res
+  // profiles relax it so very-low-contrast foreground (e.g. a card a few
+  // luminance units brighter than the page bg) is not forced into background.
   const invertedBg = 255 - perimeterMedian;
   const tolerance = 16;
-  const normalizedThreshold = Math.max(180, Math.min(baseThreshold, invertedBg - tolerance));
+  const normalizedThreshold = Math.max(
+    darkPageNormalizedThresholdFloor,
+    Math.min(baseThreshold, invertedBg - tolerance)
+  );
   return { isDark, perimeterMedian, normalizedThreshold };
 };
 
@@ -392,7 +438,10 @@ const normalizeRasterForLightBackground = (
  * page and deriving (lo, hi) keeps detection consistent across captures of
  * the same content.
  */
-const computeAutoCannyThresholds = (pixels: ImageData): { lo: number; hi: number } => {
+const computeAutoCannyThresholds = (
+  pixels: ImageData,
+  sigma: number
+): { lo: number; hi: number } => {
   const { data } = pixels;
   const stride = 16;
   const samples: number[] = [];
@@ -407,7 +456,6 @@ const computeAutoCannyThresholds = (pixels: ImageData): { lo: number; hi: number
   }
   samples.sort((a, b) => a - b);
   const median = samples[Math.floor(samples.length / 2)];
-  const sigma = 0.33;
   const lo = Math.max(0, Math.floor((1 - sigma) * median));
   const hi = Math.min(255, Math.floor((1 + sigma) * median));
   // Guarantee a non-trivial hysteresis band even when the page has very low
@@ -1347,7 +1395,8 @@ const detectWithOpenCvRuntime = (
   input: CvSurfaceRaster,
   backgroundThreshold: number,
   minSidePx: number,
-  thresholds: SizeRelativeThresholds
+  thresholds: SizeRelativeThresholds,
+  sensitivityProfile: CvSensitivityProfile
 ): CvContentRectResult => {
   const { pixels, surface } = input;
   const src = cv.matFromImageData(pixels);
@@ -1410,7 +1459,7 @@ const detectWithOpenCvRuntime = (
       cv.ADAPTIVE_THRESH_GAUSSIAN_C,
       cv.THRESH_BINARY_INV,
       adaptiveBlockSize,
-      8
+      sensitivityProfile.adaptiveThresholdC
     );
 
     openKernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
@@ -1421,8 +1470,9 @@ const detectWithOpenCvRuntime = (
 
     // Auto-tune Canny: median±sigma adapts to overall page brightness so
     // identical content produces identical edge masks across captures, even
-    // on low-contrast (dark UI / muted theme) surfaces.
-    const cannyThresholds = computeAutoCannyThresholds(pixels);
+    // on low-contrast (dark UI / muted theme) surfaces. Sigma comes from the
+    // active sensitivity profile so hi-res mode can widen the hysteresis band.
+    const cannyThresholds = computeAutoCannyThresholds(pixels, sensitivityProfile.cannyAutoSigma);
     cv.Canny(cannyInput, edges, cannyThresholds.lo, cannyThresholds.hi);
 
     // Morphologically close the Canny edge mask before contour detection.
@@ -1686,6 +1736,7 @@ export const createOpenCvJsAdapter = (options: OpenCvJsAdapterOptions = {}): CvA
   const backgroundThreshold = options.backgroundLuminanceThreshold ?? DEFAULT_BACKGROUND_THRESHOLD;
   const minSidePx = options.minContentSidePx ?? DEFAULT_MIN_SIDE_PX;
   const runtimeOverride = options.opencvRuntime;
+  const sensitivityProfile = options.sensitivityProfile ?? NORMAL_CV_SENSITIVITY_PROFILE;
 
   return {
     name: 'opencv-js',
@@ -1703,7 +1754,11 @@ export const createOpenCvJsAdapter = (options: OpenCvJsAdapterOptions = {}): CvA
       // raster so the same predicates apply uniformly. The line-grid
       // detector and the heuristic flood fill are agnostic to this — they
       // only ever see normalized pixels and a normalized threshold.
-      const profile = detectBackgroundProfile(input.pixels, backgroundThreshold);
+      const profile = detectBackgroundProfile(
+        input.pixels,
+        backgroundThreshold,
+        sensitivityProfile.darkPageNormalizedThresholdFloor
+      );
       const normalizedPixels = normalizeRasterForLightBackground(input.pixels, profile);
       const normalizedInput: CvSurfaceRaster =
         normalizedPixels === input.pixels ? input : { surface: input.surface, pixels: normalizedPixels };
@@ -1725,7 +1780,8 @@ export const createOpenCvJsAdapter = (options: OpenCvJsAdapterOptions = {}): CvA
           normalizedInput,
           effectiveThreshold,
           minSidePx,
-          thresholds
+          thresholds,
+          sensitivityProfile
         );
       } catch {
         return detectWithHeuristicFallback(
