@@ -1,9 +1,11 @@
 import { useMemo, useRef, useState, type ChangeEvent } from 'react';
 
 import type { GeometryFile } from '../../../core/contracts/geometry';
+import type { MasterDbTable } from '../../../core/contracts/masterdb-table';
 import type { NormalizedPage } from '../../../core/contracts/normalized-page';
 import type { PredictedGeometryFile } from '../../../core/contracts/predicted-geometry-file';
 import type { StructuralModel } from '../../../core/contracts/structural-model';
+import type { StructuralRefineAnalytics } from '../../../core/contracts/structural-refine-analytics';
 import type { TransformationModel } from '../../../core/contracts/transformation-model';
 import type { WizardFile } from '../../../core/contracts/wizard';
 import { createNormalizationEngine } from '../../../core/engines/normalization';
@@ -47,12 +49,14 @@ import { Button } from '../../../core/ui/components/Button';
 import { Input } from '../../../core/ui/components/Input';
 import { Panel } from '../../../core/ui/components/Panel';
 import { Section } from '../../../core/ui/components/Section';
+import {
+  createBatchCoordinator,
+  type BatchCoordinator
+} from '../../polished-wizard/batch-coordinator/batch-coordinator';
+import type { BatchProgress } from '../../polished-wizard/orchestrator/types';
 import { MasterDbPanel } from '../../masterdb/ui/MasterDbPanel';
 import { OcrBoxPreview } from '../../ocrbox-preview/ui/OcrBoxPreview';
-import {
-  StructuralRefineDebugPanel,
-  type StructuralRefineObservationInput
-} from '../../structural-refine/ui/StructuralRefineDebugPanel';
+import { StructuralRefineDebugPanel } from '../../structural-refine/ui/StructuralRefineDebugPanel';
 import type { OcrBoxResult } from '../../../core/contracts/ocrbox-result';
 
 import './run-mode.css';
@@ -90,15 +94,36 @@ export function RunMode() {
 
   const [surfaceTransform, setSurfaceTransform] = useState<SurfaceTransform | null>(null);
   const [latestOcrResult, setLatestOcrResult] = useState<OcrBoxResult | null>(null);
-  const [latestRefineObservation, setLatestRefineObservation] =
-    useState<StructuralRefineObservationInput | null>(null);
-  // Effective refined model — when set AND `useRefinedAsConfig` is true the
-  // run-mode pipeline substitutes it for the configStructuralModel during
-  // prediction and the config-projection overlay. Mirrors the polished
-  // batch coordinator's `priorRefineModel ?? configStructuralModel` choice.
-  const [effectiveRefinedModel, setEffectiveRefinedModel] = useState<StructuralModel | null>(null);
+
+  // Structural Refine state — controlled by RunMode so both the batch coordinator
+  // call and the StructuralRefineDebugPanel agree on what's loaded.
+  const [refineEnabled, setRefineEnabled] = useState(false);
+  const [priorRefineAnalytics, setPriorRefineAnalytics] =
+    useState<StructuralRefineAnalytics | null>(null);
+  const [priorRefineModel, setPriorRefineModel] = useState<StructuralModel | null>(null);
+  const [lastRefineOutputs, setLastRefineOutputs] = useState<{
+    analytics: StructuralRefineAnalytics;
+    refinedModel: StructuralModel;
+  } | null>(null);
   const [useRefinedAsConfig, setUseRefinedAsConfig] = useState<boolean>(true);
+
+  // Batch state — tracks the polished-style multi-file run that drives
+  // refine.observe per doc and refine.finalize at end via createBatchCoordinator.
+  const [batchFiles, setBatchFiles] = useState<File[]>([]);
+  const [batchDragActive, setBatchDragActive] = useState(false);
+  const [batchProgress, setBatchProgress] = useState<BatchProgress | null>(null);
+  const [batchError, setBatchError] = useState<string | null>(null);
+  const [batchTable, setBatchTable] = useState<MasterDbTable | null>(null);
+  const [batchFailures, setBatchFailures] = useState<Array<{ name: string; reason: string }>>([]);
+  const batchCoordinatorRef = useRef<BatchCoordinator>(createBatchCoordinator());
+
   const structuralRuntimeLoadStatus = structuralRunnerRef.current.runtimeLoadStatus;
+
+  // `lastOutputs?.refinedModel ?? priorRefineModel` — same precedence the
+  // polished orchestrator uses (most recent batch wins, prior is fallback).
+  const effectiveRefinedModel = useMemo<StructuralModel | null>(() => {
+    return lastRefineOutputs?.refinedModel ?? priorRefineModel ?? null;
+  }, [lastRefineOutputs, priorRefineModel]);
 
   const predictionConfigStructuralModel = useMemo(() => {
     if (useRefinedAsConfig && effectiveRefinedModel) {
@@ -314,19 +339,88 @@ export function RunMode() {
       });
 
       setPredicted(result);
-      setLatestRefineObservation({
-        runtimeStructure: runtimeStructuralModel,
-        transformationModel: transformationReport,
-        predicted: result
-      });
     } catch (runError) {
       setRuntimeStructuralModel(null);
       setTransformationModel(null);
       setPredicted(null);
-      setLatestRefineObservation(null);
       setRunError(runError instanceof Error ? runError.message : 'Run Mode matching failed.');
     } finally {
       setIsComputingPredictions(false);
+    }
+  };
+
+  const isBatchRunning = batchProgress !== null;
+
+  const addBatchFiles = (incoming: FileList | File[] | null) => {
+    if (!incoming) {
+      return;
+    }
+    const next = [...batchFiles];
+    for (const f of Array.from(incoming)) {
+      if (!next.some((existing) => existing.name === f.name && existing.size === f.size)) {
+        next.push(f);
+      }
+    }
+    setBatchFiles(next);
+  };
+
+  const handleBatchInputChange = (event: ChangeEvent<HTMLInputElement>) => {
+    addBatchFiles(event.target.files);
+    event.target.value = '';
+  };
+
+  const removeBatchFile = (index: number) => {
+    setBatchFiles(batchFiles.filter((_, i) => i !== index));
+  };
+
+  const handleRunBatch = async () => {
+    if (!wizard || !geometry || !configStructuralModel) {
+      setBatchError('Load WizardFile, GeometryFile, and Config StructuralModel before running a batch.');
+      return;
+    }
+    if (batchFiles.length === 0) {
+      setBatchError('Add at least one document to the batch.');
+      return;
+    }
+
+    // Same precedence as polished orchestrator.runBatch:
+    //   configStructuralModel: priorRefineModel ?? configStructuralModel
+    // We additionally honor the debug-only `useRefinedAsConfig` toggle so the
+    // user can A/B compare the original config against a loaded refined model.
+    const activeConfigModel =
+      useRefinedAsConfig && effectiveRefinedModel ? effectiveRefinedModel : configStructuralModel;
+
+    setBatchError(null);
+    setBatchFailures([]);
+    setBatchProgress({
+      currentIndex: 0,
+      total: batchFiles.length,
+      currentName: batchFiles[0]?.name ?? '',
+      phase: 'normalizing'
+    });
+
+    try {
+      const result = await batchCoordinatorRef.current.run({
+        wizard,
+        configGeometry: geometry,
+        configStructuralModel: activeConfigModel,
+        files: batchFiles,
+        startingTable: batchTable,
+        refineEnabled,
+        priorAnalytics: priorRefineAnalytics,
+        onProgress: (progress) => {
+          setBatchProgress(progress);
+        }
+      });
+      setBatchTable(result.table);
+      setBatchFailures(result.failures);
+      if (result.refineOutputs) {
+        setLastRefineOutputs(result.refineOutputs);
+      }
+    } catch (error) {
+      setBatchError(error instanceof Error ? error.message : 'Batch run failed.');
+    } finally {
+      setBatchProgress(null);
     }
   };
 
@@ -629,23 +723,147 @@ export function RunMode() {
 
       <div className="run-mode__below-viewport">
         <Panel>
+          <h3 style={{ marginTop: 0 }}>Batch processing</h3>
+          <p className="run-mode__meta">
+            Runs the same <code>createBatchCoordinator</code> the polished wizard uses:
+            normalize → structure → transform → localize → OCRBOX → MasterDB per file, with
+            Structural Refine observe-per-doc and finalize-after-loop when the toggle below
+            is on. Output rows are seeded into the MasterDB panel and the refine outputs
+            (analytics + refined model) flow into the Structural Refine panel.
+          </p>
+
+          <label
+            className={`run-mode__dropzone${batchDragActive ? ' run-mode__dropzone--active' : ''}`}
+            onDrop={(event) => {
+              event.preventDefault();
+              setBatchDragActive(false);
+              addBatchFiles(event.dataTransfer.files);
+            }}
+            onDragOver={(event) => {
+              event.preventDefault();
+              setBatchDragActive(true);
+            }}
+            onDragLeave={() => setBatchDragActive(false)}
+          >
+            <input
+              type="file"
+              multiple
+              accept={ACCEPTED_DOC_FORMATS}
+              onChange={handleBatchInputChange}
+              disabled={isBatchRunning}
+            />
+            <strong>
+              {isBatchRunning
+                ? 'Batch running…'
+                : 'Drag & drop batch documents, or click to choose'}
+            </strong>
+            <p className="run-mode__meta">
+              PDF, PNG, JPEG, or WebP — multiple files supported.
+            </p>
+          </label>
+
+          {batchFiles.length > 0 ? (
+            <ul className="run-mode__batch-file-list">
+              {batchFiles.map((file, index) => (
+                <li key={`${file.name}-${file.size}-${index}`}>
+                  <span>{file.name}</span>
+                  <button
+                    type="button"
+                    onClick={() => removeBatchFile(index)}
+                    disabled={isBatchRunning}
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      cursor: 'pointer',
+                      color: 'var(--color-danger)'
+                    }}
+                    aria-label={`Remove ${file.name}`}
+                  >
+                    Remove
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+
+          <div className="run-mode__toolbar">
+            <Button
+              type="button"
+              variant="primary"
+              onClick={() => {
+                void handleRunBatch();
+              }}
+              disabled={
+                isBatchRunning ||
+                batchFiles.length === 0 ||
+                !wizard ||
+                !geometry ||
+                !configStructuralModel
+              }
+            >
+              {isBatchRunning ? 'Running batch…' : `Run batch (${batchFiles.length} file${batchFiles.length === 1 ? '' : 's'})`}
+            </Button>
+            <Button
+              type="button"
+              onClick={() => {
+                setBatchFiles([]);
+                setBatchFailures([]);
+              }}
+              disabled={isBatchRunning || batchFiles.length === 0}
+            >
+              Clear list
+            </Button>
+          </div>
+
+          {batchProgress ? (
+            <p className="run-mode__meta" role="status">
+              Batch progress: {batchProgress.phase} ·{' '}
+              {Math.min(batchProgress.currentIndex + 1, batchProgress.total)} of{' '}
+              {batchProgress.total}
+              {batchProgress.currentName ? ` · ${batchProgress.currentName}` : ''}
+            </p>
+          ) : null}
+
+          {batchError ? <p className="run-mode__error">Batch error: {batchError}</p> : null}
+          {batchFailures.length > 0 ? (
+            <ul className="run-mode__status-list">
+              {batchFailures.map((failure) => (
+                <li key={failure.name} className="run-mode__error">
+                  {failure.name}: {failure.reason}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {batchTable ? (
+            <p className="run-mode__meta">
+              Last batch produced {batchTable.rows.length} row(s) — visible in the MasterDB
+              panel below.
+            </p>
+          ) : null}
+        </Panel>
+
+        <Panel>
           <h3 style={{ marginTop: 0 }}>Structural Refine (debug)</h3>
           <p className="run-mode__meta">
-            Mirrors the polished wizard's Structural Refine pipeline so the same engine,
-            runner, and analytics outputs are accessible under the debug overlay. Observation
-            is per-document and explicit — overlays update with whichever model (config or
-            refined) is currently in effect.
+            Same engine + runner the polished wizard uses; toggle on, then run the batch
+            above. Refined-model substitution is honored by both the batch and the single-doc
+            "Match Runtime Document" path so you can compare overlays.
           </p>
           <StructuralRefineDebugPanel
-            wizard={wizard}
-            geometry={geometry}
-            configStructural={configStructuralModel}
+            enabled={refineEnabled}
+            onEnabledChange={setRefineEnabled}
+            priorAnalytics={priorRefineAnalytics}
+            onPriorAnalyticsChange={setPriorRefineAnalytics}
+            priorRefineModel={priorRefineModel}
+            onPriorRefineModelChange={setPriorRefineModel}
+            lastOutputs={lastRefineOutputs}
             useRefinedAsConfig={useRefinedAsConfig}
             onUseRefinedAsConfigChange={setUseRefinedAsConfig}
-            latestObservation={latestRefineObservation}
-            onEffectiveRefinedModelChange={setEffectiveRefinedModel}
+            effectiveRefinedModel={effectiveRefinedModel}
+            isBatchRunning={isBatchRunning}
           />
         </Panel>
+
         <OcrBoxPreview
           wizard={wizard}
           pages={runtimePages}
@@ -657,6 +875,7 @@ export function RunMode() {
           wizard={wizard}
           pendingResult={latestOcrResult}
           panelTitle="MasterDB (append extracted records)"
+          seededTable={batchTable}
         />
       </div>
     </Section>

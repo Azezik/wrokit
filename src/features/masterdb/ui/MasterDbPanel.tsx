@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type ChangeEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 
 import type { MasterDbTable } from '../../../core/contracts/masterdb-table';
 import type { OcrBoxResult } from '../../../core/contracts/ocrbox-result';
@@ -21,14 +21,31 @@ export interface MasterDbPanelProps {
   /** Latest OCRBOX result for the currently-selected document. */
   pendingResult: OcrBoxResult | null;
   panelTitle?: string;
+  /**
+   * Optional externally-produced table (e.g. the result of a batch run).
+   * When this reference changes to a non-null table the panel adopts it as
+   * its working table, mirroring the user uploading a CSV. Useful in the
+   * debug Run Mode where the batch coordinator returns a complete table.
+   */
+  seededTable?: MasterDbTable | null;
 }
 
 export function MasterDbPanel({
   wizard,
   pendingResult,
-  panelTitle = 'MasterDB (CSV ledger)'
+  panelTitle = 'MasterDB (CSV ledger)',
+  seededTable
 }: MasterDbPanelProps) {
   const [table, setTable] = useState<MasterDbTable | null>(null);
+  const lastSeededRef = useRef<MasterDbTable | null | undefined>(undefined);
+  useEffect(() => {
+    if (seededTable !== undefined && seededTable !== lastSeededRef.current) {
+      lastSeededRef.current = seededTable;
+      if (seededTable !== null) {
+        setTable(seededTable);
+      }
+    }
+  }, [seededTable]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [cleaning, setCleaning] = useState(false);
