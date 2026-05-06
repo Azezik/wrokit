@@ -125,6 +125,14 @@ describe('createOpenCvJsAdapter — Gmail-style bill summary card', () => {
     expect(
       alignmentObjects.some((o) => inQuadrant(o.bboxSurface, 300, 200, 540, 320))
     ).toBe(true);
+
+    // Confidence parity check: alignment cells must clear the 0.78 floor
+    // that fill rects emit at, so that an overlay confidence filter set at
+    // ≥ 0.75 (the typical default) does not silently drop the per-field
+    // cells while keeping noisier confirmed-contour rects.
+    for (const cell of alignmentObjects) {
+      expect(cell.confidence).toBeGreaterThanOrEqual(0.78);
+    }
   });
 
   it('skips alignment cells inside oversized fill regions (no email-body-slab pathology)', async () => {

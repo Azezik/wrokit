@@ -1276,10 +1276,20 @@ const detectFillAndAlignmentObjects = (
       if (tightlyMatchesParent) {
         continue;
       }
+      // Confidence parity with `lineBoundedRectsToObjects`: base 0.78 +
+      // area boost. Alignment cells are by-construction rectangles (cross
+      // product of two strong projection bands inside a fill region) and
+      // are at least as trustworthy as a fill-rect bbox or a line-bounded
+      // cell — putting them at 0.72 left them sitting below typical
+      // overlay confidence floors (≥ 0.75), which inverted the filter:
+      // genuinely-meaningful per-field cells were hidden while noisy
+      // confirmed-but-meaningless contour rects survived.
+      const cellArea = w * h;
+      const cellBoost = Math.min(0.18, cellArea / pageArea);
       cellObjects.push({
         objectId: `${prefixes.cell}_${cellIndex++}`,
         bboxSurface: { x: cell.left, y: cell.top, width: w, height: h },
-        confidence: 0.72
+        confidence: Math.min(0.99, 0.78 + cellBoost)
       });
     }
   }
