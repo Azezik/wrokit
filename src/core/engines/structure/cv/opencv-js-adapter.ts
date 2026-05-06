@@ -12,6 +12,8 @@ import {
   type LineBoundedRectsDiagnostics,
   type PixelBounds as SharedPixelBounds
 } from './line-grid-detector';
+import { detectFillBoundedRects } from './fill-bounded-rect-detector';
+import { detectAlignmentCells } from './alignment-cell-detector';
 import type { CvSensitivityProfile } from '../../../contracts/cv-sensitivity';
 
 export type { CvSensitivityProfile };
@@ -413,39 +415,94 @@ const normalizeRasterForLightBackground = (
 };
 
 /**
- * Auto-tune Canny thresholds via the standard "median ± sigma" rule. A fixed
- * (50, 150) pair is too tight for low-contrast UIs and is not adaptive to
- * brightness, which means the same panel border passes Canny in one capture
- * and fragments into broken edges in the next. Computing the median once per
- * page and deriving (lo, hi) keeps detection consistent across captures of
- * the same content.
+ * Build a single-channel luminance grid from an RGBA ImageData. Transparent
+ * pixels become bright (255) so they read as background under any light-bg
+ * predicate. Used by the gradient-based Canny auto-thresholder when no
+ * post-CLAHE byte view is available from the OpenCV runtime.
  */
-const computeAutoCannyThresholds = (
-  pixels: ImageData,
+const luminanceFromImageData = (pixels: ImageData): Uint8Array => {
+  const { width, height, data } = pixels;
+  const lum = new Uint8Array(width * height);
+  for (let i = 0, p = 0; i < data.length; i += 4, p += 1) {
+    if (data[i + 3] < 8) {
+      lum[p] = 255;
+    } else {
+      lum[p] = (0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]) | 0;
+    }
+  }
+  return lum;
+};
+
+/**
+ * Auto-tune Canny thresholds from the median 3×3 Sobel gradient magnitude
+ * (|Gx| + |Gy|) of a luminance grid. The previous implementation derived
+ * thresholds from median *intensity*, which is a category mismatch — Canny
+ * compares thresholds against gradient magnitude, not pixel value. On a
+ * near-uniform page (white screenshot, dark UI) the intensity median sits
+ * near saturation (≈ 250 or ≈ 12), the formula spits out (lo ≈ 167, hi → 255)
+ * or (lo ≈ 8, hi ≈ 16), and Canny becomes either nearly blind (white pages)
+ * or extremely permissive (dark pages). The Sobel-based variant gives
+ * thresholds tied to the actual edge-strength distribution: a near-uniform
+ * page has a low-magnitude median (a few units) and lo/hi land low enough for
+ * subtle UI panel borders (Δ ≈ 5–10 luminance units) to pass.
+ *
+ * Range: `cv.Canny` with the default L1 gradient and ksize=3 produces
+ * magnitudes in [0, ≈ 1024]. Thresholds are likewise in that range — they
+ * are not clamped to 0..255.
+ */
+const computeAutoCannyThresholdsFromLuminance = (
+  lum: ArrayLike<number>,
+  width: number,
+  height: number,
   sigma: number
 ): { lo: number; hi: number } => {
-  const { data } = pixels;
-  const stride = 16;
+  if (width < 3 || height < 3) {
+    return { lo: 50, hi: 150 };
+  }
+  // Sample a strided interior — full-resolution Sobel sampling is cubic in
+  // raster size and unnecessary for a percentile estimate.
+  const stride = Math.max(1, Math.floor(Math.max(width, height) / 200));
   const samples: number[] = [];
-  for (let i = 0; i < data.length; i += 4 * stride) {
-    if (data[i + 3] < 8) {
-      continue;
+  for (let y = 1; y < height - 1; y += stride) {
+    const above = (y - 1) * width;
+    const row = y * width;
+    const below = (y + 1) * width;
+    for (let x = 1; x < width - 1; x += stride) {
+      const tl = lum[above + x - 1] | 0;
+      const tc = lum[above + x] | 0;
+      const tr = lum[above + x + 1] | 0;
+      const ml = lum[row + x - 1] | 0;
+      const mr = lum[row + x + 1] | 0;
+      const bl = lum[below + x - 1] | 0;
+      const bc = lum[below + x] | 0;
+      const br = lum[below + x + 1] | 0;
+      const gx = -tl + tr - 2 * ml + 2 * mr - bl + br;
+      const gy = -tl - 2 * tc - tr + bl + 2 * bc + br;
+      const mag = (gx < 0 ? -gx : gx) + (gy < 0 ? -gy : gy);
+      samples.push(mag);
     }
-    samples.push(luminanceAt(data, i));
   }
   if (samples.length === 0) {
     return { lo: 50, hi: 150 };
   }
   samples.sort((a, b) => a - b);
-  const median = samples[Math.floor(samples.length / 2)];
+  const median = Math.max(1, samples[Math.floor(samples.length / 2)]);
   const lo = Math.max(0, Math.floor((1 - sigma) * median));
-  const hi = Math.min(255, Math.floor((1 + sigma) * median));
-  // Guarantee a non-trivial hysteresis band even when the page has very low
-  // luminance variance (e.g. a uniform dark UI).
-  if (hi - lo < 20) {
-    return { lo: Math.max(0, lo - 10), hi: Math.min(255, hi + 10) };
-  }
+  const hi = Math.max(lo + 20, Math.floor((1 + sigma) * median));
   return { lo, hi };
+};
+
+/**
+ * Backward-compatible wrapper: previously-exported entry point that took
+ * RGBA ImageData. Now derives a luminance grid and routes to the gradient-
+ * magnitude based thresholder above.
+ */
+const computeAutoCannyThresholds = (
+  pixels: ImageData,
+  sigma: number
+): { lo: number; hi: number } => {
+  const lum = luminanceFromImageData(pixels);
+  return computeAutoCannyThresholdsFromLuminance(lum, pixels.width, pixels.height, sigma);
 };
 
 const intersectionOverUnion = (a: PixelBounds, b: PixelBounds): number => {
@@ -1076,9 +1133,140 @@ const filterCellRectsForGlyphs = (
   });
 };
 
+/**
+ * Pixel slack we permit between a horizontal/vertical rule and the
+ * perpendicular sides it should span, to admit rounded-corner panels
+ * (Material/HIG radii of 8–16 px on common capture sizes). Sized at 1.5%
+ * of the page minimum side: a 1300 px-tall screenshot tolerates ~20 px,
+ * a 600 px-tall mobile capture tolerates ~9 px. The default
+ * `positionTolerance` (0.5% of min side) is far below this and was rejecting
+ * every rounded panel in the line-grid pipeline.
+ */
+const computeRoundedCornerTolerancePx = (surfaceWidth: number, surfaceHeight: number): number =>
+  Math.max(4, Math.round(Math.min(surfaceWidth, surfaceHeight) * 0.015));
+
+/**
+ * Build a luminance-only "text mask" used for alignment-cell detection.
+ * Pixels strictly darker than `pageBackgroundLuminance − darkDelta` (or
+ * stricly brighter when the page is dark — but at this point the raster
+ * has already been normalized to a light background) are foreground.
+ *
+ * This is intentionally NOT the same mask as `computeForegroundMask`. The
+ * gradient-augmented mask marks every pixel within the Sobel halo of any
+ * edge — including the inside of a card boundary — so column / row
+ * projections never reach zero anywhere inside a fill-bounded card and
+ * the gutter detection collapses to "no gutters anywhere". A luminance-only
+ * test is darker-than-bg only and produces clean text-shaped foreground
+ * (glyphs, icons), which is exactly what alignment cell detection needs.
+ */
+const buildTextMaskForAlignment = (
+  pixels: ImageData,
+  pageBackgroundLuminance: number
+): Uint8Array => {
+  const { width, height, data } = pixels;
+  const mask = new Uint8Array(width * height);
+  // 30 luminance units below the page background reliably excludes mid-fill
+  // (card surface, button fills, sidebar shading) without losing typical
+  // text or icon pixels, which sit ≥ 80 units below the page background on
+  // any normal-contrast UI.
+  const textCutoff = Math.max(0, pageBackgroundLuminance - 30);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const i = (y * width + x) * 4;
+      const a = data[i + 3];
+      if (a < 8) {
+        continue;
+      }
+      const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      if (lum < textCutoff) {
+        mask[y * width + x] = 1;
+      }
+    }
+  }
+  return mask;
+};
+
+/**
+ * Find fill-bounded rectangles (cards / panels defined only by a small
+ * luminance step against the page background, with no visible stroke) and
+ * the cells inside them implied by foreground-pixel alignment. Returns
+ * objects ready to be merged into the cross-pipeline dedup pass.
+ *
+ * The fill rect itself becomes one object; each alignment cell inside it
+ * becomes another, unless the cell coincides with the fill rect's footprint
+ * within a small tolerance. Both classes are by-construction rectangles —
+ * the fill rect is a connected-component bbox, each cell is the cross
+ * product of two projection bands — so they are treated as `confirmed`
+ * rectangles for cross-pipeline dedup tiebreak.
+ */
+const detectFillAndAlignmentObjects = (
+  pixels: ImageData,
+  pageBackgroundLuminance: number,
+  surfaceWidth: number,
+  surfaceHeight: number,
+  prefixes: { fill: string; cell: string }
+): { objects: CvSurfaceObject[]; confirmedIds: Set<string> } => {
+  const fillRects = detectFillBoundedRects(pixels, {
+    surfaceWidth,
+    surfaceHeight,
+    pageBackgroundLuminance
+  });
+
+  const fillObjects = lineBoundedRectsToObjects(fillRects, {
+    idPrefix: prefixes.fill,
+    surfaceWidth,
+    surfaceHeight
+  });
+
+  const minSidePx = computeGlyphMinSidePx(surfaceWidth, surfaceHeight);
+  const cellObjects: CvSurfaceObject[] = [];
+  let cellIndex = 0;
+  // Build the alignment-only mask lazily — only if we have at least one fill
+  // rect to walk, since the buildTextMaskForAlignment pass scans the whole
+  // raster.
+  const textMask =
+    fillRects.length > 0 ? buildTextMaskForAlignment(pixels, pageBackgroundLuminance) : null;
+  for (const rect of fillRects) {
+    const cells = detectAlignmentCells(textMask!, {
+      region: rect,
+      surfaceWidth,
+      surfaceHeight
+    });
+    for (const cell of cells) {
+      const w = cell.right - cell.left;
+      const h = cell.bottom - cell.top;
+      if (w < minSidePx || h < minSidePx) {
+        continue;
+      }
+      // Drop a cell that is essentially the parent fill rect (single-band
+      // projection inside a card with no visible gutters) — the fill rect
+      // already represents that footprint and a duplicate would be
+      // suppressed at the dedup pass anyway.
+      const tightlyMatchesParent =
+        Math.abs(cell.left - rect.left) <= 2 &&
+        Math.abs(cell.top - rect.top) <= 2 &&
+        Math.abs(cell.right - rect.right) <= 2 &&
+        Math.abs(cell.bottom - rect.bottom) <= 2;
+      if (tightlyMatchesParent) {
+        continue;
+      }
+      cellObjects.push({
+        objectId: `${prefixes.cell}_${cellIndex++}`,
+        bboxSurface: { x: cell.left, y: cell.top, width: w, height: h },
+        confidence: 0.72
+      });
+    }
+  }
+
+  const objects = [...fillObjects, ...cellObjects];
+  const confirmedIds = new Set<string>(objects.map((o) => o.objectId));
+  return { objects, confirmedIds };
+};
+
 const detectHeuristicSurfaceObjects = (
   pixels: ImageData,
   backgroundThreshold: number,
+  pageBackgroundLuminance: number,
   thresholds: SizeRelativeThresholds,
   foregroundMask: Uint8Array
 ): CvSurfaceObject[] => {
@@ -1144,12 +1332,15 @@ const detectHeuristicSurfaceObjects = (
 
   // 2. Shared line-grid pipeline: line-bounded rects only. Cells are by
   //    construction rectangles — they automatically pass the aspect/fill
-  //    gates and only the min-side floor is meaningful here.
+  //    gates and only the min-side floor is meaningful here. Rounded-corner
+  //    tolerance is applied to admit Material / HIG-style panels whose top
+  //    horizontal stops short of the side verticals by the corner radius.
   const segments = detectLineSegments(pixels, backgroundThreshold, thresholds, foregroundMask);
   const cellRects = filterCellRectsForGlyphs(
     buildLineBoundedRects(segments, {
       surfaceWidth: width,
-      surfaceHeight: height
+      surfaceHeight: height,
+      roundedCornerTolerancePx: computeRoundedCornerTolerancePx(width, height)
     }),
     width,
     height
@@ -1162,12 +1353,26 @@ const detectHeuristicSurfaceObjects = (
     })
   );
 
+  // 3. Fill-bounded surfaces (cards defined by a small luminance step) and
+  //    alignment-based cells inside them. Surfaces that have no stroke at
+  //    all but a clear fill differential are invisible to the line-grid and
+  //    contour pipelines; this pass is the only thing that can recover them.
+  const fillAndAlignment = detectFillAndAlignmentObjects(
+    pixels,
+    pageBackgroundLuminance,
+    width,
+    height,
+    { fill: 'obj_fill', cell: 'obj_align' }
+  );
+  objects.push(...fillAndAlignment.objects);
+
   return objects;
 };
 
 const detectWithHeuristicFallback = (
   input: CvSurfaceRaster,
   backgroundThreshold: number,
+  pageBackgroundLuminance: number,
   minSidePx: number,
   thresholds: SizeRelativeThresholds
 ): CvContentRectResult => {
@@ -1230,6 +1435,7 @@ const detectWithHeuristicFallback = (
     objectsSurface: detectHeuristicSurfaceObjects(
       input.pixels,
       backgroundThreshold,
+      pageBackgroundLuminance,
       thresholds,
       foregroundMask
     )
@@ -1376,6 +1582,7 @@ const detectWithOpenCvRuntime = (
   cv: OpenCvLikeRuntime,
   input: CvSurfaceRaster,
   backgroundThreshold: number,
+  pageBackgroundLuminance: number,
   minSidePx: number,
   thresholds: SizeRelativeThresholds,
   sensitivityProfile: CvSensitivityProfile
@@ -1450,11 +1657,29 @@ const detectWithOpenCvRuntime = (
     cv.morphologyEx(binary, opened, cv.MORPH_OPEN, openKernel);
     cv.morphologyEx(opened, cleaned, cv.MORPH_CLOSE, closeKernel);
 
-    // Auto-tune Canny: median±sigma adapts to overall page brightness so
-    // identical content produces identical edge masks across captures, even
-    // on low-contrast (dark UI / muted theme) surfaces. Sigma comes from the
-    // active sensitivity profile so hi-res mode can widen the hysteresis band.
-    const cannyThresholds = computeAutoCannyThresholds(pixels, sensitivityProfile.cannyAutoSigma);
+    // Auto-tune Canny from the median Sobel gradient magnitude of the
+    // *equalized* luminance grid (the same mat that CLAHE writes and that
+    // GaussianBlur consumes), so the threshold reflects the actual edge
+    // strength distribution Canny will see — including the contrast lift
+    // CLAHE just applied. We try three luminance sources in order:
+    //  1. The post-CLAHE mat's `data` byte view (real OpenCV.js exposes it).
+    //  2. The pre-CLAHE `gray` mat's `data` view (when CLAHE was unavailable).
+    //  3. A JS-computed luminance grid from the raw RGBA pixels (mocks).
+    // Sigma comes from the active sensitivity profile.
+    const equalizedBytes =
+      preprocessed.data && preprocessed.data.length >= pixels.width * pixels.height
+        ? preprocessed.data
+        : gray.data && gray.data.length >= pixels.width * pixels.height
+          ? gray.data
+          : null;
+    const cannyThresholds = equalizedBytes
+      ? computeAutoCannyThresholdsFromLuminance(
+          equalizedBytes,
+          pixels.width,
+          pixels.height,
+          sensitivityProfile.cannyAutoSigma
+        )
+      : computeAutoCannyThresholds(pixels, sensitivityProfile.cannyAutoSigma);
     cv.Canny(cannyInput, edges, cannyThresholds.lo, cannyThresholds.hi);
 
     // Morphologically close the Canny edge mask before contour detection.
@@ -1591,7 +1816,11 @@ const detectWithOpenCvRuntime = (
       buildLineBoundedRects(sharedSegments, {
         surfaceWidth: surface.surfaceWidth,
         surfaceHeight: surface.surfaceHeight,
-        diagnostics: lineGridDiagnostics
+        diagnostics: lineGridDiagnostics,
+        roundedCornerTolerancePx: computeRoundedCornerTolerancePx(
+          surface.surfaceWidth,
+          surface.surfaceHeight
+        )
       }) as SharedPixelBounds[],
       surface.surfaceWidth,
       surface.surfaceHeight
@@ -1608,8 +1837,29 @@ const detectWithOpenCvRuntime = (
       confirmedIds.add(cellObject.objectId);
     }
 
+    // Fill-bounded surfaces and alignment cells. The OpenCV runtime path
+    // catches strokes via Canny / adaptiveThreshold, but stroke-less cards
+    // (Gmail bill summaries, message bubbles, dashboard panels with only
+    // a fill-color delta) bypass both edge masks. This pass is what makes
+    // those surfaces visible to the structural model.
+    const fillAndAlignment = detectFillAndAlignmentObjects(
+      pixels,
+      pageBackgroundLuminance,
+      surface.surfaceWidth,
+      surface.surfaceHeight,
+      { fill: 'obj_cv_fill', cell: 'obj_cv_align' }
+    );
+    for (const id of fillAndAlignment.confirmedIds) {
+      confirmedIds.add(id);
+    }
+
     const dedupedObjects = dedupAcrossPipelines(
-      [...objectsFromContours, ...objectsFromLines, ...objectsFromCells],
+      [
+        ...objectsFromContours,
+        ...objectsFromLines,
+        ...objectsFromCells,
+        ...fillAndAlignment.objects
+      ],
       confirmedIds
     );
 
@@ -1745,12 +1995,21 @@ export const createOpenCvJsAdapter = (options: OpenCvJsAdapterOptions = {}): CvA
       const normalizedInput: CvSurfaceRaster =
         normalizedPixels === input.pixels ? input : { surface: input.surface, pixels: normalizedPixels };
       const effectiveThreshold = profile.normalizedThreshold;
+      // Page-background luminance AFTER normalization. For light pages the
+      // raster is unchanged so it equals the perimeter median; for dark
+      // pages the raster has been RGB-inverted so background pixels land at
+      // (255 − perimeterMedian). The fill-bounded rect detector uses this
+      // to band-classify pixels relative to the page background.
+      const pageBackgroundLuminance = profile.isDark
+        ? 255 - profile.perimeterMedian
+        : profile.perimeterMedian;
 
       const runtime = resolveOpenCvRuntime(runtimeOverride);
       if (!runtime) {
         return detectWithHeuristicFallback(
           normalizedInput,
           effectiveThreshold,
+          pageBackgroundLuminance,
           minSidePx,
           thresholds
         );
@@ -1761,6 +2020,7 @@ export const createOpenCvJsAdapter = (options: OpenCvJsAdapterOptions = {}): CvA
           runtime,
           normalizedInput,
           effectiveThreshold,
+          pageBackgroundLuminance,
           minSidePx,
           thresholds,
           sensitivityProfile
@@ -1769,6 +2029,7 @@ export const createOpenCvJsAdapter = (options: OpenCvJsAdapterOptions = {}): CvA
         return detectWithHeuristicFallback(
           normalizedInput,
           effectiveThreshold,
+          pageBackgroundLuminance,
           minSidePx,
           thresholds
         );

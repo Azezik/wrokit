@@ -418,6 +418,40 @@ describe('buildLineBoundedRects', () => {
     const segments = detectLineSegments(pixels, 245, baselineThresholds(w, h));
     expect(buildLineBoundedRects(segments, { surfaceWidth: w, surfaceHeight: h })).toEqual([]);
   });
+
+  it('rejects a rounded-corner panel by default but accepts it under roundedCornerTolerancePx', () => {
+    // Panel at (50, 50)..(250, 200) with corner radius 10. The visible top
+    // edge spans only x = 60..240; the visible left edge spans only
+    // y = 60..190. Default `positionTolerance` (~1 px on a 250x250 raster)
+    // rejects the quadruple. With `roundedCornerTolerancePx = 12` the four
+    // sides span within tolerance of each other and the panel rect emerges.
+    const segments = {
+      horizontals: [
+        { axisPos: 50, thickness: 1, start: 60, end: 240 }, // top, short by 10 px each side
+        { axisPos: 200, thickness: 1, start: 60, end: 240 } // bottom
+      ],
+      verticals: [
+        { axisPos: 50, thickness: 1, start: 60, end: 190 }, // left
+        { axisPos: 250, thickness: 1, start: 60, end: 190 } // right
+      ]
+    };
+
+    const strict = buildLineBoundedRects(segments, {
+      surfaceWidth: 300,
+      surfaceHeight: 300,
+      skipLeafOrOutermostFilter: true
+    });
+    expect(strict).toEqual([]);
+
+    const relaxed = buildLineBoundedRects(segments, {
+      surfaceWidth: 300,
+      surfaceHeight: 300,
+      roundedCornerTolerancePx: 12,
+      skipLeafOrOutermostFilter: true
+    });
+    expect(relaxed).toHaveLength(1);
+    expect(relaxed[0]).toEqual({ left: 50, top: 50, right: 251, bottom: 201 });
+  });
 });
 
 describe('clusterSegmentsByAxisPos', () => {

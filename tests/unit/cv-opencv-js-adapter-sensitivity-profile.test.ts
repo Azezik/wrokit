@@ -156,12 +156,31 @@ describe('createOpenCvJsAdapter — sensitivity profile threading', () => {
   });
 
   it('widens the Canny hysteresis band when sigma increases', async () => {
-    // Same uniform raster → same median luminance → identical (1±sigma)*median
-    // computation. A larger sigma must produce a wider (lo, hi) band.
+    // Auto-Canny derives thresholds from the median Sobel gradient magnitude
+    // of the input — `lo = (1−σ)·median`, `hi = (1+σ)·median`. A wider σ on
+    // the SAME image (same median) must yield a wider (lo, hi) band. We use
+    // a checkerboard raster so the gradient distribution is non-trivial; a
+    // uniform raster has zero gradients everywhere and the band collapses
+    // to the minimum-band floor regardless of σ.
     const normalRuntime = createCapturingRuntime();
     const highResRuntime = createCapturingRuntime();
-    const luminance = 200;
-    const raster = makeUniformGreyRaster(40, 40, luminance);
+    const w = 40;
+    const h = 40;
+    const data = new Uint8ClampedArray(w * h * 4);
+    for (let y = 0; y < h; y += 1) {
+      for (let x = 0; x < w; x += 1) {
+        const i = (y * w + x) * 4;
+        const v = ((x >> 2) + (y >> 2)) % 2 === 0 ? 80 : 200;
+        data[i] = v;
+        data[i + 1] = v;
+        data[i + 2] = v;
+        data[i + 3] = 255;
+      }
+    }
+    const raster: CvSurfaceRaster = {
+      surface: { pageIndex: 0, surfaceWidth: w, surfaceHeight: h },
+      pixels: { width: w, height: h, data, colorSpace: 'srgb' } as unknown as ImageData
+    };
 
     const normalAdapter = createOpenCvJsAdapter({
       opencvRuntime: normalRuntime.cv,

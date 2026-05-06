@@ -413,6 +413,18 @@ interface BuildLineBoundedRectsOptions {
   /** Snap horizontal lines into bins of this many pixels (handles minor offsets). */
   positionToleranceFraction?: number;
   /**
+   * Extra slack (in pixels) applied to the four `segmentSpansAxis` calls only
+   * — i.e. how short of the perpendicular sides a horizontal/vertical segment
+   * is allowed to fall. Modern UI panels use rounded corners (8–16 px radii
+   * are common in Material / Apple HIG); the visible top edge of such a panel
+   * literally stops short of the visible left edge by the corner radius. The
+   * normal `positionTolerance` (fraction of the page) is sized for axis
+   * clustering and is too tight to admit these corners. This option lets
+   * callers relax the spans test without disturbing the dedupe / clustering
+   * geometry. Defaults to `positionTolerance` (no change in behavior).
+   */
+  roundedCornerTolerancePx?: number;
+  /**
    * Hard ceiling on the number of (top, bottom, left, right) quadruples evaluated.
    * `maxRects` caps emitted rects but every rejected quadruple is still considered
    * — on a complex form with ~150 horizontals × 150 verticals that's >500M
@@ -474,6 +486,11 @@ export const buildLineBoundedRects = (
 
   const minSide = Math.max(1, Math.min(options.surfaceWidth, options.surfaceHeight));
   const positionTolerance = Math.max(2, Math.round(minSide * (options.positionToleranceFraction ?? 0.005)));
+  // Spans tolerance defaults to positionTolerance (existing behavior). When
+  // explicitly raised by the caller, it only relaxes the four side-spans
+  // checks below — clustering and dedupe still use the tighter
+  // positionTolerance, so geometry stays comparable.
+  const spansTolerance = Math.max(positionTolerance, options.roundedCornerTolerancePx ?? 0);
   /**
    * `maxRects` (default 800) bounds emitted rects. A real form has fewer than
    * 200 visually distinct rectangles; the previous 20k cap was protecting a
@@ -562,10 +579,16 @@ export const buildLineBoundedRects = (
 
       for (let a = 0; a < sortedV.length; a += 1) {
         const left = sortedV[a];
-        if (left.axisPos < xFrom - positionTolerance || left.axisPos > xTo + positionTolerance) {
+        // Relax the "vertical's axisPos must lie within the horizontals'
+        // x-range" gate by `spansTolerance`. On a rounded-corner panel the
+        // horizontals stop short of the verticals by the corner radius, so
+        // the verticals' axisPos is naturally a few pixels OUTSIDE the
+        // horizontals' x-range. Without this slack the whole quadruple is
+        // rejected by this gate before `segmentSpansAxis` even runs.
+        if (left.axisPos < xFrom - spansTolerance || left.axisPos > xTo + spansTolerance) {
           continue;
         }
-        if (!segmentSpansAxis(left, top.axisPos, bottom.axisPos, positionTolerance)) {
+        if (!segmentSpansAxis(left, top.axisPos, bottom.axisPos, spansTolerance)) {
           continue;
         }
 
@@ -576,19 +599,19 @@ export const buildLineBoundedRects = (
             break outer;
           }
           const right = sortedV[b];
-          if (right.axisPos < xFrom - positionTolerance || right.axisPos > xTo + positionTolerance) {
+          if (right.axisPos < xFrom - spansTolerance || right.axisPos > xTo + spansTolerance) {
             continue;
           }
           if (right.axisPos - left.axisPos < positionTolerance) {
             continue;
           }
-          if (!segmentSpansAxis(right, top.axisPos, bottom.axisPos, positionTolerance)) {
+          if (!segmentSpansAxis(right, top.axisPos, bottom.axisPos, spansTolerance)) {
             continue;
           }
-          if (!segmentSpansAxis(top, left.axisPos, right.axisPos, positionTolerance)) {
+          if (!segmentSpansAxis(top, left.axisPos, right.axisPos, spansTolerance)) {
             continue;
           }
-          if (!segmentSpansAxis(bottom, left.axisPos, right.axisPos, positionTolerance)) {
+          if (!segmentSpansAxis(bottom, left.axisPos, right.axisPos, spansTolerance)) {
             continue;
           }
 
