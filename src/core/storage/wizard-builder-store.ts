@@ -31,7 +31,7 @@ const createField = (index: number): WizardBuilderField => ({
   internalId: createInternalId(),
   fieldId: `field_${index + 1}`,
   label: `Field ${index + 1}`,
-  type: 'text',
+  type: 'any',
   required: false
 });
 
