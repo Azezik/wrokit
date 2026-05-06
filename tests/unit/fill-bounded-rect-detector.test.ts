@@ -82,6 +82,64 @@ describe('detectFillBoundedRects', () => {
     expect(rects).toEqual([]);
   });
 
+  it('keeps distinct fill surfaces separated even when 4-connected through a narrow strip', () => {
+    // Two adjacent panels, both faintly off-white (Δ = 9 and Δ = 5 from the
+    // page background), separated by a 3-px gap that itself sits in the
+    // page-bg band. With the previous single-band approach both panels'
+    // mid-fill pixels lived in the same class and 4-connectivity through
+    // the narrow strip would have fused them into one component. With
+    // histogram-peak quantization their luminances land in different peak
+    // bins (246 vs 250), each peak forms its own component, and the two
+    // panels remain distinct rectangles.
+    const w = 300;
+    const h = 200;
+    const data = new Uint8ClampedArray(w * h * 4);
+    for (let i = 0; i < data.length; i += 4) {
+      data[i] = 255;
+      data[i + 1] = 255;
+      data[i + 2] = 255;
+      data[i + 3] = 255;
+    }
+    const paint = (x0: number, x1: number, y0: number, y1: number, lum: number) => {
+      for (let y = y0; y < y1; y += 1) {
+        for (let x = x0; x < x1; x += 1) {
+          const i = (y * w + x) * 4;
+          data[i] = lum;
+          data[i + 1] = lum;
+          data[i + 2] = lum;
+        }
+      }
+    };
+    paint(20, 130, 30, 170, 246); // left panel (Δ = 9)
+    paint(170, 280, 30, 170, 250); // right panel (Δ = 5), 40 px gap (page bg)
+    const pixels = { width: w, height: h, data, colorSpace: 'srgb' } as unknown as ImageData;
+
+    const rects = detectFillBoundedRects(pixels, {
+      surfaceWidth: w,
+      surfaceHeight: h,
+      pageBackgroundLuminance: 255
+    });
+
+    const matches = (
+      r: { left: number; top: number; right: number; bottom: number },
+      [l, t, rt, bt]: number[]
+    ) =>
+      Math.abs(r.left - l) <= 2 &&
+      Math.abs(r.top - t) <= 2 &&
+      Math.abs(r.right - rt) <= 2 &&
+      Math.abs(r.bottom - bt) <= 2;
+
+    expect(rects.some((r) => matches(r, [20, 30, 130, 170]))).toBe(true);
+    expect(rects.some((r) => matches(r, [170, 30, 280, 170]))).toBe(true);
+    // Crucially, no single rect spans BOTH panels (which is what the old
+    // single-band fusion would have produced).
+    expect(
+      rects.some(
+        (r) => r.left <= 22 && r.right >= 278 && r.top <= 32 && r.bottom >= 168
+      )
+    ).toBe(false);
+  });
+
   it('rejects sliver / non-rectangular components', () => {
     // An "L" shape made of mid-fill pixels: low rectangularity, must be
     // dropped because (component pixels / bbox area) falls below the floor.
