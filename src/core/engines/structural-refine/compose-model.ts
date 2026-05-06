@@ -241,7 +241,7 @@ export const composeRefinedStructuralModel = (
     const fieldRelationships = buildFieldRelationships({
       fields: fieldBboxList,
       borderRect: BORDER_RECT,
-      refinedBorderRect: refinedBorder.rectNorm,
+      refinedBorderRect: refinedBorder.cvContentRectNorm,
       hierarchy: refinedHierarchy
     });
 
