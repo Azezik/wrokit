@@ -80,12 +80,15 @@ export interface FillBoundedRectsOptions {
    */
   peakSeparation?: number;
   /**
-   * Minimum fraction of total pixels a peak must contain to be considered
-   * a real surface. 0.001 (0.1%) admits a card occupying ~0.1% of the page,
-   * which is a generous lower bound — a typical bill card fills 15–25% of
-   * its capture, two orders of magnitude above this floor.
+   * Minimum number of pixels a peak must contain to be considered a real
+   * surface. An absolute pixel floor is more honest than a fraction-of-page
+   * floor: a button-class object is ~1500–3000 px regardless of capture
+   * size, so the same threshold should apply on a 600×500 test raster and a
+   * 2600×1700 real screenshot. The previous fraction-based default (0.1%)
+   * filtered button-sized peaks out of large screenshots while admitting
+   * stray noise on small synthetic test rasters.
    */
-  minPeakFraction?: number;
+  minPeakAreaPx?: number;
 }
 
 const DEFAULT_BG_TOLERANCE = 3;
@@ -94,7 +97,14 @@ const DEFAULT_MIN_COMPONENT_AREA_PX = 600;
 const DEFAULT_MIN_RECTANGULARITY = 0.5;
 const DEFAULT_MIN_SIDE_PX = 24;
 const DEFAULT_PEAK_SEPARATION = 2;
-const DEFAULT_MIN_PEAK_FRACTION = 0.001;
+/**
+ * Default ~600 px floor — same as `DEFAULT_MIN_COMPONENT_AREA_PX`. A peak
+ * with fewer pixels cannot produce a single component that meets the
+ * component-area floor, so admitting it is wasted work. On a 36×36 emoji
+ * button the body luminance bin holds ~800 pixels after anti-aliasing trims
+ * the corners, which clears this floor with ~25% margin.
+ */
+const DEFAULT_MIN_PEAK_AREA_PX = 600;
 
 const luminanceAt = (data: Uint8ClampedArray, i: number): number =>
   0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
@@ -121,7 +131,7 @@ const buildPeakAssignment = (
   bgTolerance: number,
   fillUpperDelta: number,
   peakSeparation: number,
-  minPeakFraction: number
+  minPeakAreaPx: number
 ): PeakAssignment | null => {
   const { width, height, data } = pixels;
   const histogram = new Uint32Array(256);
@@ -156,10 +166,10 @@ const buildPeakAssignment = (
   }
 
   // A bin is a raw peak iff it is a (non-strict) local maximum AND its
-  // smoothed count clears the min-peak fraction. Non-strict equality lets
-  // a flat plateau register as one peak (we'll deduplicate with the
+  // smoothed count clears the absolute min-peak floor. Non-strict equality
+  // lets a flat plateau register as one peak (we'll deduplicate with the
   // peakSeparation clustering step below).
-  const minPeakCount = Math.max(1, totalSampled * minPeakFraction);
+  const minPeakCount = Math.max(1, minPeakAreaPx);
   const rawPeaks: number[] = [];
   for (let b = 0; b < 256; b += 1) {
     if (smoothed[b] < minPeakCount) {
@@ -357,7 +367,7 @@ export const detectFillBoundedRects = (
   const minRectangularity = options.minRectangularity ?? DEFAULT_MIN_RECTANGULARITY;
   const minSidePx = options.minSidePx ?? DEFAULT_MIN_SIDE_PX;
   const peakSeparation = options.peakSeparation ?? DEFAULT_PEAK_SEPARATION;
-  const minPeakFraction = options.minPeakFraction ?? DEFAULT_MIN_PEAK_FRACTION;
+  const minPeakAreaPx = options.minPeakAreaPx ?? DEFAULT_MIN_PEAK_AREA_PX;
 
   const assignment = buildPeakAssignment(
     pixels,
@@ -365,7 +375,7 @@ export const detectFillBoundedRects = (
     bgTolerance,
     fillUpperDelta,
     peakSeparation,
-    minPeakFraction
+    minPeakAreaPx
   );
   if (!assignment) {
     return [];

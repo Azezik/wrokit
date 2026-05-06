@@ -419,6 +419,67 @@ describe('buildLineBoundedRects', () => {
     expect(buildLineBoundedRects(segments, { surfaceWidth: w, surfaceHeight: h })).toEqual([]);
   });
 
+  it('drops a page-spanning rect that has no children, but keeps it when an interior child exists', () => {
+    // Pathology: two unrelated true horizontals (a body divider and the dock
+    // top edge) plus two page-edge verticals form a perfectly valid quadruple
+    // whose interior is empty. We want this dropped.
+    //
+    // Two-segment-pair scenario produces ONE rect spanning the full page
+    // width (97% of 300) and 75% of the page height (page = 200) with no
+    // smaller rect inside → must drop.
+    const segments = {
+      horizontals: [
+        { axisPos: 30, thickness: 1, start: 0, end: 300 }, // body divider
+        { axisPos: 180, thickness: 1, start: 0, end: 300 } // dock top edge
+      ],
+      verticals: [
+        { axisPos: 5, thickness: 1, start: 0, end: 200 }, // left page edge
+        { axisPos: 295, thickness: 1, start: 0, end: 200 } // right page edge
+      ]
+    };
+
+    const dropped = buildLineBoundedRects(segments, {
+      surfaceWidth: 300,
+      surfaceHeight: 200
+    });
+    expect(dropped).toEqual([]);
+
+    // Same pathology with an interior child (a small inner rect): the
+    // page-spanning outer should now survive because a smaller rect is
+    // strictly inside it.
+    const segmentsWithChild = {
+      horizontals: [
+        { axisPos: 30, thickness: 1, start: 0, end: 300 },
+        { axisPos: 80, thickness: 1, start: 100, end: 200 }, // inner
+        { axisPos: 130, thickness: 1, start: 100, end: 200 }, // inner
+        { axisPos: 180, thickness: 1, start: 0, end: 300 }
+      ],
+      verticals: [
+        { axisPos: 5, thickness: 1, start: 0, end: 200 },
+        { axisPos: 100, thickness: 1, start: 30, end: 180 }, // inner
+        { axisPos: 200, thickness: 1, start: 30, end: 180 }, // inner
+        { axisPos: 295, thickness: 1, start: 0, end: 200 }
+      ]
+    };
+
+    const kept = buildLineBoundedRects(segmentsWithChild, {
+      surfaceWidth: 300,
+      surfaceHeight: 200
+    });
+    // The outer rect must survive when nested structure exists. We don't
+    // assert exact count (the leaf-or-outermost filter can collapse the
+    // chain), only that the page-spanning outer footprint is present.
+    expect(
+      kept.some(
+        (r) =>
+          Math.abs(r.left - 5) <= 2 &&
+          Math.abs(r.top - 30) <= 2 &&
+          Math.abs(r.right - 296) <= 2 &&
+          Math.abs(r.bottom - 181) <= 2
+      )
+    ).toBe(true);
+  });
+
   it('rejects a rounded-corner panel by default but accepts it under roundedCornerTolerancePx', () => {
     // Panel at (50, 50)..(250, 200) with corner radius 10. The visible top
     // edge spans only x = 60..240; the visible left edge spans only

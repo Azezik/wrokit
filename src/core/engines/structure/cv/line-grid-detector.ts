@@ -657,8 +657,13 @@ export const buildLineBoundedRects = (
   const rectsBeforeFilter = rects.length;
   const filtered = options.skipLeafOrOutermostFilter
     ? rects
-    : applySubsetSuppression(
-        filterToLeavesAndOutermost(rects, positionTolerance)
+    : dropPageSpanningChildlessRects(
+        applySubsetSuppression(
+          filterToLeavesAndOutermost(rects, positionTolerance)
+        ),
+        options.surfaceWidth,
+        options.surfaceHeight,
+        positionTolerance
       );
 
   if (options.diagnostics) {
@@ -712,6 +717,81 @@ export const buildLineBoundedRects = (
  * Subset suppression catches the chain directly without depending on a
  * complete tiling.
  */
+/**
+ * Drop "page-spanning, childless" rects from the line-grid output.
+ *
+ * On real document captures (Gmail thread, web page) the line-grid pipeline
+ * routinely emits a giant rect spanning from one true horizontal rule (e.g.
+ * a body divider) down to an unrelated true horizontal rule (e.g. the dock
+ * top edge), bounded on the sides by page-edge verticals. Every one of its
+ * four sides is a real detected line segment, so the spans test legitimately
+ * passes — but the rect itself encloses unrelated content and has no
+ * meaningful internal structure. Both the leaf-or-outermost filter and chain
+ * suppression leave it alone, because there's nothing inside to subset
+ * against.
+ *
+ * Heuristic: if a rect's footprint is ≥ 90% of page width AND ≥ 20% of page
+ * height, AND no other rect in the set is strictly contained in it, drop it.
+ * The "strictly contained" gate is what protects real outer page frames that
+ * have nested header / sidebar / body children — those have plenty of
+ * interior rects, so they survive.
+ *
+ * NOT scoped to area-fraction (e.g. "≥ 70% page area") because the worst
+ * offenders we see in practice span the full page width but only ~30% of
+ * the page height (~25% of page area), well below an area threshold.
+ * Width-spanning is the more discriminative signal.
+ */
+const PAGE_SPAN_WIDTH_FRACTION = 0.9;
+const PAGE_SPAN_HEIGHT_FRACTION = 0.2;
+const PAGE_SPAN_CHILD_SHRINK_FRACTION = 0.95;
+
+const dropPageSpanningChildlessRects = (
+  rects: PixelBounds[],
+  pageWidth: number,
+  pageHeight: number,
+  positionTolerance: number
+): PixelBounds[] => {
+  if (rects.length === 0) {
+    return rects.slice();
+  }
+  const widthThreshold = pageWidth * PAGE_SPAN_WIDTH_FRACTION;
+  const heightThreshold = pageHeight * PAGE_SPAN_HEIGHT_FRACTION;
+  const out: PixelBounds[] = [];
+  for (let i = 0; i < rects.length; i += 1) {
+    const r = rects[i];
+    const w = r.right - r.left;
+    const h = r.bottom - r.top;
+    if (w < widthThreshold || h < heightThreshold) {
+      out.push(r);
+      continue;
+    }
+    let hasChild = false;
+    for (let j = 0; j < rects.length; j += 1) {
+      if (j === i) {
+        continue;
+      }
+      const c = rects[j];
+      const cw = c.right - c.left;
+      const ch = c.bottom - c.top;
+      const containedHorizontally =
+        c.left >= r.left - positionTolerance && c.right <= r.right + positionTolerance;
+      const containedVertically =
+        c.top >= r.top - positionTolerance && c.bottom <= r.bottom + positionTolerance;
+      const strictlySmaller =
+        cw < w * PAGE_SPAN_CHILD_SHRINK_FRACTION ||
+        ch < h * PAGE_SPAN_CHILD_SHRINK_FRACTION;
+      if (containedHorizontally && containedVertically && strictlySmaller) {
+        hasChild = true;
+        break;
+      }
+    }
+    if (hasChild) {
+      out.push(r);
+    }
+  }
+  return out;
+};
+
 const applySubsetSuppression = (
   rects: PixelBounds[]
 ): PixelBounds[] => {

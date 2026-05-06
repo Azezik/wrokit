@@ -140,6 +140,50 @@ describe('detectFillBoundedRects', () => {
     ).toBe(false);
   });
 
+  it('detects a button-class fill on a large raster (absolute pixel floor, not page fraction)', () => {
+    // Regression: on a 2000×1300 screenshot, a Reply pill at ~80×36 has
+    // ~2880 raw bbox pixels — about 0.11% of the total. The previous
+    // fraction-based peak floor (0.1%) borderline rejected it once
+    // anti-aliasing trimmed body pixels, so subtle UI buttons fell through
+    // the cracks. The absolute-pixel floor (default 600 px) reliably
+    // catches button-class fills regardless of capture size.
+    const w = 2000;
+    const h = 1300;
+    const data = new Uint8ClampedArray(w * h * 4);
+    for (let i = 0; i < data.length; i += 4) {
+      data[i] = 255;
+      data[i + 1] = 255;
+      data[i + 2] = 255;
+      data[i + 3] = 255;
+    }
+    // A single Reply-pill-sized fill at lum 245 (Δ = 10 from page bg).
+    for (let y = 600; y < 636; y += 1) {
+      for (let x = 200; x < 280; x += 1) {
+        const i = (y * w + x) * 4;
+        data[i] = 245;
+        data[i + 1] = 245;
+        data[i + 2] = 245;
+      }
+    }
+    const pixels = { width: w, height: h, data, colorSpace: 'srgb' } as unknown as ImageData;
+
+    const rects = detectFillBoundedRects(pixels, {
+      surfaceWidth: w,
+      surfaceHeight: h,
+      pageBackgroundLuminance: 255
+    });
+
+    expect(
+      rects.some(
+        (r) =>
+          Math.abs(r.left - 200) <= 2 &&
+          Math.abs(r.top - 600) <= 2 &&
+          Math.abs(r.right - 280) <= 2 &&
+          Math.abs(r.bottom - 636) <= 2
+      )
+    ).toBe(true);
+  });
+
   it('rejects sliver / non-rectangular components', () => {
     // An "L" shape made of mid-fill pixels: low rectangularity, must be
     // dropped because (component pixels / bbox area) falls below the floor.
