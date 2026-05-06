@@ -59,7 +59,15 @@ export interface AlignmentCellsOptions {
 
 const DEFAULT_GUTTER_EPSILON = 0;
 const DEFAULT_MIN_BAND_FRACTION = 0.04; // band must span ≥ 4% of region axis
-const DEFAULT_MAX_BANDS_PER_AXIS = 12;
+/**
+ * Per-axis band cap. Real cards are 2–4 bands per axis (label/value pairs,
+ * left/right column, top/bottom group). 4 is enough headroom for typical
+ * alignment-driven UIs while preventing dock-style and email-body-style
+ * regions from generating ~15 thin bands of projection noise. The previous
+ * 12-cap let each pathological region emit a stack of 6–8 horizontal slabs
+ * or vertical strips per axis.
+ */
+const DEFAULT_MAX_BANDS_PER_AXIS = 4;
 
 interface Band {
   start: number;

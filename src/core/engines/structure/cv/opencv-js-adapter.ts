@@ -1221,12 +1221,34 @@ const detectFillAndAlignmentObjects = (
   const minSidePx = computeGlyphMinSidePx(surfaceWidth, surfaceHeight);
   const cellObjects: CvSurfaceObject[] = [];
   let cellIndex = 0;
-  // Build the alignment-only mask lazily — only if we have at least one fill
-  // rect to walk, since the buildTextMaskForAlignment pass scans the whole
-  // raster.
+  // Skip alignment-cell detection for fill rects that are too large a
+  // fraction of the page. Above this threshold the projection becomes
+  // dominated by random text positions across many unrelated regions and
+  // the resulting "cells" are full-width thin slabs (each text line) and
+  // narrow vertical strips (each icon column) rather than the cells of a
+  // single card. A real card maxes out around 25% of page area; the dock
+  // and the message reading pane easily exceed 40%, and on those regions
+  // alignment-cell projection is structurally meaningless.
+  const pageArea = Math.max(1, surfaceWidth * surfaceHeight);
+  const ALIGNMENT_PARENT_MAX_AREA_FRACTION = 0.3;
+  // Drop alignment cells whose aspect ratio is more extreme than this
+  // bound. min/max < 0.05 means a cell more than 20× longer than tall (or
+  // tall than wide) — that's not a label/value pair, it's a projection
+  // artifact (a row band paired with the full region width when no column
+  // gutters were detected, or vice versa).
+  const ALIGNMENT_CELL_MIN_ASPECT = 0.05;
+  // Build the alignment-only mask lazily — only if we have at least one
+  // qualifying fill rect to walk.
+  const qualifyingFillRects = fillRects.filter((rect) => {
+    const w = rect.right - rect.left;
+    const h = rect.bottom - rect.top;
+    return (w * h) / pageArea <= ALIGNMENT_PARENT_MAX_AREA_FRACTION;
+  });
   const textMask =
-    fillRects.length > 0 ? buildTextMaskForAlignment(pixels, pageBackgroundLuminance) : null;
-  for (const rect of fillRects) {
+    qualifyingFillRects.length > 0
+      ? buildTextMaskForAlignment(pixels, pageBackgroundLuminance)
+      : null;
+  for (const rect of qualifyingFillRects) {
     const cells = detectAlignmentCells(textMask!, {
       region: rect,
       surfaceWidth,
@@ -1236,6 +1258,10 @@ const detectFillAndAlignmentObjects = (
       const w = cell.right - cell.left;
       const h = cell.bottom - cell.top;
       if (w < minSidePx || h < minSidePx) {
+        continue;
+      }
+      const aspect = Math.min(w, h) / Math.max(w, h);
+      if (aspect < ALIGNMENT_CELL_MIN_ASPECT) {
         continue;
       }
       // Drop a cell that is essentially the parent fill rect (single-band

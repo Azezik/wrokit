@@ -6,13 +6,16 @@ import {
 } from '../../src/core/engines/structure/cv';
 
 const makeGmailBillRaster = (): CvSurfaceRaster => {
-  // 600x500 page mimicking the Gmail bill summary card layout:
+  // 800x650 page mimicking the Gmail bill summary card layout, with the
+  // card occupying ~22% of the page area (representative of real captures
+  // where the card is one element among the inbox list, sidebar, header,
+  // and chrome):
   //  - white page (lum 255)
   //  - light-grey card at lum 246 from (60, 80)..(540, 320), Δ = 9
   //  - 2x2 grid of dark text bands inside the card, with column gutter
   //    around x = 300 and row gutter around y = 200.
-  const w = 600;
-  const h = 500;
+  const w = 800;
+  const h = 650;
   const data = new Uint8ClampedArray(w * h * 4);
   for (let i = 0; i < data.length; i += 4) {
     data[i] = 255;
@@ -122,5 +125,63 @@ describe('createOpenCvJsAdapter — Gmail-style bill summary card', () => {
     expect(
       alignmentObjects.some((o) => inQuadrant(o.bboxSurface, 300, 200, 540, 320))
     ).toBe(true);
+  });
+
+  it('skips alignment cells inside oversized fill regions (no email-body-slab pathology)', async () => {
+    // 600x500 page where a single faint fill region covers 60% of the page
+    // (a Gmail message reading-pane scenario). Inside it, scattered text
+    // bands at multiple y positions would produce ~6 horizontal slabs per
+    // text row if alignment cells fired here. The new oversized-parent gate
+    // skips alignment-cell detection for fill regions ≥ 30% of page area,
+    // so no alignment objects should be emitted from this region.
+    const w = 600;
+    const h = 500;
+    const data = new Uint8ClampedArray(w * h * 4);
+    for (let i = 0; i < data.length; i += 4) {
+      data[i] = 255;
+      data[i + 1] = 255;
+      data[i + 2] = 255;
+      data[i + 3] = 255;
+    }
+    // Big faint fill: 60% of the page.
+    for (let y = 50; y < 450; y += 1) {
+      for (let x = 50; x < 500; x += 1) {
+        const i = (y * w + x) * 4;
+        data[i] = 246;
+        data[i + 1] = 246;
+        data[i + 2] = 246;
+      }
+    }
+    // Scattered text bands at multiple y positions — would project into
+    // ~6 thin row bands if alignment ran on this region.
+    const textRows = [80, 130, 180, 230, 280, 330, 380];
+    for (const y0 of textRows) {
+      for (let y = y0; y < y0 + 14; y += 1) {
+        for (let x = 100; x < 450; x += 1) {
+          const i = (y * w + x) * 4;
+          data[i] = 24;
+          data[i + 1] = 24;
+          data[i + 2] = 24;
+        }
+      }
+    }
+
+    const adapter = createOpenCvJsAdapter();
+    const result = await adapter.detectContentRect({
+      surface: { pageIndex: 0, surfaceWidth: w, surfaceHeight: h },
+      pixels: { width: w, height: h, data, colorSpace: 'srgb' } as unknown as ImageData
+    });
+
+    const alignmentObjects = result.objectsSurface.filter((o) =>
+      o.objectId.startsWith('obj_align_')
+    );
+    expect(alignmentObjects).toEqual([]);
+
+    // The fill rect itself must still be reported — only alignment cells are
+    // suppressed, not the parent.
+    const fillObjects = result.objectsSurface.filter((o) =>
+      o.objectId.startsWith('obj_fill_')
+    );
+    expect(fillObjects.length).toBeGreaterThan(0);
   });
 });
