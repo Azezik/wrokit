@@ -76,3 +76,43 @@
   gap: var(--space-3);
   margin-top: var(--space-4);
 }
+
+.run-mode__dropzone {
+  display: grid;
+  gap: var(--space-1);
+  border: 1px dashed var(--color-border);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  background: var(--color-surface);
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.run-mode__dropzone:hover,
+.run-mode__dropzone--active {
+  border-color: var(--color-primary);
+  background: var(--color-surface-muted);
+}
+
+.run-mode__dropzone input[type='file'] {
+  display: block;
+  margin-top: var(--space-2);
+}
+
+.run-mode__batch-file-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: var(--space-1);
+}
+
+.run-mode__batch-file-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: var(--font-size-sm);
+  padding: var(--space-1) var(--space-2);
+  background: var(--color-surface-muted);
+  border-radius: var(--radius-sm);
+}
