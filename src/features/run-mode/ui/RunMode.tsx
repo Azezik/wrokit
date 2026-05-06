@@ -499,6 +499,9 @@ export function RunMode() {
             <li>
               Config StructuralModel: {configStructuralModel ? 'loaded' : 'not loaded'}
               {configStructuralModel ? ` (${configStructuralModel.pages.length} pages)` : ''}
+              {configStructuralModel?.cvSensitivityValues
+                ? ' — hi-res sensitivity profile (will be replayed at runtime)'
+                : ''}
             </li>
             <li>
               Runtime document: {runtimePages.length > 0 ? 'normalized' : 'not normalized'}

@@ -29,6 +29,12 @@ export interface OrchestratorState {
   masterDb: MasterDbTable | null;
   batchProgress: BatchProgress | null;
   error: string | null;
+  /**
+   * Truthy while the post-geometry sensitivity density check + hi-res rerun
+   * is still in flight. `runBatch` blocks until this clears so the runtime
+   * always sees the final (possibly hi-res-stamped) `configStructuralModel`.
+   */
+  hiResPassPending: boolean;
   /** Toggle for the Structural Refine feature. Default false — no behavior change when off. */
   structuralRefineEnabled: boolean;
   /** Optional prior analytics file to fold into this batch's output. */

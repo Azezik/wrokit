@@ -98,6 +98,17 @@ export function UploadBatchSlide({ orchestrator }: UploadBatchSlideProps) {
 
         <StructuralRefineToggle orchestrator={orchestrator} />
 
+        {orchestrator.state.hiResPassPending ? (
+          <p className="polished-wizard__hint" role="status">
+            Running hi-res structural pass… processing will start once it finishes.
+          </p>
+        ) : orchestrator.state.configStructuralModel?.cvSensitivityValues ? (
+          <p className="polished-wizard__hint" role="status">
+            Hi-res structural pass applied — runtime documents will use matching detection
+            sensitivity.
+          </p>
+        ) : null}
+
         {orchestrator.state.error ? (
           <p className="polished-wizard__error">{orchestrator.state.error}</p>
         ) : null}
@@ -111,9 +122,11 @@ export function UploadBatchSlide({ orchestrator }: UploadBatchSlideProps) {
           type="button"
           variant="primary"
           onClick={handleStart}
-          disabled={files.length === 0}
+          disabled={files.length === 0 || orchestrator.state.hiResPassPending}
         >
-          Process {files.length > 0 ? `${files.length} file${files.length > 1 ? 's' : ''}` : ''}
+          {orchestrator.state.hiResPassPending
+            ? 'Preparing structural model…'
+            : `Process ${files.length > 0 ? `${files.length} file${files.length > 1 ? 's' : ''}` : ''}`}
         </Button>
       </footer>
     </>

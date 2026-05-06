@@ -26,6 +26,7 @@ const initialState = (): OrchestratorState => ({
   masterDb: null,
   batchProgress: null,
   error: null,
+  hiResPassPending: false,
   structuralRefineEnabled: false,
   priorRefineAnalytics: null,
   priorRefineModel: null,
@@ -98,16 +99,23 @@ export const useOrchestrator = (): OrchestratorApi => {
     // sensitivity post-pass below may swap in a denser structural model
     // produced with HIGH_RES_CV_SENSITIVITY_PROFILE if the normal-pass model
     // is sparse near the user's BBOXes.
-    setState((prev) => ({ ...prev, geometry }));
-
     const snapshot = stateRef.current;
     const normalModel = snapshot.configStructuralModel;
-    if (!normalModel || snapshot.configPages.length === 0) {
+    const canRunHiResCheck = Boolean(normalModel) && snapshot.configPages.length > 0;
+
+    setState((prev) => ({
+      ...prev,
+      geometry,
+      hiResPassPending: canRunHiResCheck
+    }));
+
+    if (!normalModel || !canRunHiResCheck) {
       return;
     }
 
     const normalCheck = evaluateStructuralDensity(normalModel, geometry);
     if (normalCheck.satisfiesDensity) {
+      setState((prev) => ({ ...prev, hiResPassPending: false }));
       return;
     }
 
@@ -120,17 +128,23 @@ export const useOrchestrator = (): OrchestratorApi => {
       });
       const highResCheck = evaluateStructuralDensity(highResModel, geometry);
       if (!acceptHighResModel(normalCheck, highResCheck)) {
+        setState((prev) => ({ ...prev, hiResPassPending: false }));
         return;
       }
       const stampedModel: StructuralModel = {
         ...highResModel,
         cvSensitivityValues: HIGH_RES_CV_SENSITIVITY_PROFILE
       };
-      setState((prev) => ({ ...prev, configStructuralModel: stampedModel }));
+      setState((prev) => ({
+        ...prev,
+        configStructuralModel: stampedModel,
+        hiResPassPending: false
+      }));
     } catch {
       // Hi-res rerun is best-effort. If it fails, leave the normal-pass
       // model in place — the user can still proceed, they just may hit the
       // same localization weakness this pass was trying to fix.
+      setState((prev) => ({ ...prev, hiResPassPending: false }));
     }
   }, []);
 
@@ -156,6 +170,13 @@ export const useOrchestrator = (): OrchestratorApi => {
       setState((prev) => ({
         ...prev,
         error: 'Cannot run batch — missing wizard, geometry, or structural model.'
+      }));
+      return;
+    }
+    if (snapshot.hiResPassPending) {
+      setState((prev) => ({
+        ...prev,
+        error: 'Cannot run batch — hi-res structural pass is still in progress. Wait a moment and retry.'
       }));
       return;
     }

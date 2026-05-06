@@ -79,4 +79,33 @@ describe('structural-model-io', () => {
   it('produces a deterministic download filename', () => {
     expect(structuralModelDownloadName(validModel)).toMatch(/\.structural\.json$/);
   });
+
+  it('round-trips cvSensitivityValues when present', () => {
+    const modelWithProfile: StructuralModel = {
+      ...validModel,
+      cvSensitivityValues: {
+        adaptiveThresholdC: 3,
+        cannyAutoSigma: 0.5,
+        darkPageNormalizedThresholdFloor: 140
+      }
+    };
+    const parsed = parseStructuralModel(serializeStructuralModel(modelWithProfile));
+    expect(parsed.cvSensitivityValues).toEqual(modelWithProfile.cvSensitivityValues);
+  });
+
+  it('rejects a structural model whose cvSensitivityValues field is malformed', () => {
+    const malformed = {
+      ...validModel,
+      cvSensitivityValues: { adaptiveThresholdC: 'not a number', cannyAutoSigma: 0.5 }
+    };
+    expect(() => parseStructuralModel(JSON.stringify(malformed))).toThrow(
+      StructuralModelParseError
+    );
+  });
+
+  it('accepts a structural model that omits cvSensitivityValues entirely (legacy compat)', () => {
+    const noProfile = JSON.parse(serializeStructuralModel(validModel));
+    expect(noProfile).not.toHaveProperty('cvSensitivityValues');
+    expect(parseStructuralModel(JSON.stringify(noProfile))).toEqual(validModel);
+  });
 });
