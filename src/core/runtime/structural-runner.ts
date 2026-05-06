@@ -6,6 +6,7 @@ import {
   ensureOpenCvJsRuntime,
   createStructuralEngine,
   type CvAdapter,
+  type CvSensitivityProfile,
   type OpenCvRuntimeLoadResult,
   type StructuralEngine,
   type StructuralEngineInput
@@ -22,6 +23,13 @@ export interface StructuralRunnerInput {
   pageIndexes?: number[];
   id?: string;
   nowIso?: string;
+  /**
+   * Per-compute sensitivity profile for the OpenCV adapter. When omitted, the
+   * runner uses whatever profile the adapter was constructed with (which
+   * defaults to `NORMAL_CV_SENSITIVITY_PROFILE`). Provide this on hi-res
+   * recompute and at runtime when a config has persisted hi-res values.
+   */
+  sensitivityProfile?: CvSensitivityProfile;
 }
 
 export interface StructuralRunner {
@@ -68,7 +76,10 @@ interface PendingRequest {
 }
 
 interface WorkerProxyHandle {
-  compute(input: StructuralEngineInput): Promise<StructuralModel>;
+  compute(
+    input: StructuralEngineInput,
+    sensitivityProfile?: CvSensitivityProfile
+  ): Promise<StructuralModel>;
   getRuntimeLoadStatus(): OpenCvRuntimeLoadResult | null;
 }
 
@@ -116,12 +127,17 @@ const createWorkerProxy = (): WorkerProxyHandle => {
   };
 
   return {
-    compute: (input) =>
+    compute: (input, sensitivityProfile) =>
       new Promise<StructuralModel>((resolve, reject) => {
         const w = ensureWorker();
         const id = nextId++;
         pending.set(id, { resolve, reject });
-        const message: StructuralWorkerRequest = { type: 'compute', id, input };
+        const message: StructuralWorkerRequest = {
+          type: 'compute',
+          id,
+          input,
+          sensitivityProfile
+        };
         try {
           w.postMessage(message);
         } catch (error) {
@@ -181,11 +197,26 @@ export const createStructuralRunner = (
       };
 
       if (workerProxy) {
-        return workerProxy.compute(engineInput);
+        return workerProxy.compute(engineInput, input.sensitivityProfile);
       }
 
       runtimeLoadStatus =
         (await (options.ensureRuntime?.() ?? ensureOpenCvJsRuntime())) ?? null;
+
+      // When a per-compute sensitivity profile is supplied, build a fresh
+      // adapter+engine pair for this run so the profile applies without
+      // mutating the cached default adapter. The cached adapter (and its
+      // engine) keep their construction-time profile for normal runs.
+      if (input.sensitivityProfile) {
+        const perCallAdapter = createOpenCvJsAdapter({
+          sensitivityProfile: input.sensitivityProfile
+        });
+        const perCallEngine =
+          options.engineFactory?.(perCallAdapter) ??
+          createStructuralEngine({ cvAdapter: perCallAdapter });
+        return perCallEngine.run(engineInput);
+      }
+
       return engine.run(engineInput);
     }
   };

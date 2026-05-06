@@ -8,11 +8,14 @@ export type {
   CvExecutionMode,
   CvContentRectResult,
   CvSurfaceRaster,
+  CvSensitivityProfile,
   OpenCvRuntimeLoadResult,
   OpenCvJsAdapterOptions
 } from './cv';
 export {
   createOpenCvJsAdapter,
   ensureOpenCvJsRuntime,
-  CvAdapterSurfaceMismatchError
+  CvAdapterSurfaceMismatchError,
+  HIGH_RES_CV_SENSITIVITY_PROFILE,
+  NORMAL_CV_SENSITIVITY_PROFILE
 } from './cv';
