@@ -20,6 +20,10 @@
  * version. Both must match exactly to be considered a valid structural model.
  */
 
+import { isCvSensitivityProfile, type CvSensitivityProfile } from './cv-sensitivity';
+
+export type { CvSensitivityProfile };
+
 export interface StructuralNormalizedRect {
   xNorm: number;
   yNorm: number;
@@ -249,6 +253,13 @@ export interface StructuralModel {
   cvAdapter: StructuralCvAdapterRef;
   pages: StructuralPage[];
   createdAtIso: string;
+  /**
+   * Sensitivity values used to produce this model. Persisted so runtime
+   * detection on new documents replays with identical adaptive-threshold C,
+   * Canny auto-sigma, and dark-page threshold floor. Absent on legacy
+   * models, which run with the adapter's default profile.
+   */
+  cvSensitivityValues?: CvSensitivityProfile;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -584,6 +595,13 @@ export const isStructuralModel = (value: unknown): value is StructuralModel => {
     typeof value.createdAtIso !== 'string' ||
     !isStructuralCvAdapterRef(value.cvAdapter) ||
     !Array.isArray(value.pages)
+  ) {
+    return false;
+  }
+
+  if (
+    value.cvSensitivityValues !== undefined &&
+    !isCvSensitivityProfile(value.cvSensitivityValues)
   ) {
     return false;
   }
