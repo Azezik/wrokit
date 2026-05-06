@@ -49,6 +49,10 @@ import { Panel } from '../../../core/ui/components/Panel';
 import { Section } from '../../../core/ui/components/Section';
 import { MasterDbPanel } from '../../masterdb/ui/MasterDbPanel';
 import { OcrBoxPreview } from '../../ocrbox-preview/ui/OcrBoxPreview';
+import {
+  StructuralRefineDebugPanel,
+  type StructuralRefineObservationInput
+} from '../../structural-refine/ui/StructuralRefineDebugPanel';
 import type { OcrBoxResult } from '../../../core/contracts/ocrbox-result';
 
 import './run-mode.css';
@@ -86,7 +90,22 @@ export function RunMode() {
 
   const [surfaceTransform, setSurfaceTransform] = useState<SurfaceTransform | null>(null);
   const [latestOcrResult, setLatestOcrResult] = useState<OcrBoxResult | null>(null);
+  const [latestRefineObservation, setLatestRefineObservation] =
+    useState<StructuralRefineObservationInput | null>(null);
+  // Effective refined model — when set AND `useRefinedAsConfig` is true the
+  // run-mode pipeline substitutes it for the configStructuralModel during
+  // prediction and the config-projection overlay. Mirrors the polished
+  // batch coordinator's `priorRefineModel ?? configStructuralModel` choice.
+  const [effectiveRefinedModel, setEffectiveRefinedModel] = useState<StructuralModel | null>(null);
+  const [useRefinedAsConfig, setUseRefinedAsConfig] = useState<boolean>(true);
   const structuralRuntimeLoadStatus = structuralRunnerRef.current.runtimeLoadStatus;
+
+  const predictionConfigStructuralModel = useMemo(() => {
+    if (useRefinedAsConfig && effectiveRefinedModel) {
+      return effectiveRefinedModel;
+    }
+    return configStructuralModel;
+  }, [useRefinedAsConfig, effectiveRefinedModel, configStructuralModel]);
 
   const selectedPage = useMemo(
     () => runtimePages.find((page) => page.pageIndex === selectedPageIndex) ?? null,
@@ -128,13 +147,12 @@ export function RunMode() {
   }, [runtimeStructuralModel, selectedPage]);
 
   const configStructuralPage = useMemo(() => {
-    if (!configStructuralModel || !selectedPage) {
+    const source = predictionConfigStructuralModel ?? configStructuralModel;
+    if (!source || !selectedPage) {
       return null;
     }
-    return (
-      configStructuralModel.pages.find((page) => page.pageIndex === selectedPage.pageIndex) ?? null
-    );
-  }, [configStructuralModel, selectedPage]);
+    return source.pages.find((page) => page.pageIndex === selectedPage.pageIndex) ?? null;
+  }, [predictionConfigStructuralModel, configStructuralModel, selectedPage]);
 
   const transformationPage = useMemo(() => {
     if (!transformationModel || !selectedPage) {
@@ -257,6 +275,8 @@ export function RunMode() {
       return;
     }
 
+    const activeConfigModel = predictionConfigStructuralModel ?? configStructuralModel;
+
     setIsComputingPredictions(true);
     setRunError(null);
 
@@ -270,7 +290,7 @@ export function RunMode() {
         // config was produced with NORMAL (the common case),
         // `cvSensitivityValues` is undefined and the runner uses its
         // construction-time default (also NORMAL).
-        sensitivityProfile: configStructuralModel.cvSensitivityValues
+        sensitivityProfile: activeConfigModel.cvSensitivityValues
       });
       setRuntimeStructuralModel(runtimeStructuralModel);
 
@@ -279,7 +299,7 @@ export function RunMode() {
       // predicted BBOX placement, with the legacy stable-anchor path as a
       // fallback when a field has no candidates.
       const transformationReport = transformationRunnerRef.current.compute({
-        config: configStructuralModel,
+        config: activeConfigModel,
         runtime: runtimeStructuralModel
       });
       setTransformationModel(transformationReport);
@@ -287,17 +307,23 @@ export function RunMode() {
       const result = await localizationRunnerRef.current.run({
         wizardId: wizard.wizardName,
         configGeometry: geometry,
-        configStructuralModel,
+        configStructuralModel: activeConfigModel,
         runtimeStructuralModel,
         runtimePages,
         transformationModel: transformationReport
       });
 
       setPredicted(result);
+      setLatestRefineObservation({
+        runtimeStructure: runtimeStructuralModel,
+        transformationModel: transformationReport,
+        predicted: result
+      });
     } catch (runError) {
       setRuntimeStructuralModel(null);
       setTransformationModel(null);
       setPredicted(null);
+      setLatestRefineObservation(null);
       setRunError(runError instanceof Error ? runError.message : 'Run Mode matching failed.');
     } finally {
       setIsComputingPredictions(false);
@@ -502,6 +528,9 @@ export function RunMode() {
               {configStructuralModel?.cvSensitivityValues
                 ? ' — hi-res sensitivity profile (will be replayed at runtime)'
                 : ''}
+              {effectiveRefinedModel && useRefinedAsConfig
+                ? ` · using refined model ${effectiveRefinedModel.id} in place of config`
+                : ''}
             </li>
             <li>
               Runtime document: {runtimePages.length > 0 ? 'normalized' : 'not normalized'}
@@ -599,6 +628,24 @@ export function RunMode() {
       </div>
 
       <div className="run-mode__below-viewport">
+        <Panel>
+          <h3 style={{ marginTop: 0 }}>Structural Refine (debug)</h3>
+          <p className="run-mode__meta">
+            Mirrors the polished wizard's Structural Refine pipeline so the same engine,
+            runner, and analytics outputs are accessible under the debug overlay. Observation
+            is per-document and explicit — overlays update with whichever model (config or
+            refined) is currently in effect.
+          </p>
+          <StructuralRefineDebugPanel
+            wizard={wizard}
+            geometry={geometry}
+            configStructural={configStructuralModel}
+            useRefinedAsConfig={useRefinedAsConfig}
+            onUseRefinedAsConfigChange={setUseRefinedAsConfig}
+            latestObservation={latestRefineObservation}
+            onEffectiveRefinedModelChange={setEffectiveRefinedModel}
+          />
+        </Panel>
         <OcrBoxPreview
           wizard={wizard}
           pages={runtimePages}

@@ -13,6 +13,12 @@ import type { GeometryFile } from '../../../core/contracts/geometry';
 import type { StructuralModel } from '../../../core/contracts/structural-model';
 import type { WizardFile } from '../../../core/contracts/wizard';
 import { createNormalizationEngine } from '../../../core/engines/normalization';
+import { HIGH_RES_CV_SENSITIVITY_PROFILE } from '../../../core/engines/structure';
+import {
+  acceptHighResModel,
+  evaluateStructuralDensity,
+  type SensitivityDensityCheckResult
+} from '../../../core/engines/structural-refine/sensitivity-density-check';
 import {
   downloadGeometryFile,
   GeometryFileParseError,
@@ -101,6 +107,13 @@ export function ConfigCapture() {
   const [activeStructuralModelId, setActiveStructuralModelId] = useState<string | null>(null);
 
   const [latestOcrResult, setLatestOcrResult] = useState<OcrBoxResult | null>(null);
+
+  const [hiResRunning, setHiResRunning] = useState(false);
+  const [hiResError, setHiResError] = useState<string | null>(null);
+  const [lastDensityCheck, setLastDensityCheck] = useState<SensitivityDensityCheckResult | null>(null);
+  const [lastHiResVerdict, setLastHiResVerdict] = useState<
+    'not-run' | 'satisfies-density' | 'accepted' | 'rejected'
+  >('not-run');
 
   const viewportRef = useRef<NormalizedPageViewportHandle | null>(null);
   const [surfaceTransform, setSurfaceTransform] = useState<SurfaceTransform | null>(null);
@@ -398,6 +411,51 @@ export function ConfigCapture() {
     await builderStore.removeField(fieldId);
   };
 
+  const handleRunHiResPass = async () => {
+    if (!activeStructuralModel || pageSession.pages.length === 0) {
+      setHiResError('Compute a StructuralModel from a normalized document first.');
+      return;
+    }
+    if (geometryFileSnapshot.fields.length === 0) {
+      setHiResError('Capture at least one BBOX before running the density check.');
+      return;
+    }
+    setHiResRunning(true);
+    setHiResError(null);
+    try {
+      const normalCheck = evaluateStructuralDensity(activeStructuralModel, geometryFileSnapshot);
+      setLastDensityCheck(normalCheck);
+      if (normalCheck.satisfiesDensity) {
+        setLastHiResVerdict('satisfies-density');
+        return;
+      }
+      const highResModel = await structuralRunnerRef.current.compute({
+        pages: pageSession.pages,
+        documentFingerprint: pageSession.documentFingerprint,
+        geometry: geometryFileSnapshot,
+        sensitivityProfile: HIGH_RES_CV_SENSITIVITY_PROFILE
+      });
+      const highResCheck = evaluateStructuralDensity(highResModel, geometryFileSnapshot);
+      if (!acceptHighResModel(normalCheck, highResCheck)) {
+        setLastHiResVerdict('rejected');
+        return;
+      }
+      const stamped: StructuralModel = {
+        ...highResModel,
+        cvSensitivityValues: HIGH_RES_CV_SENSITIVITY_PROFILE
+      };
+      await structuralStore.save(stamped);
+      setActiveStructuralModelId(stamped.id);
+      setLastHiResVerdict('accepted');
+    } catch (error) {
+      setHiResError(
+        error instanceof Error ? error.message : 'Hi-res sensitivity pass failed.'
+      );
+    } finally {
+      setHiResRunning(false);
+    }
+  };
+
   const validation = useMemo(() => {
     if (!wizard) {
       return null;
@@ -678,7 +736,32 @@ export function ConfigCapture() {
             >
               Download StructuralModel JSON
             </Button>
+            <Button
+              type="button"
+              onClick={() => {
+                void handleRunHiResPass();
+              }}
+              disabled={
+                !activeStructuralModel ||
+                geometryFileSnapshot.fields.length === 0 ||
+                hiResRunning
+              }
+              title="Replicates the polished wizard's post-geometry density check + hi-res sensitivity rerun."
+            >
+              {hiResRunning ? 'Running hi-res pass…' : 'Run hi-res sensitivity pass'}
+            </Button>
           </div>
+          {hiResError ? <p className="config-capture__error">{hiResError}</p> : null}
+          {lastHiResVerdict !== 'not-run' ? (
+            <p className="config-capture__meta">
+              Hi-res pass:{' '}
+              {lastHiResVerdict === 'satisfies-density'
+                ? `density check passed at NORMAL — no rerun needed (${lastDensityCheck?.passingFields.length ?? 0}/${lastDensityCheck?.fieldsEvaluated ?? 0} fields)`
+                : lastHiResVerdict === 'accepted'
+                  ? `accepted — refined model now reflects the HIGH_RES profile (${lastDensityCheck?.failingFields.length ?? 0} field(s) had been sparse)`
+                  : `rejected — hi-res rerun did not improve any sparse field neighborhood`}
+            </p>
+          ) : null}
 
           <div>
             <strong>Live StructuralModel JSON</strong>
