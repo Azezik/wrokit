@@ -12,6 +12,9 @@ import {
   type LineBoundedRectsDiagnostics,
   type PixelBounds as SharedPixelBounds
 } from './line-grid-detector';
+import type { CvSensitivityProfile } from '../../../contracts/cv-sensitivity';
+
+export type { CvSensitivityProfile };
 
 /**
  * OpenCV.js CV adapter — first CV implementation used by the Structural Engine.
@@ -27,27 +30,6 @@ import {
  *   Engine can map results into normalized [0, 1] coordinates without the
  *   adapter ever touching the normalization layer.
  */
-/**
- * Sensitivity profile that controls the three pre-contour-detection knobs the
- * adapter exposes for low-contrast UI surfaces (dark Reddit/dashboard cards on
- * slightly-darker page backgrounds, etc.).
- *
- * Lowering `adaptiveThresholdC` makes the adaptive threshold pick up fainter
- * borders. Raising `cannyAutoSigma` widens the Canny hysteresis band so weaker
- * gradients survive. Lowering `darkPageNormalizedThresholdFloor` releases the
- * dark-page background-threshold clamp so very-low-contrast foreground is not
- * forced into background by the safety floor.
- *
- * The profile is intentionally narrow: it does NOT change object area floors,
- * line-length floors, or the relationship resolver. It only controls how
- * sensitive edge / threshold detection is before contours are extracted.
- */
-export interface CvSensitivityProfile {
-  adaptiveThresholdC: number;
-  cannyAutoSigma: number;
-  darkPageNormalizedThresholdFloor: number;
-}
-
 export const NORMAL_CV_SENSITIVITY_PROFILE: CvSensitivityProfile = {
   adaptiveThresholdC: 8,
   cannyAutoSigma: 0.33,

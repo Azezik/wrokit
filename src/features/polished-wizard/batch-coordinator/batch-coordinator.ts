@@ -98,7 +98,11 @@ export const createBatchCoordinator = (): BatchCoordinator => {
           const runtimeStructure = await structuralRunner.compute({
             pages: normalized.pages,
             documentFingerprint: fingerprint,
-            geometry: null
+            geometry: null,
+            // Replay config-time sensitivity so runtime detection uses the
+            // same adapter parameters that produced the config structural
+            // model. Undefined for legacy configs / NORMAL profile.
+            sensitivityProfile: configStructuralModel.cvSensitivityValues
           });
 
           const transformationModel = transformationRunner.compute({

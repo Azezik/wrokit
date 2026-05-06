@@ -5,7 +5,12 @@ import type { MasterDbTable } from '../../../core/contracts/masterdb-table';
 import type { StructuralModel } from '../../../core/contracts/structural-model';
 import type { StructuralRefineAnalytics } from '../../../core/contracts/structural-refine-analytics';
 import type { WizardFile } from '../../../core/contracts/wizard';
+import { HIGH_RES_CV_SENSITIVITY_PROFILE } from '../../../core/engines/structure';
 import { createNormalizationEngine } from '../../../core/engines/normalization';
+import {
+  acceptHighResModel,
+  evaluateStructuralDensity
+} from '../../../core/engines/structural-refine/sensitivity-density-check';
 import { buildDocumentFingerprint } from '../../../core/page-surface/page-surface-fingerprint';
 import { createStructuralRunner } from '../../../core/runtime/structural-runner';
 import { createBatchCoordinator } from '../batch-coordinator/batch-coordinator';
@@ -32,7 +37,7 @@ export interface OrchestratorApi {
   goTo(step: OrchestratorStep): void;
   saveWizard(wizard: WizardFile): void;
   loadConfigDocument(file: File): Promise<void>;
-  setGeometry(geometry: GeometryFile): void;
+  setGeometry(geometry: GeometryFile): Promise<void>;
   setMasterDb(table: MasterDbTable): void;
   setStructuralRefineEnabled(enabled: boolean): void;
   setPriorRefineAnalytics(analytics: StructuralRefineAnalytics | null): void;
@@ -88,8 +93,45 @@ export const useOrchestrator = (): OrchestratorApi => {
     }
   }, []);
 
-  const setGeometry = useCallback((geometry: GeometryFile) => {
+  const setGeometry = useCallback(async (geometry: GeometryFile) => {
+    // Capture the geometry immediately so the UI can advance. The hi-res
+    // sensitivity post-pass below may swap in a denser structural model
+    // produced with HIGH_RES_CV_SENSITIVITY_PROFILE if the normal-pass model
+    // is sparse near the user's BBOXes.
     setState((prev) => ({ ...prev, geometry }));
+
+    const snapshot = stateRef.current;
+    const normalModel = snapshot.configStructuralModel;
+    if (!normalModel || snapshot.configPages.length === 0) {
+      return;
+    }
+
+    const normalCheck = evaluateStructuralDensity(normalModel, geometry);
+    if (normalCheck.satisfiesDensity) {
+      return;
+    }
+
+    try {
+      const highResModel = await structuralRunnerRef.current.compute({
+        pages: snapshot.configPages,
+        documentFingerprint: snapshot.configFingerprint,
+        geometry,
+        sensitivityProfile: HIGH_RES_CV_SENSITIVITY_PROFILE
+      });
+      const highResCheck = evaluateStructuralDensity(highResModel, geometry);
+      if (!acceptHighResModel(normalCheck, highResCheck)) {
+        return;
+      }
+      const stampedModel: StructuralModel = {
+        ...highResModel,
+        cvSensitivityValues: HIGH_RES_CV_SENSITIVITY_PROFILE
+      };
+      setState((prev) => ({ ...prev, configStructuralModel: stampedModel }));
+    } catch {
+      // Hi-res rerun is best-effort. If it fails, leave the normal-pass
+      // model in place — the user can still proceed, they just may hit the
+      // same localization weakness this pass was trying to fix.
+    }
   }, []);
 
   const setMasterDb = useCallback((table: MasterDbTable) => {

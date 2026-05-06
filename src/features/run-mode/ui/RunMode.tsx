@@ -264,7 +264,13 @@ export function RunMode() {
       const runtimeStructuralModel = await structuralRunnerRef.current.compute({
         pages: runtimePages,
         documentFingerprint: runtimeDocumentFingerprint,
-        geometry: null
+        geometry: null,
+        // Replay the config-time sensitivity profile so config and runtime
+        // structural models use identical adapter parameters. When the
+        // config was produced with NORMAL (the common case),
+        // `cvSensitivityValues` is undefined and the runner uses its
+        // construction-time default (also NORMAL).
+        sensitivityProfile: configStructuralModel.cvSensitivityValues
       });
       setRuntimeStructuralModel(runtimeStructuralModel);
 
