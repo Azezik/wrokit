@@ -108,6 +108,14 @@ export function ConfigCapture() {
 
   const [latestOcrResult, setLatestOcrResult] = useState<OcrBoxResult | null>(null);
 
+  /**
+   * Debug-only toggle: when on, the next document upload computes its config
+   * StructuralModel with `HIGH_RES_CV_SENSITIVITY_PROFILE` instead of the
+   * adapter default. Lets the user inspect the hi-res output directly without
+   * having to draw geometry first to trigger the post-geometry density rerun.
+   */
+  const [forceHiResOnConfig, setForceHiResOnConfig] = useState<boolean>(false);
+
   const [hiResRunning, setHiResRunning] = useState(false);
   const [hiResError, setHiResError] = useState<string | null>(null);
   const [lastDensityCheck, setLastDensityCheck] = useState<SensitivityDensityCheckResult | null>(null);
@@ -169,13 +177,20 @@ export function ConfigCapture() {
         const model = await structuralRunnerRef.current.compute({
           pages,
           documentFingerprint: fingerprint,
-          geometry: geometryFileSnapshot.fields.length > 0 ? geometryFileSnapshot : null
+          geometry: geometryFileSnapshot.fields.length > 0 ? geometryFileSnapshot : null,
+          sensitivityProfile: forceHiResOnConfig ? HIGH_RES_CV_SENSITIVITY_PROFILE : undefined
         });
         if (cancelled) {
           return;
         }
-        await structuralStore.save(model);
-        setActiveStructuralModelId(model.id);
+        // Stamp the persisted model with the active profile so the user can
+        // confirm hi-res actually ran (visible via cvSensitivityValues in the
+        // serialized model preview / overlay status).
+        const stampedModel: StructuralModel = forceHiResOnConfig
+          ? { ...model, cvSensitivityValues: HIGH_RES_CV_SENSITIVITY_PROFILE }
+          : model;
+        await structuralStore.save(stampedModel);
+        setActiveStructuralModelId(stampedModel.id);
       } catch (error) {
         if (cancelled) {
           return;
@@ -198,7 +213,8 @@ export function ConfigCapture() {
     pageSession.documentFingerprint,
     pageSession.pages,
     geometryFileSnapshot,
-    structuralStore
+    structuralStore,
+    forceHiResOnConfig
   ]);
 
   const activeStructuralModel: StructuralModel | null = useMemo(() => {
@@ -517,12 +533,23 @@ export function ConfigCapture() {
                 onChange={handleDocumentUpload}
               />
             </label>
+            <label
+              className="config-capture__meta"
+              title="Force the config StructuralModel compute to use HIGH_RES_CV_SENSITIVITY_PROFILE for the next upload, regardless of geometry density."
+            >
+              <input
+                type="checkbox"
+                checked={forceHiResOnConfig}
+                onChange={(event) => setForceHiResOnConfig(event.target.checked)}
+              />
+              {' '}Use high res
+            </label>
             {isNormalizing ? (
               <span className="config-capture__meta">Normalizing upload…</span>
             ) : (
               <span className="config-capture__meta">
                 {pageSession.sourceName
-                  ? `Source: ${pageSession.sourceName} · ${pageSession.pages.length} page(s)`
+                  ? `Source: ${pageSession.sourceName} · ${pageSession.pages.length} page(s)${forceHiResOnConfig ? ' · hi-res forced' : ''}`
                   : 'No document loaded.'}
               </span>
             )}

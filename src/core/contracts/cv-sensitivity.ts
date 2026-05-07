@@ -1,6 +1,6 @@
 /**
- * Sensitivity profile contract — three pre-contour-detection knobs that
- * control how the OpenCV adapter behaves on low-contrast UI surfaces.
+ * Sensitivity profile contract — pre-contour-detection knobs that control how
+ * the OpenCV adapter behaves on low-contrast UI surfaces.
  *
  * Lives in the contracts layer (rather than next to the OpenCV adapter)
  * because the StructuralModel persists the values that produced it: a
@@ -14,11 +14,21 @@
  * threshold clamp so very-low-contrast foreground (e.g. a card a few
  * luminance units brighter than the page background) is not forced into
  * background by the safety floor.
+ *
+ * `acceptRoundedRectanglesAsConfirmed` (optional, hi-res only): when true,
+ * contour rects whose polygon approximation is convex with a high bbox-fill
+ * ratio but more than 4 vertices (i.e. rounded-corner UI buttons / cards)
+ * are treated as shape-evidence confirmed. This bumps their base confidence
+ * to the same level as exact 4-vertex rectangles, so small rounded UI
+ * elements clear the simple-overlay confidence floor instead of being
+ * filtered as low-confidence noise. Off by default so structured-form
+ * behavior is unchanged.
  */
 export interface CvSensitivityProfile {
   adaptiveThresholdC: number;
   cannyAutoSigma: number;
   darkPageNormalizedThresholdFloor: number;
+  acceptRoundedRectanglesAsConfirmed?: boolean;
 }
 
 export const isCvSensitivityProfile = (value: unknown): value is CvSensitivityProfile => {
@@ -26,6 +36,12 @@ export const isCvSensitivityProfile = (value: unknown): value is CvSensitivityPr
     return false;
   }
   const v = value as Record<string, unknown>;
+  if (
+    v.acceptRoundedRectanglesAsConfirmed !== undefined &&
+    typeof v.acceptRoundedRectanglesAsConfirmed !== 'boolean'
+  ) {
+    return false;
+  }
   return (
     typeof v.adaptiveThresholdC === 'number' &&
     Number.isFinite(v.adaptiveThresholdC) &&
