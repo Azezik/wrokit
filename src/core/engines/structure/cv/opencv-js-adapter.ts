@@ -39,7 +39,8 @@ export const NORMAL_CV_SENSITIVITY_PROFILE: CvSensitivityProfile = {
 export const HIGH_RES_CV_SENSITIVITY_PROFILE: CvSensitivityProfile = {
   adaptiveThresholdC: 3,
   cannyAutoSigma: 0.5,
-  darkPageNormalizedThresholdFloor: 140
+  darkPageNormalizedThresholdFloor: 140,
+  acceptRoundedRectanglesAsConfirmed: true
 };
 
 export interface OpenCvJsAdapterOptions {
@@ -725,6 +726,64 @@ const isShapeRectangle = (
       }
     }
 
+    return true;
+  } catch {
+    return false;
+  } finally {
+    approx.delete();
+  }
+};
+
+/**
+ * Hi-res-only relaxation of `isShapeRectangle` for rounded-corner UI elements
+ * (Reply / Forward pills, summary-card outlines, sidebar chips). A rounded
+ * rectangle's polygon approximation does not collapse to 4 vertices — each
+ * corner contributes 2-3 short segments — so `approxPolyDP` returns a 6-12
+ * vertex convex polygon. The shape evidence we need is still strong:
+ *   - convex,
+ *   - polygon area ≥ 85 % of axis-aligned bounding rect (filled UI shapes),
+ *   - vertex count in [4, 12] so we do not admit free-form blobs.
+ *
+ * This predicate is only consulted when
+ * `sensitivityProfile.acceptRoundedRectanglesAsConfirmed` is true (hi-res),
+ * so structured-form behavior is unchanged.
+ */
+const isShapeRoundedRectangle = (
+  cv: OpenCvLikeRuntime,
+  contour: OpenCvMat,
+  rect: OpenCvRect
+): boolean => {
+  if (typeof cv.approxPolyDP !== 'function' || typeof cv.arcLength !== 'function') {
+    return false;
+  }
+  if (typeof cv.contourArea !== 'function') {
+    return false;
+  }
+  const approx = new cv.Mat();
+  try {
+    const perimeter = cv.arcLength(contour, true);
+    if (!Number.isFinite(perimeter) || perimeter <= 0) {
+      return false;
+    }
+    cv.approxPolyDP(contour, approx, 0.02 * perimeter, true);
+    const polyData = approx.data32S;
+    if (!polyData || polyData.length < 8 || polyData.length > 24 || polyData.length % 2 !== 0) {
+      return false;
+    }
+    if (typeof cv.isContourConvex === 'function') {
+      try {
+        if (!cv.isContourConvex(approx)) {
+          return false;
+        }
+      } catch {
+        return false;
+      }
+    }
+    const polyArea = Math.abs(cv.contourArea(approx));
+    const boxArea = Math.max(1, rect.width * rect.height);
+    if (polyArea / boxArea < 0.85) {
+      return false;
+    }
     return true;
   } catch {
     return false;
@@ -1503,7 +1562,16 @@ const detectWithOpenCvRuntime = (
         // ≥85% bounding-box fill. When this passes, the contour is treated
         // as a high-confidence rectangle and protected from NMS suppression
         // by larger non-rectangular contours that overlap it.
-        const confirmed = isShapeRectangle(cv, contour, rect);
+        //
+        // Under the hi-res profile we additionally accept convex 6-12 vertex
+        // polygons whose bbox-fill is ≥85% as confirmed (rounded-corner UI
+        // pills / cards). Without this, small rounded buttons land at the
+        // 0.62 non-confirmed base and get filtered out by the simple-mode
+        // 0.75 confidence floor in the overlay.
+        let confirmed = isShapeRectangle(cv, contour, rect);
+        if (!confirmed && sensitivityProfile.acceptRoundedRectanglesAsConfirmed) {
+          confirmed = isShapeRoundedRectangle(cv, contour, rect);
+        }
         // Bounding-rect fill ratio = contourArea / (rect.width * rect.height).
         // Glyph contours fill 0.25–0.45 of their bbox (a hollow 8 ≈ 0.30); UI
         // panel borders fill ≈1.0. The downstream gate uses this to reject
